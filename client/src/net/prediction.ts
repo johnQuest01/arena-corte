@@ -1,7 +1,7 @@
 /**
  * prediction.ts — movimento local + colisão do mapa + spawn visual de balas.
  */
-import { MOVE_SPEED } from "../../../shared/constants";
+import { MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
 import {
   MAX_STAMINA,
   SPRINT_MULT,
@@ -25,6 +25,8 @@ export class PredictionBuffer {
   inputs: PlayerInput[] = [];
   predicted: PlayerState | null = null;
   doorBits = 0;
+  /** tempo do último snapshot (para replay de reload) */
+  serverTime = 0;
   /** balas locais (shotgun leque / feel) — não autoritativas */
   localBullets: BulletState[] = [];
   private nextLocalId = 900000;
@@ -76,7 +78,7 @@ export class PredictionBuffer {
     p.vy = my * speed;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
-    const pos = resolveWalls(p.x, p.y, 14, this.doorBits);
+    const pos = resolveWalls(p.x, p.y, PLAYER_R, this.doorBits);
     p.x = pos.x;
     p.y = pos.y;
     p.angle = aim;
@@ -125,7 +127,11 @@ export class PredictionBuffer {
 
   replayOne(input: PlayerInput, dt: number) {
     if (!this.predicted) return;
-    applyInput(this.predicted, input, dt, { doorBits: this.doorBits });
+    applyInput(this.predicted, input, dt, {
+      doorBits: this.doorBits,
+      serverTime: this.serverTime,
+    });
+    this.serverTime += dt * 1000;
   }
 
   pendingAfter(seq: number): PlayerInput[] {

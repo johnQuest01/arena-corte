@@ -28,6 +28,30 @@ import {
   stepSmooth,
   type SmoothState,
 } from "../net/reconciliation";
+import { weaponOf } from "../../../shared/gear";
+import {
+  getMasterVolume,
+  isMuted,
+  playFootstep,
+  playSfx,
+  playWeaponShot,
+  preloadSfx,
+  setMasterVolume,
+  setMuted,
+  unlockAudio,
+} from "./audio";
+import {
+  clearDecals,
+  drawDecalLayer,
+  drawGoreActors,
+  hitFlashActive,
+  initDecals,
+  processGoreEvents,
+  spawnDust,
+  stampBulletMark,
+  stampShell,
+  tickGore,
+} from "./gore";
 import { InputController } from "./input";
 import {
   createFeel,
@@ -58,6 +82,9 @@ export interface GameHud {
   selfHp: number;
   stamina: number;
   weaponName: string;
+  mag: number;
+  reserve: number;
+  reloadProgress: number;
   error?: string;
 }
 
@@ -96,6 +123,26 @@ export class GameClient {
   private lastHudKey = "";
   private hudClock = 0;
   private localFireCd = 0;
+  private reloadUntil = 0;
+  private ammoDrops: { id: number; x: number; y: number; amount: number }[] = [];
+  private lastFoot = 0;
+  private damageFlash = 0;
+  private camZoom = 1;
+  private prevVx = 0;
+  private prevVy = 0;
+
+  setMuted(m: boolean) {
+    setMuted(m);
+  }
+  setVolume(v: number) {
+    setMasterVolume(v);
+  }
+  getMuted() {
+    return isMuted();
+  }
+  getVolume() {
+    return getMasterVolume();
+  }
 
   constructor(opts: { transport: Transport; canvas: HTMLCanvasElement; name: string }) {
     this.transport = opts.transport;
@@ -116,12 +163,22 @@ export class GameClient {
     const hp = me?.hp ?? 100;
     const stamina = Math.round(me?.stamina ?? 100);
     const weapon = me?.weapon ?? 0;
-    const key = `${this.phase}|${this.ping}|${sec}|${kills}|${hp}|${stamina}|${weapon}|${this.lobby?.players.length ?? 0}`;
+    const mag = me?.mag ?? 0;
+    const reserve = me?.reserve ?? 0;
+    const key = `${this.phase}|${this.ping}|${sec}|${kills}|${hp}|${stamina}|${weapon}|${mag}|${reserve}|${this.lobby?.players.length ?? 0}`;
     if (!force && key === this.lastHudKey && this.phase === "playing") {
       if (performance.now() - this.hudClock < 250) return;
     }
     this.lastHudKey = key;
     this.hudClock = performance.now();
+
+    const wpn = weaponOf(weapon);
+    let reloadProgress = 0;
+    // barra client: se fireCd alto após reloadStart recente — aproximação via last reload event
+    if (this.reloadUntil > performance.now()) {
+      const left = this.reloadUntil - performance.now();
+      reloadProgress = 1 - left / wpn.reloadMs;
+    }
 
     const hud: GameHud = {
       phase: this.phase,
@@ -132,14 +189,24 @@ export class GameClient {
       selfHp: hp,
       stamina,
       weaponName: WEAPONS[weapon]?.name ?? "Pistola",
+      mag,
+      reserve,
+      reloadProgress: Math.max(0, Math.min(1, reloadProgress)),
     };
     this.listeners.forEach((cb) => cb(hud));
   }
 
   async start() {
     resizeCanvas(this.canvas);
+    initDecals(960, 640);
     window.addEventListener("resize", this.onResize);
     this.input.attach(this.canvas);
+    const unlock = () => {
+      unlockAudio();
+      window.removeEventListener("pointerdown", unlock);
+    };
+    window.addEventListener("pointerdown", unlock);
+    void preloadSfx();
 
     this.transport.on({
       onMessage: (data) => this.onMsg(data),
@@ -204,6 +271,8 @@ export class GameClient {
     }
     if (type === MSG.START) {
       this.phase = "playing";
+      clearDecals();
+      this.ammoDrops = [];
       resizeCanvas(this.canvas);
       this.emit(true);
       return;
@@ -219,18 +288,55 @@ export class GameClient {
       if (!snap) return;
       this.lastSnap = snap;
       this.prediction.doorBits = snap.doorsBits ?? 0;
+      this.prediction.serverTime = snap.serverTime;
       this.interp.push(snap);
       pushFlashesFromEvents(this.flashes, snap.events);
       pushFxFromEvents(this.fx, snap.events);
+      processGoreEvents(snap.events, performance.now());
+      const listener = {
+        x: this.prediction.predicted?.x ?? 480,
+        y: this.prediction.predicted?.y ?? 320,
+      };
       for (const e of snap.events) {
         if (e.kind === "flash" && e.b === this.selfId) {
           this.flashBlind = 1;
           this.flashHoldMs = 400;
         }
-        if (e.kind === "shot" && e.a === this.selfId) {
-          pulseShotFeel(this.feel, e.b, true);
-        } else if (e.kind === "shot") {
-          pulseShotFeel(this.feel, e.b, false);
+        if (e.kind === "shot") {
+          const self = e.a === this.selfId;
+          pulseShotFeel(this.feel, e.weaponId ?? e.b, self);
+          playWeaponShot(e.weaponId ?? e.b, e.x, e.y, listener);
+          if (self) this.camZoom = 1.015;
+        }
+        if (e.kind === "reloadStart") {
+          if (e.a === this.selfId) {
+            this.reloadUntil = performance.now() + weaponOf(e.b).reloadMs;
+          }
+          playSfx("reload", e.x, e.y, listener);
+        }
+        if (e.kind === "doorOpen" || e.kind === "doorClose") {
+          playSfx("door", e.x, e.y, listener);
+        }
+        if (e.kind === "explode" || e.kind === "fire") {
+          playSfx("explosion", e.x, e.y, listener);
+          if (e.kind === "explode") this.feel.shake = Math.max(this.feel.shake, 5);
+        }
+        if (e.kind === "hit" && e.b !== 255) {
+          playSfx("hit_flesh", e.x, e.y, listener);
+          if (e.b === this.selfId) this.damageFlash = 1;
+        }
+        if (e.kind === "hit" && e.b === 255) {
+          stampBulletMark(e.x, e.y);
+        }
+        if (e.kind === "dropSpawn") {
+          this.ammoDrops.push({ id: e.a, x: e.x, y: e.y, amount: e.b });
+        }
+        if (e.kind === "dropTaken") {
+          this.ammoDrops = this.ammoDrops.filter((d) => d.id !== e.a);
+          playSfx("pickup", e.x, e.y, listener);
+        }
+        if (e.kind === "death" && (e.weaponId ?? 0) === 100) {
+          playSfx("explosion", e.x, e.y, listener);
         }
       }
 
@@ -247,6 +353,7 @@ export class GameClient {
           fire: heldRaw.fire,
           sprint: heldRaw.sprint,
           use: heldRaw.use,
+          reload: heldRaw.reload,
           weapon: heldRaw.weapon,
           throw: heldRaw.throw,
           clientTime: performance.now(),
@@ -258,6 +365,8 @@ export class GameClient {
           this.prediction.predicted.kills = me.kills;
           this.prediction.predicted.stamina = me.stamina;
           this.prediction.predicted.weapon = me.weapon;
+          this.prediction.predicted.mag = me.mag;
+          this.prediction.predicted.reserve = me.reserve;
         }
       }
 
@@ -304,19 +413,36 @@ export class GameClient {
       this.localFireCd = Math.max(0, this.localFireCd - dtMs);
       if (raw.fire && this.localFireCd <= 0 && pred?.alive) {
         const wpn = WEAPONS[raw.weapon] ?? WEAPONS[0]!;
-        this.localFireCd = wpn.cooldownMs;
-        this.prediction.predictFire(raw.aim, raw.weapon);
-        pulseShotFeel(this.feel, raw.weapon, true);
-        pushFlashesFromEvents(this.flashes, [
-          {
-            kind: "shot",
-            a: this.selfId,
-            b: raw.weapon,
-            x: pred.x + Math.cos(raw.aim) * wpn.muzzleForward - Math.sin(raw.aim) * wpn.muzzleSide,
-            y: pred.y + Math.sin(raw.aim) * wpn.muzzleForward + Math.cos(raw.aim) * wpn.muzzleSide,
-          },
-        ]);
+        if ((pred.mag ?? 0) <= 0) {
+          this.localFireCd = 180;
+          playSfx("empty_click", pred.x, pred.y, { x: pred.x, y: pred.y });
+        } else {
+          this.localFireCd = wpn.cooldownMs;
+          if (this.prediction.predicted) this.prediction.predicted.mag = Math.max(0, pred.mag - 1);
+          this.prediction.predictFire(raw.aim, raw.weapon);
+          pulseShotFeel(this.feel, raw.weapon, true);
+          this.camZoom = 1.015;
+          const mx =
+            pred.x + Math.cos(raw.aim) * wpn.muzzleForward - Math.sin(raw.aim) * wpn.muzzleSide;
+          const my =
+            pred.y + Math.sin(raw.aim) * wpn.muzzleForward + Math.cos(raw.aim) * wpn.muzzleSide;
+          playWeaponShot(raw.weapon, mx, my, { x: pred.x, y: pred.y });
+          pushFlashesFromEvents(this.flashes, [
+            { kind: "shot", a: this.selfId, b: raw.weapon, x: mx, y: my, weaponId: raw.weapon },
+          ]);
+        }
       }
+
+      const speed = Math.hypot(pred?.vx ?? 0, pred?.vy ?? 0);
+      if (pred && speed > 25 && now - this.lastFoot > 280) {
+        this.lastFoot = now;
+        playFootstep(pred.x, pred.y, { x: pred.x, y: pred.y });
+        spawnDust(pred.x, pred.y);
+      }
+      const dv = Math.hypot((pred?.vx ?? 0) - this.prevVx, (pred?.vy ?? 0) - this.prevVy);
+      if (dv > 180 && pred) spawnDust(pred.x, pred.y);
+      this.prevVx = pred?.vx ?? 0;
+      this.prevVy = pred?.vy ?? 0;
 
       const stepMs = 1000 / INPUT_HZ;
       while (this.accum >= stepMs) {
@@ -329,6 +455,7 @@ export class GameClient {
           fire: raw.fire,
           sprint: raw.sprint,
           use: raw.use,
+          reload: raw.reload,
           weapon: raw.weapon,
           throw: raw.throw,
           clientTime: performance.now(),
@@ -343,6 +470,9 @@ export class GameClient {
 
     this.flashes = tickFlashes(this.flashes, dtMs);
     this.fx = tickFx(this.fx, dtMs);
+    tickGore(dtMs, now);
+    this.camZoom += (1 - this.camZoom) * Math.min(1, dtMs / 80);
+    this.damageFlash = Math.max(0, this.damageFlash - dtMs / 120);
     const origin = this.prediction.predicted
       ? {
           x: this.prediction.predicted.x,
@@ -350,7 +480,7 @@ export class GameClient {
           angle: this.prediction.predicted.angle,
         }
       : undefined;
-    tickFeel(this.feel, dtMs, origin);
+    tickFeel(this.feel, dtMs, origin, stampShell);
 
     const bits = this.lastSnap?.doorsBits ?? 0;
     this.doorAnim = tickDoorAnim(this.doorAnim, bits, dtMs);
@@ -419,6 +549,12 @@ export class GameClient {
       feel: this.feel,
       doorAnim: this.doorAnim,
       roofAlpha: this.roofAlpha,
+      ammoDrops: this.ammoDrops,
+      camZoom: this.camZoom,
+      damageFlash: this.damageFlash,
+      hitFlashSelf: hitFlashActive(this.selfId, now),
+      drawDecals: drawDecalLayer,
+      drawGore: drawGoreActors,
     };
 
     try {

@@ -36,12 +36,14 @@ export function reconcile(
   const pending = buffer.pendingAfter(auth.lastProcessedInputSeq);
 
   const tickDt = TICK_MS / 1000;
+  let t = buffer.serverTime;
   // agrupa de 2 em 2 (60 Hz → 30 Hz), aplica o último de cada grupo
   for (let i = 0; i < pending.length; ) {
     const batch = pending.slice(i, i + 2);
     i += batch.length;
     const latest = batch[batch.length - 1]!;
-    applyInput(replayed, latest, tickDt);
+    t += TICK_MS;
+    applyInput(replayed, latest, tickDt, { doorBits: buffer.doorBits, serverTime: t });
   }
 
   // se ainda há tecla segurada e não ficou pendente, garante 1 passo na direção atual
@@ -59,14 +61,20 @@ export function reconcile(
   const dx = prevX - replayed.x;
   const dy = prevY - replayed.y;
   const dist = Math.hypot(dx, dy);
-  if (dist > 1) {
+  // erro grande = snap (parede/teleporte) — não interpolar (causa tremor)
+  if (dist > 40) {
+    smooth.errX = 0;
+    smooth.errY = 0;
+    smooth.errAngle = 0;
+    smooth.t = 0;
+  } else if (dist > 1) {
     smooth.errX = dx;
     smooth.errY = dy;
     let da = prevA - replayed.angle;
     while (da > Math.PI) da -= Math.PI * 2;
     while (da < -Math.PI) da += Math.PI * 2;
     smooth.errAngle = da;
-    smooth.t = dist > 50 ? SMOOTH_MS * 1.4 : SMOOTH_MS;
+    smooth.t = SMOOTH_MS;
   }
 
   return replayed;

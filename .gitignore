@@ -12,3 +12,5 @@ client/dist/
 server/.wrangler/
 # pack completo Kenney (só usamos chars/ no jogo)
 client/public/assets/kenney/
+# zips/fonte dos sfx (só os .ogg mapeados vão no repo)
+client/public/assets/sfx/_src/

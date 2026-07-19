@@ -1,5 +1,5 @@
 /**
- * render.ts — mapa deserto tilemap, personagens 3/4 8-dir, arma em camada, feel.
+ * render.ts — mapa deserto tilemap, personagens estilo Gungeon (em pé), arma, feel.
  */
 import { ARENA_H, ARENA_W } from "../../../shared/constants";
 import { LOADOUTS, muzzlePoint, weaponOf } from "../../../shared/gear";
@@ -94,6 +94,12 @@ export interface RenderView {
   feel: FeelState;
   doorAnim: Map<number, number>; // id → 0 fechada .. 1 aberta
   roofAlpha: Map<number, number>; // building id → alpha
+  ammoDrops: { id: number; x: number; y: number; amount: number }[];
+  camZoom: number;
+  damageFlash: number;
+  hitFlashSelf: boolean;
+  drawDecals: (ctx: CanvasRenderingContext2D) => void;
+  drawGore: (ctx: CanvasRenderingContext2D) => void;
 }
 
 const LIGHT_DIR = { x: 0.35, y: 0.55 };
@@ -145,6 +151,12 @@ function drawGround(ctx: CanvasRenderingContext2D) {
         ctx.fillStyle = "rgba(0,0,0,0.06)";
         ctx.fillRect(tx * TILE + 4, ty * TILE + 8, 3, 2);
         ctx.fillRect(tx * TILE + 18, ty * TILE + 20, 4, 2);
+      }
+      // detalhe fixo por tile (semente do mapa)
+      if ((tx * 17 + ty * 31) % 8 === 0) {
+        ctx.fillStyle = "rgba(60,40,20,0.18)";
+        ctx.fillRect(tx * TILE + ((tx * 3) % 20), ty * TILE + ((ty * 5) % 22), 3, 2);
+        ctx.fillRect(tx * TILE + 10, ty * TILE + 14, 5, 1);
       }
     }
   }
@@ -202,20 +214,10 @@ function drawDoors(
   }
 }
 
-/** 8 dirs: 0=E, 1=SE, 2=S, 3=SO, 4=O, 5=NO, 6=N, 7=NE — a partir de angle (atan2, 0=+X). */
-function aimDir(angle: number): number {
-  return Math.round(angle / (Math.PI / 4)) & 7;
-}
-
-function moveDir(vx: number, vy: number, fallback: number): number {
-  if (Math.hypot(vx, vy) < 20) return fallback;
-  return Math.round(Math.atan2(vy, vx) / (Math.PI / 4)) & 7;
-}
-
-function dirAngle(dir: number): number {
-  return dir * (Math.PI / 4);
-}
-
+/**
+ * Arma em silhueta lateral (Gungeon): gira pela mira contínua.
+ * Pivô na mão; tip = muzzleForward - HAND (casa com muzzlePoint do shared).
+ */
 function drawWeaponLayer(
   ctx: CanvasRenderingContext2D,
   weaponId: number,
@@ -224,62 +226,113 @@ function drawWeaponLayer(
   muzzleFlash: boolean,
 ) {
   const w = weaponOf(weaponId);
-  const L = w.length;
-  const W = w.width;
-  const facingLeft = aim > Math.PI / 2 || aim < -Math.PI / 2;
+  const HAND = 10;
+  const tip = w.muzzleForward - HAND;
+  const facingLeft = Math.cos(aim) < 0;
+
   ctx.save();
+  ctx.translate(
+    Math.cos(aim) * HAND - Math.sin(aim) * (w.muzzleSide * 0.45),
+    Math.sin(aim) * HAND + Math.cos(aim) * (w.muzzleSide * 0.45),
+  );
   ctx.rotate(aim);
   if (facingLeft) ctx.scale(1, -1);
-  ctx.translate(-gunKick * 3.5, 0);
+  ctx.translate(-gunKick * 5, 0);
 
   ctx.fillStyle = w.color;
+
   if (weaponId === 0) {
-    ctx.fillRect(6, -W / 2, L * 0.55, W);
+    // pistola
+    ctx.fillRect(2, -4, tip * 0.55, 8);
     ctx.fillStyle = w.accent;
-    ctx.fillRect(6 + L * 0.35, -W * 0.8, 4, W * 1.6);
+    ctx.fillRect(2, 3, 5, 10);
+    ctx.fillRect(8, -8, 9, 4);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(2 + tip * 0.45, -2.5, tip * 0.45, 4);
   } else if (weaponId === 4) {
-    ctx.fillRect(8, -W / 2, L * 0.7, W);
+    // shotgun
+    ctx.fillRect(0, -5, tip * 0.8, 9);
+    ctx.fillStyle = "#3a2818";
+    ctx.fillRect(0, -5, 12, 9);
     ctx.fillStyle = w.accent;
-    ctx.fillRect(8 + L * 0.5, -W * 0.3, L * 0.35, W * 0.6);
+    ctx.fillRect(tip * 0.35, 4, 12, 7);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(tip * 0.7, -3.5, tip * 0.32, 5);
   } else if (weaponId === 5) {
-    ctx.fillRect(7, -W / 2, L * 0.65, W);
+    // SMG
+    ctx.fillRect(1, -4.5, tip * 0.75, 8);
     ctx.fillStyle = w.accent;
-    ctx.fillRect(7 + L * 0.25, W / 2, 5, W);
+    ctx.fillRect(tip * 0.25, 3, 6, 11);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(tip * 0.65, -2.5, tip * 0.35, 4.5);
   } else if (weaponId === 6) {
-    ctx.fillRect(8, -W / 2, L * 0.85, W * 0.8);
+    // sniper
+    ctx.fillRect(0, -4, tip * 0.94, 6.5);
+    ctx.fillStyle = "#2a2018";
+    ctx.fillRect(0, -4, 13, 6.5);
     ctx.fillStyle = w.accent;
-    ctx.fillRect(8 + L * 0.75, -1, L * 0.35, 2);
-  } else if (weaponId === 2) {
-    ctx.fillRect(8, -W / 2, L * 0.7, W);
+    ctx.fillRect(tip * 0.35, -9, 18, 5);
+    ctx.fillStyle = "#111";
+    ctx.fillRect(tip * 0.75, -2, tip * 0.35, 4);
+  } else if (weaponId === 3) {
+    // AK
+    ctx.fillRect(0, -4.5, tip * 0.82, 8);
+    ctx.fillStyle = "#3a2818";
+    ctx.fillRect(0, -4.5, 14, 8);
+    ctx.fillStyle = w.accent;
     ctx.beginPath();
-    ctx.moveTo(8 + L * 0.15, -W / 2);
-    ctx.lineTo(8 + L * 0.45, -W * 1.2);
-    ctx.lineTo(8 + L * 0.45, W / 2);
+    ctx.moveTo(tip * 0.35, 3);
+    ctx.lineTo(tip * 0.35 + 8, 3);
+    ctx.lineTo(tip * 0.35 + 11, 14);
+    ctx.lineTo(tip * 0.35 + 1, 13);
     ctx.closePath();
     ctx.fill();
-  } else {
-    ctx.fillRect(8, -W / 2, L * 0.75, W);
-    ctx.fillStyle = w.accent;
-    ctx.fillRect(8 + L * 0.55, -W * 1.1, 6, W * 0.7);
     ctx.fillStyle = "#222";
-    ctx.fillRect(8 + L * 0.7, -1.5, L * 0.25, 3);
+    ctx.fillRect(tip * 0.7, -2.5, tip * 0.32, 4.5);
+  } else if (weaponId === 2) {
+    // M16
+    ctx.fillRect(0, -4.5, tip * 0.84, 8);
+    ctx.fillStyle = "#2a2a20";
+    ctx.fillRect(0, -4.5, 12, 8);
+    ctx.fillStyle = w.color;
+    ctx.beginPath();
+    ctx.moveTo(12, -4.5);
+    ctx.lineTo(tip * 0.45, -9);
+    ctx.lineTo(tip * 0.45, 3);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = w.accent;
+    ctx.fillRect(tip * 0.35, 3, 6, 10);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(tip * 0.7, -2.5, tip * 0.34, 4.5);
+  } else {
+    // M4A1
+    ctx.fillRect(0, -4.5, tip * 0.82, 8);
+    ctx.fillStyle = "#1a1a1a";
+    ctx.fillRect(0, -4.5, 12, 8);
+    ctx.fillStyle = w.accent;
+    ctx.fillRect(tip * 0.3, -9, 12, 4.5);
+    ctx.fillRect(tip * 0.32, 3, 6, 10);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(tip * 0.7, -2.5, tip * 0.32, 4.5);
   }
 
   if (muzzleFlash) {
-    const tip = w.muzzleForward - 4;
-    const g = ctx.createRadialGradient(tip, 0, 0, tip, 0, 14);
+    const mx = tip;
+    const g = ctx.createRadialGradient(mx, 0, 0, mx, 0, 22);
     g.addColorStop(0, "rgba(255,230,120,0.95)");
     g.addColorStop(0.4, "rgba(255,140,40,0.55)");
     g.addColorStop(1, "rgba(255,80,0,0)");
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(tip, 0, 14, 0, Math.PI * 2);
+    ctx.arc(mx, 0, 22, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
 }
 
-function drawPerson34(
+/** Corpo em pé (estilo Gungeon): cabeça cima / pés baixo; flip L/R pela mira. */
+function drawPersonSide(
   ctx: CanvasRenderingContext2D,
   p: {
     id: number;
@@ -298,24 +351,20 @@ function drawPerson34(
 ) {
   const look = LOADOUTS[p.id % LOADOUTS.length]!;
   const speed = Math.hypot(p.vx ?? 0, p.vy ?? 0);
-  const bodyDir = aimDir(p.angle);
-  let legDir = moveDir(p.vx ?? 0, p.vy ?? 0, bodyDir);
-  // strafe: pernas vs mira > 90°
-  let da = Math.abs(((dirAngle(legDir) - p.angle + Math.PI) % (Math.PI * 2)) - Math.PI);
-  if (da > Math.PI / 2 && speed > 25) {
-    /* keep legDir from movement */
-  } else {
-    legDir = bodyDir;
-  }
+  const facingLeft = Math.cos(p.angle) < 0;
+  const gunBehind = Math.sin(p.angle) < -0.3;
 
   const bob = speed > 20 ? Math.sin(tMs * 0.02 + p.id) * 1.2 : 0;
   const idleScale = speed < 25 ? 1 + Math.sin(tMs * 0.004 + p.id) * 0.01 : 1;
   const runPhase = speed > 25 ? (tMs * 0.012 * (speed / 180)) % (Math.PI * 2) : 0;
-  const legSwing = Math.sin(runPhase) * Math.min(5, speed / 50);
+  const legSwing = speed > 25 ? Math.sin(runPhase) * Math.min(4.5, speed / 55) : 0;
   const bodyKick = isSelf ? feel.bodyKick * 1.5 : 0;
   const gunKick = isSelf ? feel.gunKick : 0;
   const kickX = -Math.cos(p.angle) * bodyKick;
   const kickY = -Math.sin(p.angle) * bodyKick;
+  const aimSkew = Math.cos(p.angle) >= 0 ? 0.06 : -0.06;
+  /** Corpo + leitura; arma usa muzzleForward maior (gear). */
+  const CHAR = 1.8;
 
   if (!p.alive) ctx.globalAlpha = 0.35;
 
@@ -324,8 +373,8 @@ function drawPerson34(
   ctx.ellipse(
     p.x + LIGHT_DIR.x * 8 + kickX,
     p.y + LIGHT_DIR.y * 8 + kickY,
-    11,
-    6,
+    17,
+    9,
     0,
     0,
     Math.PI * 2,
@@ -336,43 +385,60 @@ function drawPerson34(
   ctx.translate(p.x + kickX, p.y + bob + kickY);
   ctx.scale(1, idleScale);
 
-  // --- pernas (dir do movimento) ---
-  ctx.save();
-  ctx.rotate(dirAngle(legDir) + Math.PI / 2); // 3/4: “frente” do sprite pra baixo-ish
-  ctx.fillStyle = look.shoes;
-  ctx.fillRect(-5, 8 + legSwing, 4, 5);
-  ctx.fillRect(1, 8 - legSwing, 4, 5);
-  ctx.fillStyle = look.pants;
-  ctx.fillRect(-6, 2 + legSwing * 0.4, 5, 9);
-  ctx.fillRect(1, 2 - legSwing * 0.4, 5, 9);
-  ctx.restore();
+  // arma atrás do corpo quando mira pra cima
+  if (gunBehind) {
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf);
+  }
 
-  // --- tronco (dir da mira quantizada) ---
+  // corpo sempre em pé; espelha só esquerda/direita
   ctx.save();
-  ctx.rotate(dirAngle(bodyDir) + Math.PI / 2);
+  if (facingLeft) ctx.scale(-1, 1);
+  ctx.scale(CHAR, CHAR);
+  ctx.transform(1, 0, aimSkew, 1, 0, 0);
+
+  // pés (swing em X)
+  ctx.fillStyle = look.shoes;
+  ctx.fillRect(-3 + legSwing, 8, 4, 3);
+  ctx.fillRect(1 - legSwing, 8, 4, 3);
+
+  // pernas
+  ctx.fillStyle = look.pants;
+  ctx.fillRect(-2.5 + legSwing * 0.7, 1, 3.5, 8);
+  ctx.fillRect(0.5 - legSwing * 0.7, 1, 3.5, 8);
+
+  // tronco
   ctx.fillStyle = look.shirt;
-  ctx.fillRect(-8, -8, 16, 12);
-  // ombros
-  ctx.fillRect(-11, -6, 5, 7);
-  ctx.fillRect(6, -6, 5, 7);
-  // cabeça
+  ctx.fillRect(-5, -9, 10, 11);
+
+  // braços apontando pra arma (lado direito local = mira)
+  ctx.fillStyle = look.shirt;
+  ctx.fillRect(3, -7, 7, 3);
+  ctx.fillStyle = look.skin;
+  ctx.fillRect(8, -6.5, 4, 2.5);
+  // braço de trás (sutil)
+  ctx.fillStyle = look.shirt;
+  ctx.fillRect(-1, -5, 5, 2.5);
+
+  // cabeça no topo
   ctx.fillStyle = look.skin;
   ctx.beginPath();
-  ctx.arc(0, -12, 6, 0, Math.PI * 2);
+  ctx.arc(0, -14, 5.5, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = look.hair;
   ctx.beginPath();
-  ctx.arc(0, -14, 5.5, Math.PI * 1.1, Math.PI * 1.9);
+  ctx.arc(0, -15.5, 5.2, Math.PI * 1.05, Math.PI * 1.95);
   ctx.fill();
-  ctx.restore();
 
-  // --- arma (mira contínua) ---
-  drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf);
+  ctx.restore(); // fim flip corpo
+
+  if (!gunBehind) {
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf);
+  }
 
   if (isSelf) {
     ctx.strokeStyle = "rgba(77,155,230,0.65)";
     ctx.lineWidth = 1.5;
-    ctx.strokeRect(-14, -20, 28, 36);
+    ctx.strokeRect(-18, -34, 36, 54);
   }
 
   ctx.restore();
@@ -509,27 +575,34 @@ export function pulseShotFeel(feel: FeelState, weapon: number, isSelf: boolean) 
   });
 }
 
-export function tickFeel(feel: FeelState, dtMs: number, origin?: { x: number; y: number; angle: number }) {
+export function tickFeel(
+  feel: FeelState,
+  dtMs: number,
+  origin?: { x: number; y: number; angle: number },
+  onShellLand?: (x: number, y: number) => void,
+) {
   feel.gunKick = Math.max(0, feel.gunKick - dtMs / 90);
   feel.bodyKick = Math.max(0, feel.bodyKick - dtMs / 60);
   feel.shake *= Math.exp(-dtMs / 40);
   if (feel.shake < 0.05) feel.shake = 0;
-  feel.shells = feel.shells
-    .map((s) => {
-      if (origin && s.life === 400) {
-        const m = muzzlePoint(origin.x, origin.y, origin.angle, weaponOf(0));
-        s.x = m.x;
-        s.y = m.y;
-      }
-      return {
-        ...s,
-        x: s.x + s.vx * (dtMs / 1000),
-        y: s.y + s.vy * (dtMs / 1000),
-        vy: s.vy + 280 * (dtMs / 1000),
-        life: s.life - dtMs,
-      };
-    })
-    .filter((s) => s.life > 0);
+  const next: ShellCas[] = [];
+  for (const s of feel.shells) {
+    let sh = s;
+    if (origin && s.life >= 399) {
+      const m = muzzlePoint(origin.x, origin.y, origin.angle, weaponOf(0));
+      sh = { ...s, x: m.x, y: m.y };
+    }
+    sh = {
+      ...sh,
+      x: sh.x + sh.vx * (dtMs / 1000),
+      y: sh.y + sh.vy * (dtMs / 1000),
+      vy: sh.vy + 280 * (dtMs / 1000),
+      life: sh.life - dtMs,
+    };
+    if (sh.life <= 0) onShellLand?.(sh.x, sh.y);
+    else next.push(sh);
+  }
+  feel.shells = next;
 }
 
 export function tickDoorAnim(
@@ -585,12 +658,29 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   const shake = view.feel.shake;
   const sx = shake ? (Math.random() - 0.5) * shake * 2 : 0;
   const sy = shake ? (Math.random() - 0.5) * shake * 2 : 0;
+  const z = view.camZoom || 1;
+  const zx = (ARENA_W * (1 - z)) / 2;
+  const zy = (ARENA_H * (1 - z)) / 2;
 
-  ctx.setTransform(scale, 0, 0, scale, ox + sx * scale, oy + sy * scale);
+  ctx.setTransform(scale * z, 0, 0, scale * z, ox + sx * scale - zx * scale, oy + sy * scale - zy * scale);
 
   drawGround(ctx);
+  view.drawDecals(ctx);
   drawSolids(ctx);
   drawDoors(ctx, view.doorsBits, view.doorAnim);
+
+  // drops de munição
+  for (const d of view.ammoDrops) {
+    const bob = Math.sin(tMs * 0.006 + d.id) * 3;
+    ctx.fillStyle = LOSPEC.shadow;
+    ctx.beginPath();
+    ctx.ellipse(d.x, d.y + 6, 8, 3, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "#E8A838";
+    ctx.fillRect(d.x - 7, d.y - 6 + bob, 14, 10);
+    ctx.fillStyle = "#2a2010";
+    ctx.fillRect(d.x - 5, d.y - 3 + bob, 10, 5);
+  }
 
   // throwables
   for (const t of view.throwables) {
@@ -600,14 +690,16 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     ctx.fill();
   }
 
+  view.drawGore(ctx);
+
   const selfMuzzle = view.flashes.some((f) => f.t > 30);
 
   if (view.local) {
-    drawPerson34(ctx, { ...view.local, id: view.selfId }, tMs, true, selfMuzzle, view.feel);
+    drawPersonSide(ctx, { ...view.local, id: view.selfId }, tMs, true, selfMuzzle, view.feel);
   }
   for (const r of view.remotes) {
     const muzzle = view.events.some((e) => e.kind === "shot" && e.a === r.id);
-    drawPerson34(
+    drawPersonSide(
       ctx,
       { ...r, weapon: r.weapon ?? 0 },
       tMs,
@@ -689,6 +781,26 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   if (view.local) {
     drawVisionMask(ctx, view.local.x, view.local.y, view.doorsBits);
+  }
+
+  // vinheta
+  const vg = ctx.createRadialGradient(
+    ARENA_W / 2,
+    ARENA_H / 2,
+    ARENA_H * 0.25,
+    ARENA_W / 2,
+    ARENA_H / 2,
+    ARENA_W * 0.72,
+  );
+  vg.addColorStop(0, "rgba(0,0,0,0)");
+  vg.addColorStop(1, "rgba(0,0,0,0.18)");
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+
+  if (view.damageFlash > 0 || view.hitFlashSelf) {
+    ctx.strokeStyle = `rgba(180,20,20,${0.25 * Math.max(view.damageFlash, view.hitFlashSelf ? 1 : 0)})`;
+    ctx.lineWidth = 18;
+    ctx.strokeRect(8, 8, ARENA_W - 16, ARENA_H - 16);
   }
 
   if (view.flashBlind > 0) {

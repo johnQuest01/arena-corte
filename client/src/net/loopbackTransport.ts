@@ -151,6 +151,7 @@ export class LoopbackTransport implements Transport {
         fire: this.sim.tick % 50 === p.id * 7,
         sprint: false,
         use: false,
+        reload: false,
         weapon: p.weapon,
         throw: 0,
         clientTime: performance.now(),

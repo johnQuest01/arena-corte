@@ -182,20 +182,92 @@ export function circleRect(
   return dx * dx + dy * dy < r * r;
 }
 
-export function solidRects(doorBits: number): { x: number; y: number; w: number; h: number }[] {
-  const out: { x: number; y: number; w: number; h: number }[] = [];
+/**
+ * Funde tiles sólidos em AABBs maiores (por linha, depois vertical).
+ * Evita ping-pong entre tiles vizinhos que teleporta o player.
+ */
+function mergeSolidTiles(): { x: number; y: number; w: number; h: number }[] {
+  const rowSpans: { tx: number; ty: number; tw: number }[] = [];
   for (let ty = 0; ty < MAP_H; ty++) {
-    for (let tx = 0; tx < MAP_W; tx++) {
-      const t = SOLID[ty]![tx]!;
-      if (!isSolidTile(t)) continue;
-      out.push({ x: tx * TILE, y: ty * TILE, w: TILE, h: TILE });
+    let start = -1;
+    for (let tx = 0; tx <= MAP_W; tx++) {
+      const solid = tx < MAP_W && isSolidTile(SOLID[ty]![tx]!);
+      if (solid && start < 0) start = tx;
+      if (!solid && start >= 0) {
+        rowSpans.push({ tx: start, ty, tw: tx - start });
+        start = -1;
+      }
     }
   }
+
+  // funde spans empilhados com mesmo tx/tw
+  const used = new Array(rowSpans.length).fill(false);
+  const out: { x: number; y: number; w: number; h: number }[] = [];
+  for (let i = 0; i < rowSpans.length; i++) {
+    if (used[i]) continue;
+    const a = rowSpans[i]!;
+    let th = 1;
+    used[i] = true;
+    for (let j = i + 1; j < rowSpans.length; j++) {
+      if (used[j]) continue;
+      const b = rowSpans[j]!;
+      if (b.tx === a.tx && b.tw === a.tw && b.ty === a.ty + th) {
+        used[j] = true;
+        th++;
+      }
+    }
+    out.push({
+      x: a.tx * TILE,
+      y: a.ty * TILE,
+      w: a.tw * TILE,
+      h: th * TILE,
+    });
+  }
+  return out;
+}
+
+const MERGED_SOLIDS = mergeSolidTiles();
+
+export function solidRects(doorBits: number): { x: number; y: number; w: number; h: number }[] {
+  const out = MERGED_SOLIDS.slice();
   for (const d of DOOR_DEFS) {
     if (doorBits & (1 << d.id)) continue;
     out.push(doorWorldRect(d));
   }
   return out;
+}
+
+/** Empurra o círculo para fora do AABB pelo vetor de menor penetração. */
+function separateCircleRect(
+  px: number,
+  py: number,
+  r: number,
+  o: { x: number; y: number; w: number; h: number },
+): { x: number; y: number; hit: boolean } {
+  const nearestX = clamp(px, o.x, o.x + o.w);
+  const nearestY = clamp(py, o.y, o.y + o.h);
+  let dx = px - nearestX;
+  let dy = py - nearestY;
+  const distSq = dx * dx + dy * dy;
+
+  // centro fora do retângulo
+  if (distSq > 1e-8) {
+    if (distSq >= r * r) return { x: px, y: py, hit: false };
+    const dist = Math.sqrt(distSq);
+    const pen = r - dist;
+    return { x: px + (dx / dist) * pen, y: py + (dy / dist) * pen, hit: true };
+  }
+
+  // centro dentro — sai pelo eixo de menor penetração (não teleporta pelo tile)
+  const penL = px - o.x + r;
+  const penR = o.x + o.w - px + r;
+  const penT = py - o.y + r;
+  const penB = o.y + o.h - py + r;
+  const m = Math.min(penL, penR, penT, penB);
+  if (m === penL) return { x: o.x - r, y: py, hit: true };
+  if (m === penR) return { x: o.x + o.w + r, y: py, hit: true };
+  if (m === penT) return { x: px, y: o.y - r, hit: true };
+  return { x: px, y: o.y + o.h + r, hit: true };
 }
 
 export function resolveWalls(
@@ -206,19 +278,21 @@ export function resolveWalls(
 ): { x: number; y: number } {
   let px = clamp(x, r, ARENA_W - r);
   let py = clamp(y, r, ARENA_H - r);
-  for (const o of solidRects(doorBits)) {
-    if (!circleRect(px, py, r, o)) continue;
-    const left = Math.abs(px - o.x);
-    const right = Math.abs(px - (o.x + o.w));
-    const top = Math.abs(py - o.y);
-    const bottom = Math.abs(py - (o.y + o.h));
-    const m = Math.min(left, right, top, bottom);
-    if (m === left) px = o.x - r;
-    else if (m === right) px = o.x + o.w + r;
-    else if (m === top) py = o.y - r;
-    else py = o.y + o.h + r;
-    px = clamp(px, r, ARENA_W - r);
-    py = clamp(py, r, ARENA_H - r);
+  const solids = solidRects(doorBits);
+
+  // várias passadas: cantos / vários AABBs
+  for (let iter = 0; iter < 6; iter++) {
+    let moved = false;
+    for (const o of solids) {
+      const next = separateCircleRect(px, py, r, o);
+      if (!next.hit) continue;
+      px = next.x;
+      py = next.y;
+      px = clamp(px, r, ARENA_W - r);
+      py = clamp(py, r, ARENA_H - r);
+      moved = true;
+    }
+    if (!moved) break;
   }
   return { x: px, y: py };
 }

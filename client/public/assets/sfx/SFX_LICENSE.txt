@@ -1,0 +1,24 @@
+﻿Kenney.nl audio packs (Creative Commons CC0 1.0)
+Credit Kenney.nl is appreciated but not required.
+
+Sources:
+- Impact Sounds — https://kenney.nl/assets/impact-sounds
+- Interface Sounds — https://kenney.nl/assets/interface-sounds
+- Digital Audio — https://kenney.nl/assets/digital-audio
+- RPG Audio — https://kenney.nl/assets/rpg-audio
+
+Mapped files in this folder:
+  pistol.ogg      ← impactTin_medium_003.ogg
+  m4a1.ogg        ← impactMetal_medium_002.ogg
+  m16.ogg         ← impactPlate_medium_001.ogg
+  ak47.ogg        ← impactMetal_heavy_000.ogg
+  shotgun.ogg     ← impactMining_002.ogg
+  smg.ogg         ← impactMetal_light_004.ogg
+  sniper.ogg      ← impactPlate_heavy_003.ogg
+  reload.ogg      ← metalClick.ogg (RPG)
+  empty_click.ogg ← click_002.ogg (Interface)
+  pickup.ogg      ← confirmation_002.ogg (Interface)
+  explosion.ogg   ← spaceTrash4.ogg (Digital)
+  hit_flesh.ogg   ← impactPunch_medium_002.ogg
+  door.ogg        ← doorOpen_1.ogg (RPG)
+  footstep_1..3   ← footstep_concrete_000..002.ogg

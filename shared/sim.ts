@@ -25,14 +25,22 @@ import {
   TIRED_MULT,
   TIRED_THRESHOLD,
   WEAPONS,
+  fillAmmo,
   muzzlePoint,
   weaponOf,
   type ThrowId,
 } from "./gear";
 import {
+  BUILDINGS,
   DOOR_DEFS,
+  MAP_H,
+  MAP_W,
+  SOLID,
+  TILE,
+  buildingAt,
   doorsBitfield,
   hitsSolid,
+  isSolidTile,
   resolveWalls,
 } from "./map";
 import type {
@@ -68,6 +76,15 @@ export interface SimPlayer extends PlayerState {
   inputQueue: PlayerInput[];
   throwCd: number;
   flashUntil: number;
+  /** serverTime em que o reload termina; 0 = idle */
+  reloadingUntil: number;
+}
+export interface AmmoDrop {
+  id: number;
+  x: number;
+  y: number;
+  amount: number;
+  spawnAt: number;
 }
 export interface GameSim {
   tick: number;
@@ -80,8 +97,11 @@ export interface GameSim {
   fires: FirePool[];
   smokes: SmokeCloud[];
   doors: SimDoor[];
+  ammoDrops: AmmoDrop[];
   nextBulletId: number;
   nextThrowId: number;
+  nextDropId: number;
+  nextDropAt: number;
   events: TickEvent[];
 }
 function clamp(v: number, a: number, b: number) {
@@ -102,8 +122,11 @@ export function createSim(): GameSim {
     fires: [],
     smokes: [],
     doors: DOOR_DEFS.map((d) => ({ id: d.id, open: false, lastUseAt: 0 })),
+    ammoDrops: [],
     nextBulletId: 1,
     nextThrowId: 1,
+    nextDropId: 1,
+    nextDropAt: 0,
     events: [],
   };
 }
@@ -111,6 +134,8 @@ export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
   if (sim.players.length >= MAX_PLAYERS) return null;
   const id = sim.players.length;
   const spawn = SPAWNS[id % SPAWNS.length]!;
+  const weapon = id % WEAPONS.length;
+  const ammo = fillAmmo(weapon);
   const p: SimPlayer = {
     id,
     name,
@@ -124,12 +149,15 @@ export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
     alive: true,
     lastProcessedInputSeq: 0,
     fireCd: 0,
-    weapon: id % WEAPONS.length,
+    weapon,
     stamina: MAX_STAMINA,
+    mag: ammo.mag,
+    reserve: ammo.reserve,
     respawnAt: 0,
     inputQueue: [],
     throwCd: 0,
     flashUntil: 0,
+    reloadingUntil: 0,
   };
   sim.players.push(p);
   return p;
@@ -184,31 +212,57 @@ export function applyInput(
     | "lastProcessedInputSeq"
     | "weapon"
     | "stamina"
-  > & { throwCd?: number },
+    | "mag"
+    | "reserve"
+  > & { throwCd?: number; reloadingUntil?: number },
   input: PlayerInput,
   dt: number,
   opts?: {
     spawnBullet?: (angle: number, x: number, y: number, weapon: number) => void;
     spawnThrow?: (kind: number, angle: number, x: number, y: number) => void;
     onUse?: () => void;
+    onReloadStart?: () => void;
+    onEmptyClick?: () => void;
     doorBits?: number;
+    serverTime?: number;
   },
 ) {
   if (!p.alive) {
     p.lastProcessedInputSeq = input.seq;
     return;
   }
-  p.weapon = clamp(input.weapon | 0, 0, WEAPONS.length - 1);
+  const now = opts?.serverTime ?? 0;
+  if (p.reloadingUntil == null) p.reloadingUntil = 0;
+  const prevWeapon = p.weapon;
+  const nextWeapon = clamp(input.weapon | 0, 0, WEAPONS.length - 1);
+  if (nextWeapon !== prevWeapon) {
+    p.weapon = nextWeapon;
+    p.reloadingUntil = 0;
+    // troca cancela reload; ajusta caps da nova arma
+    const nw = weaponOf(p.weapon);
+    p.mag = Math.min(nw.magSize, p.mag);
+    p.reserve = Math.min(nw.reserveMax, p.reserve);
+  }
   const wpn = weaponOf(p.weapon);
   const bits = opts?.doorBits ?? 0;
+
+  // completar reload
+  if (p.reloadingUntil > 0 && now >= p.reloadingUntil) {
+    const need = wpn.magSize - p.mag;
+    const take = Math.min(need, p.reserve);
+    p.mag += take;
+    p.reserve -= take;
+    p.reloadingUntil = 0;
+  }
+
   let mx = clamp(input.dx, -1, 1);
   let my = clamp(input.dy, -1, 1);
-  const mag = Math.hypot(mx, my);
-  if (mag > 1) {
-    mx /= mag;
-    my /= mag;
+  const moveMag = Math.hypot(mx, my);
+  if (moveMag > 1) {
+    mx /= moveMag;
+    my /= moveMag;
   }
-  const moving = mag > 0.1;
+  const moving = moveMag > 0.1;
   const canSprint = input.sprint && moving && p.stamina > TIRED_THRESHOLD;
   let speedMult = 1;
   if (canSprint) {
@@ -230,10 +284,30 @@ export function applyInput(
   p.fireCd = Math.max(0, p.fireCd - dt * 1000);
   p.throwCd = Math.max(0, (p.throwCd ?? 0) - dt * 1000);
   if (input.use) opts?.onUse?.();
+
+  const reloading = p.reloadingUntil > 0 && now < p.reloadingUntil;
+
+  const startReload = () => {
+    if (reloading || p.reserve <= 0 || p.mag >= wpn.magSize) return;
+    p.reloadingUntil = now + wpn.reloadMs;
+    opts?.onReloadStart?.();
+  };
+
+  if (input.reload) startReload();
+
   if (input.fire && p.fireCd <= 0) {
-    p.fireCd = wpn.cooldownMs;
-    const m = muzzlePoint(p.x, p.y, p.angle, wpn);
-    opts?.spawnBullet?.(p.angle, m.x, m.y, p.weapon);
+    if (reloading) {
+      // trava
+    } else if (p.mag <= 0) {
+      opts?.onEmptyClick?.();
+      startReload();
+      p.fireCd = 180;
+    } else {
+      p.mag -= 1;
+      p.fireCd = wpn.cooldownMs;
+      const m = muzzlePoint(p.x, p.y, p.angle, wpn);
+      opts?.spawnBullet?.(p.angle, m.x, m.y, p.weapon);
+    }
   }
   if (input.throw >= 1 && input.throw <= 4 && (p.throwCd ?? 0) <= 0) {
     p.throwCd = 2200;
@@ -264,11 +338,17 @@ export function startMatch(sim: GameSim) {
     p.throwCd = 0;
     p.stamina = MAX_STAMINA;
     p.weapon = i % WEAPONS.length;
+    const ammo = fillAmmo(p.weapon);
+    p.mag = ammo.mag;
+    p.reserve = ammo.reserve;
+    p.reloadingUntil = 0;
     p.respawnAt = 0;
     p.flashUntil = 0;
     p.inputQueue = [];
     p.lastProcessedInputSeq = 0;
   });
+  sim.ammoDrops = [];
+  sim.nextDropAt = 2000 + Math.random() * 4000;
   return true;
 }
 export type HitTestFn = (
@@ -279,9 +359,17 @@ export type HitTestFn = (
   clientTime: number,
   doorBits: number,
 ) => { hitId: number; x: number; y: number } | null;
-function damagePlayer(sim: GameSim, target: SimPlayer, amount: number, killerId: number) {
+function damagePlayer(
+  sim: GameSim,
+  target: SimPlayer,
+  amount: number,
+  killerId: number,
+  weaponId = 0,
+  cause: "weapon" | "explosion" | "fire" = "weapon",
+) {
   if (!target.alive) return;
   target.hp -= amount;
+  const causeCode = cause === "explosion" ? 100 : cause === "fire" ? 101 : weaponId;
   if (target.hp <= 0) {
     target.hp = 0;
     target.alive = false;
@@ -294,6 +382,7 @@ function damagePlayer(sim: GameSim, target: SimPlayer, amount: number, killerId:
       b: target.id,
       x: target.x,
       y: target.y,
+      weaponId: causeCode,
     });
   }
 }
@@ -307,8 +396,15 @@ function detonate(sim: GameSim, t: ThrowableState) {
       const d = Math.hypot(p.x - t.x, p.y - t.y);
       if (d < def.radius) {
         const falloff = 1 - d / def.radius;
-        damagePlayer(sim, p, Math.round(55 * falloff), t.owner);
-        sim.events.push({ kind: "hit", a: t.owner, b: p.id, x: p.x, y: p.y });
+        damagePlayer(sim, p, Math.round(55 * falloff), t.owner, 0, "explosion");
+        sim.events.push({
+          kind: "hit",
+          a: t.owner,
+          b: p.id,
+          x: p.x,
+          y: p.y,
+          weaponId: 100,
+        });
       }
     }
   } else if (t.kind === 2) {
@@ -348,15 +444,22 @@ function spawnPellets(
     }
     const a = angle + spread;
     if (i === 0) {
-      sim.events.push({ kind: "shot", a: p.id, b: weapon, x: ox, y: oy });
+      sim.events.push({ kind: "shot", a: p.id, b: weapon, x: ox, y: oy, weaponId: weapon });
     }
     if (hitTest) {
       const hit = hitTest(p.id, ox, oy, a, clientTime, bits);
       if (hit) {
         const target = sim.players.find((t) => t.id === hit.hitId);
         if (target && target.alive) {
-          damagePlayer(sim, target, wpn.damage, p.id);
-          sim.events.push({ kind: "hit", a: p.id, b: target.id, x: hit.x, y: hit.y });
+          damagePlayer(sim, target, wpn.damage, p.id, weapon);
+          sim.events.push({
+            kind: "hit",
+            a: p.id,
+            b: target.id,
+            x: hit.x,
+            y: hit.y,
+            weaponId: weapon,
+          });
           continue;
         }
       }
@@ -393,6 +496,10 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
       p.hp = MAX_HP;
       p.alive = true;
       p.stamina = MAX_STAMINA;
+      const ammo = fillAmmo(p.weapon);
+      p.mag = ammo.mag;
+      p.reserve = ammo.reserve;
+      p.reloadingUntil = 0;
       p.respawnAt = 0;
       sim.events.push({ kind: "respawn", a: p.id, b: 0, x: p.x, y: p.y });
     }
@@ -403,16 +510,35 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     let wantFire = false;
     let wantThrow = 0;
     let wantUse = false;
+    let wantReload = false;
     while (p.inputQueue.length) {
       latest = p.inputQueue.shift()!;
       if (latest.fire) wantFire = true;
       if (latest.throw >= 1) wantThrow = latest.throw;
       if (latest.use) wantUse = true;
+      if (latest.reload) wantReload = true;
     }
-    const merged = { ...latest, fire: wantFire, throw: wantThrow, use: wantUse };
+    const merged = {
+      ...latest,
+      fire: wantFire,
+      throw: wantThrow,
+      use: wantUse,
+      reload: wantReload,
+    };
     applyInput(p, merged, dt, {
       doorBits: bits,
+      serverTime: sim.serverTime,
       onUse: () => tryUseDoor(sim, p),
+      onReloadStart: () => {
+        sim.events.push({
+          kind: "reloadStart",
+          a: p.id,
+          b: p.weapon,
+          x: p.x,
+          y: p.y,
+          weaponId: p.weapon,
+        });
+      },
       spawnBullet: (angle, x, y, weapon) => {
         spawnPellets(sim, p, angle, x, y, weapon, merged.clientTime, hitTest);
       },
@@ -432,6 +558,9 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
       },
     });
   }
+
+  // drops de munição
+  tickAmmoDrops(sim, dt);
   // auto-close portas
   for (const door of sim.doors) {
     if (!door.open || door.lastUseAt <= 0) continue;
@@ -471,7 +600,14 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     }
     if (b.x < 0 || b.y < 0 || b.x > ARENA_W || b.y > ARENA_H) continue;
     if (hitsSolid(b.x, b.y, BULLET_R, bitsAfter)) {
-      sim.events.push({ kind: "hit", a: b.owner, b: 255, x: b.x, y: b.y });
+      sim.events.push({
+        kind: "hit",
+        a: b.owner,
+        b: 255,
+        x: b.x,
+        y: b.y,
+        weaponId: b.weapon,
+      });
       continue;
     }
     let consumed = false;
@@ -479,8 +615,15 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     for (const t of sim.players) {
       if (!t.alive || t.id === b.owner) continue;
       if (Math.hypot(t.x - b.x, t.y - b.y) < PLAYER_R + BULLET_R) {
-        damagePlayer(sim, t, dmg, b.owner);
-        sim.events.push({ kind: "hit", a: b.owner, b: t.id, x: b.x, y: b.y });
+        damagePlayer(sim, t, dmg, b.owner, b.weapon);
+        sim.events.push({
+          kind: "hit",
+          a: b.owner,
+          b: t.id,
+          x: b.x,
+          y: b.y,
+          weaponId: b.weapon,
+        });
         consumed = true;
         break;
       }
@@ -510,7 +653,7 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     for (const p of sim.players) {
       if (!p.alive) continue;
       if (Math.hypot(p.x - f.x, p.y - f.y) < f.r) {
-        damagePlayer(sim, p, 12 * dt, f.owner);
+        damagePlayer(sim, p, 12 * dt, f.owner, 0, "fire");
       }
     }
     return true;
@@ -544,12 +687,82 @@ export function toSnapshot(sim: GameSim): Snapshot {
       fireCd: p.fireCd,
       weapon: p.weapon,
       stamina: p.stamina,
+      mag: p.mag,
+      reserve: p.reserve,
     })),
     bullets: sim.bullets.map((b) => ({ ...b })),
     throwables: sim.throwables.map((t) => ({ ...t })),
     events: [...sim.events],
     doorsBits: doorBitsOf(sim),
   };
+}
+
+function pickDropTile(): { x: number; y: number } | null {
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const tx = 1 + Math.floor(Math.random() * (MAP_W - 2));
+    const ty = 1 + Math.floor(Math.random() * (MAP_H - 2));
+    if (isSolidTile(SOLID[ty]![tx]!)) continue;
+    const inside = buildingAt(tx * TILE + 16, ty * TILE + 16);
+    if (inside != null && Math.random() < 0.5) continue;
+    // evita spawn em interior se quiser open field — 50% já filtrado
+    void BUILDINGS;
+    return { x: tx * TILE + 16, y: ty * TILE + 16 };
+  }
+  return null;
+}
+
+function tickAmmoDrops(sim: GameSim, dt: number) {
+  // despawn 30s
+  sim.ammoDrops = sim.ammoDrops.filter((d) => {
+    if (sim.serverTime - d.spawnAt > 30000) return false;
+    return true;
+  });
+
+  if (sim.nextDropAt <= 0) sim.nextDropAt = sim.serverTime + 12000 + Math.random() * 6000;
+  if (sim.serverTime >= sim.nextDropAt && sim.ammoDrops.length < 5) {
+    const pos = pickDropTile();
+    if (pos) {
+      const amount = 20 + Math.floor(Math.random() * 21);
+      const drop: AmmoDrop = {
+        id: sim.nextDropId++,
+        x: pos.x,
+        y: pos.y,
+        amount,
+        spawnAt: sim.serverTime,
+      };
+      sim.ammoDrops.push(drop);
+      sim.events.push({
+        kind: "dropSpawn",
+        a: drop.id,
+        b: amount,
+        x: drop.x,
+        y: drop.y,
+      });
+    }
+    sim.nextDropAt = sim.serverTime + 12000 + Math.random() * 6000;
+  }
+
+  for (const p of sim.players) {
+    if (!p.alive) continue;
+    const wpn = weaponOf(p.weapon);
+    for (let i = sim.ammoDrops.length - 1; i >= 0; i--) {
+      const d = sim.ammoDrops[i]!;
+      if (Math.hypot(p.x - d.x, p.y - d.y) > 16) continue;
+      if (p.reserve >= wpn.reserveMax) continue;
+      const room = wpn.reserveMax - p.reserve;
+      const take = Math.min(room, d.amount);
+      p.reserve += take;
+      sim.events.push({
+        kind: "dropTaken",
+        a: d.id,
+        b: p.id,
+        x: d.x,
+        y: d.y,
+      });
+      sim.ammoDrops.splice(i, 1);
+    }
+  }
+  void dt;
 }
 export function clonePlayerState(p: PlayerState): PlayerState {
   return { ...p };

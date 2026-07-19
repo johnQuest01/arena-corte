@@ -7,6 +7,7 @@ export interface RawInput {
   fire: boolean;
   sprint: boolean;
   use: boolean;
+  reload: boolean;
   weapon: number;
   throw: number;
 }
@@ -34,6 +35,7 @@ const EXTRA_CODES = new Set([
   "Digit6",
   "Digit7",
   "KeyE",
+  "KeyR",
   "KeyG",
   "KeyF",
   "KeyC",
@@ -48,6 +50,7 @@ export class InputController {
   weapon = 0;
   private throwPulse = 0;
   private usePulse = false;
+  private reloadPulse = false;
   touchMove = { x: 0, y: 0, active: false };
   touchAim = { x: 0, y: 0, active: false, firing: false };
   private canvas: HTMLCanvasElement | null = null;
@@ -75,6 +78,7 @@ export class InputController {
       6: "Digit6",
       7: "Digit7",
       e: "KeyE",
+      r: "KeyR",
       g: "KeyG",
       f: "KeyF",
       c: "KeyC",
@@ -101,6 +105,7 @@ export class InputController {
     if (code === "Digit6") this.weapon = 5;
     if (code === "Digit7") this.weapon = 6;
     if (code === "KeyE") this.usePulse = true;
+    if (code === "KeyR") this.reloadPulse = true;
     if (code === "KeyG") this.throwPulse = 1;
     if (code === "KeyF") this.throwPulse = 2;
     if (code === "KeyC") this.throwPulse = 3;
@@ -233,6 +238,8 @@ export class InputController {
     this.throwPulse = 0;
     const use = this.usePulse;
     this.usePulse = false;
+    const reload = this.reloadPulse;
+    this.reloadPulse = false;
 
     return {
       dx,
@@ -241,6 +248,7 @@ export class InputController {
       fire: this.mouseDown || this.touchAim.firing || this.down.has("Space"),
       sprint: this.down.has("ShiftLeft") || this.down.has("ShiftRight"),
       use,
+      reload,
       weapon: this.weapon,
       throw: thr,
     };

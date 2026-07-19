@@ -41,6 +41,8 @@ export function App() {
   const [warning, setWarning] = useState<string | null>(null);
   const [lastOverride, setLastOverride] = useState<ModeOverride>("auto");
   const [hostInfoUrl, setHostInfoUrl] = useState<string | null>(null);
+  const [muted, setMuted] = useState(false);
+  const [masterVol, setMasterVol] = useState(0.85);
 
   useEffect(() => {
     // se a página veio do host LAN, captura info
@@ -105,6 +107,9 @@ export function App() {
         selfHp: 100,
         stamina: 100,
         weaponName: "Pistola",
+        mag: 0,
+        reserve: 0,
+        reloadProgress: 0,
         error: "Canvas não disponível",
       });
       return;
@@ -125,6 +130,9 @@ export function App() {
         selfHp: 100,
         stamina: 100,
         weaponName: "Pistola",
+        mag: 0,
+        reserve: 0,
+        reloadProgress: 0,
         error: e instanceof Error ? e.message : "falha ao conectar",
       });
     }
@@ -216,6 +224,17 @@ export function App() {
             onStart={() => clientRef.current?.startMatch()}
             onRematch={() => clientRef.current?.startMatch()}
             onLeave={leave}
+            muted={muted}
+            masterVol={masterVol}
+            onMuteToggle={() => {
+              const next = !muted;
+              setMuted(next);
+              clientRef.current?.setMuted(next);
+            }}
+            onVolume={(v) => {
+              setMasterVol(v);
+              clientRef.current?.setVolume(v);
+            }}
           />
         )}
         <div className="arena-wrap">

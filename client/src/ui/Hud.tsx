@@ -11,9 +11,22 @@ interface Props {
   onStart: () => void;
   onRematch?: () => void;
   onLeave: () => void;
+  muted?: boolean;
+  masterVol?: number;
+  onMuteToggle?: () => void;
+  onVolume?: (v: number) => void;
 }
 
-export function Hud({ hud, onStart, onRematch, onLeave }: Props) {
+export function Hud({
+  hud,
+  onStart,
+  onRematch,
+  onLeave,
+  muted = false,
+  masterVol = 0.85,
+  onMuteToggle,
+  onVolume,
+}: Props) {
   const players = hud.lobby?.players ?? hud.snapshot?.players.map((p) => ({
     id: p.id,
     name: `P${p.id + 1}`,
@@ -54,6 +67,23 @@ export function Hud({ hud, onStart, onRematch, onLeave }: Props) {
             </span>
           )}
           <span className={`ping ${pingClass(hud.ping)}`}>{hud.ping}ms</span>
+          {onMuteToggle && (
+            <button type="button" className="ghost" onClick={onMuteToggle}>
+              {muted ? "som off" : "som"}
+            </button>
+          )}
+          {onVolume && (
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={masterVol}
+              onChange={(e) => onVolume(Number(e.target.value))}
+              title="volume"
+              style={{ width: 72 }}
+            />
+          )}
           <button type="button" className="ghost" onClick={onLeave}>
             Sair
           </button>
@@ -150,8 +180,25 @@ export function Hud({ hud, onStart, onRematch, onLeave }: Props) {
             </div>
           ) : (
             <div className="hint mono" style={{ textAlign: "right" }}>
-              <div>{hud.weaponName ?? "Pistola"} · 1-7 arma</div>
-              <div>shift corre · e porta · g/f/c/v throw</div>
+              <div style={{ fontSize: "1.35rem", fontWeight: 700 }}>
+                <span style={{ color: (hud.mag ?? 0) === 0 ? "var(--danger)" : "var(--giz)" }}>
+                  {hud.mag ?? 0}
+                </span>
+                <span style={{ color: "var(--muted)" }}> / {hud.reserve ?? 0}</span>
+              </div>
+              <div>{hud.weaponName ?? "Pistola"} · 1-7 · R reload</div>
+              {(hud.reloadProgress ?? 0) > 0 && (
+                <div className="hp-bar" style={{ width: 120, marginLeft: "auto", marginTop: 4 }}>
+                  <div
+                    className="hp-fill"
+                    style={{
+                      width: `${Math.round((hud.reloadProgress ?? 0) * 100)}%`,
+                      background: "linear-gradient(90deg, #E8A838, #C45C5C)",
+                    }}
+                  />
+                </div>
+              )}
+              <div>shift · e porta · g/f/c/v throw</div>
             </div>
           )}
         </div>

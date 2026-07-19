@@ -24,8 +24,10 @@ export interface PlayerInput {
   aim: number;
   fire: boolean;
   sprint: boolean;
-  /** tecla E â€” abrir/fechar porta */
+  /** tecla E — abrir/fechar porta */
   use: boolean;
+  /** tecla R — recarregar */
+  reload: boolean;
   weapon: number; // 0..6
   throw: number; // 0 none, 1-4 throwable
   clientTime: number;
@@ -44,6 +46,8 @@ export interface PlayerState {
   fireCd: number;
   weapon: number;
   stamina: number;
+  mag: number;
+  reserve: number;
 }
 export interface BulletState {
   id: number;
@@ -79,13 +83,18 @@ export type EventKind =
   | "smoke"
   | "fire"
   | "doorOpen"
-  | "doorClose";
+  | "doorClose"
+  | "reloadStart"
+  | "dropSpawn"
+  | "dropTaken";
 export interface TickEvent {
   kind: EventKind;
   a: number;
   b: number;
   x: number;
   y: number;
+  /** arma/causa (hit/death/shot) — packed no u16 reservado */
+  weaponId?: number;
 }
 export interface Snapshot {
   tick: number;
@@ -126,9 +135,12 @@ export function encodeInput(input: PlayerInput): ArrayBuffer {
   v.setFloat32(o, f32(input.aim), true);
   o += 4;
   const flags =
-    (input.fire ? 1 : 0) | (input.sprint ? 2 : 0) | (input.use ? 4 : 0);
+    (input.fire ? 1 : 0) |
+    (input.sprint ? 2 : 0) |
+    (input.use ? 4 : 0) |
+    (input.reload ? 8 : 0);
   v.setUint8(o++, flags);
-  v.setUint8(o++, 0); // pad (era sprint byte)
+  v.setUint8(o++, 0); // pad
   v.setUint8(o++, input.weapon & 0xff);
   v.setUint8(o++, input.throw & 0xff);
   v.setFloat64(o, input.clientTime, true);
@@ -160,6 +172,7 @@ export function decodeInput(buf: ArrayBuffer): PlayerInput | null {
     fire: (flags & 1) !== 0,
     sprint: (flags & 2) !== 0,
     use: (flags & 4) !== 0,
+    reload: (flags & 8) !== 0,
     weapon,
     throw: thr,
     clientTime,
@@ -176,6 +189,9 @@ const EVENT_KIND: Record<EventKind, number> = {
   fire: 7,
   doorOpen: 8,
   doorClose: 9,
+  reloadStart: 10,
+  dropSpawn: 11,
+  dropTaken: 12,
 };
 const KIND_FROM: EventKind[] = [
   "shot",
@@ -188,6 +204,9 @@ const KIND_FROM: EventKind[] = [
   "fire",
   "doorOpen",
   "doorClose",
+  "reloadStart",
+  "dropSpawn",
+  "dropTaken",
 ];
 const PLAYER_BYTES = 36;
 const BULLET_BYTES = 28;
@@ -251,8 +270,8 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     o += 4;
     v.setUint8(o++, p.weapon & 0xff);
     v.setUint8(o++, Math.max(0, Math.min(255, Math.round(p.stamina))));
-    v.setUint16(o, 0, true);
-    o += 2;
+    v.setUint8(o++, Math.max(0, Math.min(255, p.mag | 0)));
+    v.setUint8(o++, Math.max(0, Math.min(255, p.reserve | 0)));
   }
   for (const b of s.bullets) {
     v.setUint16(o, b.id, true);
@@ -296,7 +315,7 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     o += 4;
     v.setFloat32(o, f32(e.y), true);
     o += 4;
-    v.setUint16(o, 0, true);
+    v.setUint16(o, (e.weaponId ?? 0) & 0xffff, true);
     o += 2;
   }
   return buf;
@@ -341,7 +360,8 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 4;
     const weapon = v.getUint8(o++);
     const stamina = v.getUint8(o++);
-    o += 2;
+    const mag = v.getUint8(o++);
+    const reserve = v.getUint8(o++);
     players.push({
       id,
       x,
@@ -356,6 +376,8 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
       fireCd,
       weapon,
       stamina,
+      mag,
+      reserve,
     });
   }
   const bullets: BulletState[] = [];
@@ -405,8 +427,9 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 4;
     const y = v.getFloat32(o, true);
     o += 4;
+    const weaponId = v.getUint16(o, true);
     o += 2;
-    events.push({ kind, a, b, x, y });
+    events.push({ kind, a, b, x, y, weaponId });
   }
   return { tick, serverTime, matchLeftMs, phase, players, bullets, throwables, events, doorsBits };
 }
