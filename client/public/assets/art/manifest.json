@@ -3,25 +3,41 @@
   "chars": [
     {
       "id": 0,
-      "idle": { "file": "char0_idle.png", "frames": 2, "fps": 3 },
-      "walk": { "file": "char0_walk.png", "frames": 6, "fps": 10 },
-      "death": { "file": "char0_death.png", "frames": 4, "fps": 12 }
+      "dirs": {
+        "file": "char0_dirs8.png",
+        "cols": 8,
+        "rows": 8,
+        "frameSize": 32,
+        "fps": 10
+      }
+    },
+    {
+      "id": 1,
+      "dirs": {
+        "file": "char0_dirs8.png",
+        "cols": 8,
+        "rows": 8,
+        "frameSize": 32,
+        "fps": 10
+      }
+    },
+    {
+      "id": 2,
+      "dirs": {
+        "file": "char0_dirs8.png",
+        "cols": 8,
+        "rows": 8,
+        "frameSize": 32,
+        "fps": 10
+      }
     }
   ],
   "guns": {
-    "0": "gun_pistol.png",
-    "1": "gun_m4a1.png",
-    "2": "gun_m16.png",
-    "3": "gun_ak47.png",
-    "4": "gun_shotgun.png",
-    "5": "gun_smg.png",
-    "6": "gun_sniper.png"
+    "1": "gun_m4a1.png"
   },
   "throws": {},
   "items": {},
-  "tiles": {
-    "sand": ["tile_sand_a.png", "tile_sand_b.png", "tile_sand_c.png"]
-  },
+  "tiles": {},
   "props": {},
   "door": null
 }

@@ -15,6 +15,8 @@ export interface CharDef {
   idle?: AnimDef;
   walk?: AnimDef;
   death?: AnimDef;
+  /** Sheet 8×N (Atomic Exile / 3/4): cols = frames, rows = direções — ou 8×8 misto. */
+  dirs?: { file: string; cols: number; rows: number; frameSize: number; fps: number };
 }
 
 export interface ArtManifest {
@@ -32,6 +34,14 @@ export interface ArtManifest {
   };
   props: Record<string, string>;
   door?: string;
+}
+
+export interface CharDirsSheet {
+  img: HTMLImageElement;
+  cols: number;
+  rows: number;
+  frameSize: number;
+  fps: number;
 }
 
 const BASE = "/assets/art";
@@ -79,11 +89,20 @@ export async function preloadArt(): Promise<void> {
       const raw = (await res.json()) as ArtManifest;
       const chars: CharDef[] = [];
       for (const c of raw.chars ?? []) {
+        let dirs = c.dirs;
+        if (dirs?.file) {
+          const dimg = await loadImage(dirs.file);
+          if (!dimg) dirs = undefined;
+          else dirs = { ...dirs };
+        } else {
+          dirs = undefined;
+        }
         chars.push({
           id: c.id,
           idle: await loadAnim(c.idle),
           walk: await loadAnim(c.walk),
           death: await loadAnim(c.death),
+          dirs,
         });
       }
 
@@ -178,6 +197,47 @@ export function getCharAnim(
 export function getGunImg(weaponId: number): HTMLImageElement | null {
   const file = manifest?.guns[String(weaponId)];
   return getImg(file);
+}
+
+/** Sheet de 8 direções (3/4). Preferir isto ao perfil lateral. */
+export function getCharDirs(id: number): CharDirsSheet | null {
+  if (!manifest) return null;
+  // bots/outros jogadores sem skin própria herdam o char0
+  const c =
+    manifest.chars.find((x) => x.id === id) ??
+    manifest.chars.find((x) => x.dirs?.file) ??
+    manifest.chars[0];
+  if (!c?.dirs?.file) return null;
+  const img = getImg(c.dirs.file);
+  if (!img) return null;
+  return {
+    img,
+    cols: Math.max(1, c.dirs.cols | 0),
+    rows: Math.max(1, c.dirs.rows | 0),
+    frameSize: c.dirs.frameSize || manifest.frameSize || 32,
+    fps: Math.max(0.1, c.dirs.fps || 10),
+  };
+}
+
+/** Ângulo de mira → setor 0..7 (0 = leste / direita). */
+export function aimToDir8(angle: number): number {
+  return ((Math.round(angle / (Math.PI / 4)) % 8) + 8) % 8;
+}
+
+export function drawDirFrame(
+  ctx: CanvasRenderingContext2D,
+  sheet: CharDirsSheet,
+  dir: number,
+  frame: number,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+) {
+  const fs = sheet.frameSize;
+  const col = ((frame % sheet.cols) + sheet.cols) % sheet.cols;
+  const row = ((dir % sheet.rows) + sheet.rows) % sheet.rows;
+  ctx.drawImage(sheet.img, col * fs, row * fs, fs, fs, dx, dy, dw, dh);
 }
 
 export function getThrowImg(kind: number): HTMLImageElement | null {

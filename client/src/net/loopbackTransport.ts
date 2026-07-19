@@ -19,12 +19,14 @@ import {
 import {
   addPlayer,
   createSim,
+  doorBitsOf,
   queueInput,
   startMatch,
   stepSim,
   toSnapshot,
   type GameSim,
 } from "../../../shared/sim";
+import { botInput, clearBotMemory } from "./botAi";
 import type { Transport, TransportHandlers, PlayerId } from "./transport";
 
 export class LoopbackTransport implements Transport {
@@ -88,6 +90,7 @@ export class LoopbackTransport implements Transport {
     }
 
     if (type === MSG.START) {
+      clearBotMemory();
       if (startMatch(this.sim)) {
         this.handlers?.onMessage(encodeCtrl(MSG.START), "host");
       }
@@ -132,30 +135,19 @@ export class LoopbackTransport implements Transport {
   }
 
   private driveBots() {
+    const self = this.sim.players.find((x) => x.id === Number(this.selfId));
+    const bits = doorBitsOf(this.sim);
     for (const p of this.sim.players) {
       if (p.id === Number(this.selfId)) continue;
       if (!p.alive) continue;
-      const target = this.sim.players.find((x) => x.id === Number(this.selfId) && x.alive);
-      // vagam e atiram pouco — treino jogável
-      const roam = this.sim.tick * 0.03 + p.id * 2;
-      const aim = target
-        ? Math.atan2(target.y - p.y, target.x - p.x)
-        : roam;
-      const dx = Math.cos(roam) * 0.7;
-      const dy = Math.sin(roam * 0.9) * 0.7;
-      queueInput(this.sim, p.id, {
-        seq: this.sim.tick * 10 + p.id,
-        dx,
-        dy,
-        aim,
-        fire: this.sim.tick % 50 === p.id * 7,
-        sprint: false,
-        use: false,
-        reload: false,
-        weapon: p.weapon,
-        throw: 0,
-        clientTime: performance.now(),
-      });
+      const input = botInput(
+        p,
+        self,
+        bits,
+        this.sim.tick * 10 + p.id,
+        this.sim.serverTime,
+      );
+      queueInput(this.sim, p.id, input);
     }
   }
 }

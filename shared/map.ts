@@ -1,11 +1,11 @@
 /**
  * map.ts — tilemap deserto (Atomic Exile–inspired), colisão e portas.
- * Grade 30×20 × 32px = 960×640. Sem import de constants (evita ciclo).
+ * Grade 80×56 × 32px = 2560×1792. Sem import de constants (evita ciclo).
  */
 
 export const TILE = 32;
-export const MAP_W = 30;
-export const MAP_H = 20;
+export const MAP_W = 80;
+export const MAP_H = 56;
 const ARENA_W = MAP_W * TILE;
 const ARENA_H = MAP_H * TILE;
 
@@ -75,62 +75,96 @@ export const GROUND: number[][] = (() => {
     }
     g.push(row);
   }
-  fillRect(g, 3, 3, 6, 5, T.WOOD);
-  fillRect(g, 20, 2, 7, 6, T.CONCRETE);
-  fillRect(g, 4, 13, 8, 5, T.WOOD);
-  fillRect(g, 18, 12, 6, 5, T.CONCRETE);
+  // interiores nos cantos + centro — arena grande
+  fillRect(g, 4, 4, 6, 5, T.WOOD);
+  fillRect(g, 68, 3, 7, 6, T.CONCRETE);
+  fillRect(g, 5, 46, 8, 5, T.WOOD);
+  fillRect(g, 66, 45, 6, 5, T.CONCRETE);
+  fillRect(g, 36, 24, 6, 4, T.CONCRETE);
+  fillRect(g, 20, 18, 5, 4, T.WOOD);
+  fillRect(g, 52, 30, 5, 4, T.CONCRETE);
   return g;
 })();
 
 export const SOLID: number[][] = (() => {
   const g: number[][] = Array.from({ length: MAP_H }, () => Array(MAP_W).fill(0));
 
-  wallRing(g, 2, 2, 8, 7, T.WALL);
-  fillRect(g, 3, 3, 6, 5, 0);
-  g[8]![5] = 0;
+  // NW
+  wallRing(g, 3, 3, 8, 7, T.WALL);
+  fillRect(g, 4, 4, 6, 5, 0);
+  g[9]![6] = 0;
 
-  wallRing(g, 19, 1, 9, 8, T.METAL);
-  fillRect(g, 20, 2, 7, 6, 0);
-  g[4]![19] = 0;
+  // NE
+  wallRing(g, 67, 2, 9, 8, T.METAL);
+  fillRect(g, 68, 3, 7, 6, 0);
+  g[5]![67] = 0;
 
-  wallRing(g, 3, 12, 10, 7, T.WALL);
-  fillRect(g, 4, 13, 8, 5, 0);
-  g[12]![7] = 0;
+  // SW
+  wallRing(g, 4, 45, 10, 7, T.WALL);
+  fillRect(g, 5, 46, 8, 5, 0);
+  g[45]![8] = 0;
 
-  wallRing(g, 17, 11, 8, 7, T.METAL);
-  fillRect(g, 18, 12, 6, 5, 0);
-  g[14]![17] = 0;
+  // SE
+  wallRing(g, 65, 44, 8, 7, T.METAL);
+  fillRect(g, 66, 45, 6, 5, 0);
+  g[47]![65] = 0;
 
-  g[9]![14] = T.CRATE;
-  g[9]![15] = T.CRATE;
-  g[10]![14] = T.BARREL;
-  g[6]![12] = T.CAR;
-  g[6]![13] = T.CAR;
-  g[15]![12] = T.CRATE;
-  g[11]![22] = T.BARREL;
-  g[16]![25] = T.CRATE;
+  // bunker central
+  wallRing(g, 35, 23, 8, 6, T.WALL);
+  fillRect(g, 36, 24, 6, 4, 0);
+  g[28]![38] = 0;
+
+  // hangares mid
+  wallRing(g, 19, 17, 7, 6, T.WALL);
+  fillRect(g, 20, 18, 5, 4, 0);
+  g[22]![19] = 0;
+
+  wallRing(g, 51, 29, 7, 6, T.METAL);
+  fillRect(g, 52, 30, 5, 4, 0);
+  g[31]![57] = 0;
+
+  // props
+  g[16]![28] = T.CRATE;
+  g[16]![29] = T.CRATE;
+  g[17]![28] = T.BARREL;
+  g[14]![40] = T.CAR;
+  g[14]![41] = T.CAR;
+  g[30]![22] = T.CRATE;
+  g[26]![50] = T.BARREL;
+  g[38]![34] = T.CRATE;
+  g[12]![55] = T.BARREL;
+  g[42]![26] = T.CRATE;
+  g[28]![62] = T.BARREL;
+  g[20]![18] = T.CRATE;
+  g[44]![48] = T.BARREL;
 
   return g;
 })();
 
 export const BUILDINGS: BuildingDef[] = [
-  { id: 0, interior: { tx: 3, ty: 3, tw: 6, th: 5 } },
-  { id: 1, interior: { tx: 20, ty: 2, tw: 7, th: 6 } },
-  { id: 2, interior: { tx: 4, ty: 13, tw: 8, th: 5 } },
-  { id: 3, interior: { tx: 18, ty: 12, tw: 6, th: 5 } },
+  { id: 0, interior: { tx: 4, ty: 4, tw: 6, th: 5 } },
+  { id: 1, interior: { tx: 68, ty: 3, tw: 7, th: 6 } },
+  { id: 2, interior: { tx: 5, ty: 46, tw: 8, th: 5 } },
+  { id: 3, interior: { tx: 66, ty: 45, tw: 6, th: 5 } },
+  { id: 4, interior: { tx: 36, ty: 24, tw: 6, th: 4 } },
+  { id: 5, interior: { tx: 20, ty: 18, tw: 5, th: 4 } },
+  { id: 6, interior: { tx: 52, ty: 30, tw: 5, th: 4 } },
 ];
 
 export const DOOR_DEFS: DoorDef[] = [
-  { id: 0, tx: 5, ty: 8, orient: "h" },
-  { id: 1, tx: 19, ty: 4, orient: "v" },
-  { id: 2, tx: 7, ty: 12, orient: "h" },
-  { id: 3, tx: 17, ty: 14, orient: "v" },
+  { id: 0, tx: 6, ty: 9, orient: "h" },
+  { id: 1, tx: 67, ty: 5, orient: "v" },
+  { id: 2, tx: 8, ty: 45, orient: "h" },
+  { id: 3, tx: 65, ty: 47, orient: "v" },
+  { id: 4, tx: 38, ty: 28, orient: "h" },
+  { id: 5, tx: 19, ty: 20, orient: "v" },
+  { id: 6, tx: 57, ty: 31, orient: "v" },
 ];
 
 export const MAP_SPAWNS: { x: number; y: number }[] = [
-  { x: 48, y: 320 },
-  { x: ARENA_W - 48, y: 320 },
-  { x: ARENA_W / 2, y: ARENA_H - 48 },
+  { x: 160, y: ARENA_H / 2 },
+  { x: ARENA_W - 160, y: ARENA_H / 2 },
+  { x: ARENA_W / 2, y: ARENA_H - 160 },
 ];
 
 export function isSolidTile(t: number): boolean {

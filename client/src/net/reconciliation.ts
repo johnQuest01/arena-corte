@@ -33,6 +33,9 @@ export function reconcile(
 ): PlayerState {
   buffer.discardUpTo(auth.lastProcessedInputSeq);
   const replayed = clonePlayerState(auth);
+  // sincroniza slot autoritativo da arma atual; replay usa o bank nas trocas
+  buffer.ammoBank[auth.weapon] = { mag: auth.mag, reserve: auth.reserve };
+  buffer.attachAmmo(replayed);
   const pending = buffer.pendingAfter(auth.lastProcessedInputSeq);
 
   const tickDt = TICK_MS / 1000;
@@ -57,6 +60,7 @@ export function reconcile(
   const prevA = buffer.predicted?.angle ?? smooth.angle;
 
   buffer.predicted = clonePlayerState(replayed);
+  buffer.attachAmmo(buffer.predicted);
 
   const dx = prevX - replayed.x;
   const dy = prevY - replayed.y;

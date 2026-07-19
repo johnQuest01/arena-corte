@@ -55,6 +55,8 @@ import {
 } from "./gore";
 import { InputController } from "./input";
 import {
+  cameraScreenLayout,
+  computeCamera,
   createFeel,
   drawFrame,
   invalidateGroundCache,
@@ -130,6 +132,8 @@ export class GameClient {
   private lastFoot = 0;
   private damageFlash = 0;
   private camZoom = 1;
+  private camX = 0;
+  private camY = 0;
   private prevVx = 0;
   private prevVy = 0;
 
@@ -200,7 +204,7 @@ export class GameClient {
 
   async start() {
     resizeCanvas(this.canvas);
-    initDecals(960, 640);
+    initDecals(ARENA_W, ARENA_H);
     window.addEventListener("resize", this.onResize);
     this.input.attach(this.canvas);
     const unlock = () => {
@@ -370,6 +374,8 @@ export class GameClient {
           this.prediction.predicted.weapon = me.weapon;
           this.prediction.predicted.mag = me.mag;
           this.prediction.predicted.reserve = me.reserve;
+          this.prediction.ammoBank[me.weapon] = { mag: me.mag, reserve: me.reserve };
+          this.prediction.attachAmmo(this.prediction.predicted);
         }
       }
 
@@ -381,12 +387,10 @@ export class GameClient {
 
   private worldFromScreen = (sx: number, sy: number) => {
     const rect = this.canvas.getBoundingClientRect();
-    const scale = Math.min(rect.width / ARENA_W, rect.height / ARENA_H);
-    const ox = (rect.width - ARENA_W * scale) / 2;
-    const oy = (rect.height - ARENA_H * scale) / 2;
+    const { scale, ox, oy, z } = cameraScreenLayout(rect.width, rect.height, this.camZoom || 1);
     return {
-      x: (sx - ox) / scale,
-      y: (sy - oy) / scale,
+      x: this.camX + (sx - ox) / (scale * z),
+      y: this.camY + (sy - oy) / (scale * z),
     };
   };
 
@@ -421,7 +425,13 @@ export class GameClient {
           playSfx("empty_click", pred.x, pred.y, { x: pred.x, y: pred.y });
         } else {
           this.localFireCd = wpn.cooldownMs;
-          if (this.prediction.predicted) this.prediction.predicted.mag = Math.max(0, pred.mag - 1);
+          if (this.prediction.predicted) {
+            this.prediction.predicted.mag = Math.max(0, pred.mag - 1);
+            this.prediction.ammoBank[raw.weapon] = {
+              mag: this.prediction.predicted.mag,
+              reserve: this.prediction.predicted.reserve,
+            };
+          }
           this.prediction.predictFire(raw.aim, raw.weapon);
           pulseShotFeel(this.feel, raw.weapon, true);
           this.camZoom = 1.015;
@@ -538,6 +548,13 @@ export class GameClient {
     const hostBullets = this.lastSnap?.bullets ?? [];
     const bullets = [...hostBullets, ...this.prediction.localBullets];
 
+    const focusX = local?.x ?? ARENA_W / 2;
+    const focusY = local?.y ?? ARENA_H / 2;
+    const cam = computeCamera(focusX, focusY, this.camZoom);
+    // trava no centro: sem lerp (personagem parado na tela, mapa desliza)
+    this.camX = cam.camX;
+    this.camY = cam.camY;
+
     const view: RenderView = {
       selfId: this.selfId,
       local,
@@ -554,6 +571,8 @@ export class GameClient {
       roofAlpha: this.roofAlpha,
       ammoDrops: this.ammoDrops,
       camZoom: this.camZoom,
+      camX: this.camX,
+      camY: this.camY,
       damageFlash: this.damageFlash,
       hitFlashSelf: hitFlashActive(this.selfId, now),
       drawDecals: drawDecalLayer,
@@ -565,8 +584,7 @@ export class GameClient {
         drawFrame(this.ctx, view, now);
       } else {
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        this.ctx.fillStyle = "#1a1410";
-        this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+        this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
       }
     } catch (err) {
       console.error("drawFrame", err);

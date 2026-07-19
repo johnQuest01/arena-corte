@@ -10,8 +10,12 @@ export const SMOOTH_MS = 120;
 export const RESPAWN_MS = 3000;
 export const MATCH_MS = 5 * 60 * 1000;
 export const KILL_LIMIT = 15;
-export const ARENA_W = 960;
-export const ARENA_H = 640;
+/** Deve bater com MAP_W×TILE / MAP_H×TILE em map.ts (80×56×32). */
+export const ARENA_W = 2560;
+export const ARENA_H = 1792;
+/** Janela visível da câmera (mundo), não o mapa inteiro. */
+export const CAM_VIEW_W = 960;
+export const CAM_VIEW_H = 640;
 export const PLAYER_R = 14;
 export const BULLET_SPEED = 520;
 export const BULLET_R = 3;
@@ -25,12 +29,14 @@ export const PLAYER_COLORS = ["#E8A838", "#5BB8E8", "#C45C5C"] as const;
 /** @deprecated â€” colisÃ£o vem de shared/map.ts */
 export const OBSTACLES: { x: number; y: number; w: number; h: number; kind?: string }[] = [];
 export const STREET_LAMPS: { x: number; y: number }[] = [
-  { x: 80, y: 200 },
-  { x: 880, y: 200 },
-  { x: 80, y: 440 },
-  { x: 880, y: 440 },
-  { x: 480, y: 80 },
-  { x: 480, y: 560 },
+  { x: 160, y: 280 },
+  { x: 2400, y: 280 },
+  { x: 160, y: 1500 },
+  { x: 2400, y: 1500 },
+  { x: 1280, y: 140 },
+  { x: 1280, y: 1650 },
+  { x: 700, y: 900 },
+  { x: 1860, y: 900 },
 ];
 export const SPAWNS = MAP_SPAWNS;
 export const DOOR_AUTO_CLOSE_MS = 4000;

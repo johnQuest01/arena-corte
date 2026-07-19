@@ -25,9 +25,10 @@ import {
   TIRED_MULT,
   TIRED_THRESHOLD,
   WEAPONS,
-  fillAmmo,
+  fullAmmoBank,
   muzzlePoint,
   weaponOf,
+  type AmmoStack,
   type ThrowId,
 } from "./gear";
 import {
@@ -78,6 +79,28 @@ export interface SimPlayer extends PlayerState {
   flashUntil: number;
   /** serverTime em que o reload termina; 0 = idle */
   reloadingUntil: number;
+  /** munição independente por arma */
+  ammoBank: AmmoStack[];
+}
+
+/** PlayerState + campos locais de sim/prediction (não vão no snapshot). */
+export type SimLikePlayer = PlayerState & {
+  throwCd?: number;
+  reloadingUntil?: number;
+  ammoBank?: AmmoStack[];
+};
+
+function ensureAmmoBank(p: SimLikePlayer): AmmoStack[] {
+  if (!p.ammoBank || p.ammoBank.length !== WEAPONS.length) {
+    p.ammoBank = fullAmmoBank();
+    p.ammoBank[p.weapon] = { mag: p.mag, reserve: p.reserve };
+  }
+  return p.ammoBank;
+}
+
+function syncAmmoToBank(p: SimLikePlayer) {
+  const bank = ensureAmmoBank(p);
+  bank[p.weapon] = { mag: p.mag, reserve: p.reserve };
 }
 export interface AmmoDrop {
   id: number;
@@ -135,7 +158,8 @@ export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
   const id = sim.players.length;
   const spawn = SPAWNS[id % SPAWNS.length]!;
   const weapon = id % WEAPONS.length;
-  const ammo = fillAmmo(weapon);
+  const ammoBank = fullAmmoBank();
+  const ammo = ammoBank[weapon]!;
   const p: SimPlayer = {
     id,
     name,
@@ -153,6 +177,7 @@ export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
     stamina: MAX_STAMINA,
     mag: ammo.mag,
     reserve: ammo.reserve,
+    ammoBank,
     respawnAt: 0,
     inputQueue: [],
     throwCd: 0,
@@ -200,21 +225,7 @@ function tryUseDoor(sim: GameSim, p: SimPlayer) {
   });
 }
 export function applyInput(
-  p: Pick<
-    SimPlayer,
-    | "x"
-    | "y"
-    | "angle"
-    | "vx"
-    | "vy"
-    | "alive"
-    | "fireCd"
-    | "lastProcessedInputSeq"
-    | "weapon"
-    | "stamina"
-    | "mag"
-    | "reserve"
-  > & { throwCd?: number; reloadingUntil?: number },
+  p: SimLikePlayer,
   input: PlayerInput,
   dt: number,
   opts?: {
@@ -233,15 +244,16 @@ export function applyInput(
   }
   const now = opts?.serverTime ?? 0;
   if (p.reloadingUntil == null) p.reloadingUntil = 0;
+  const bank = ensureAmmoBank(p);
   const prevWeapon = p.weapon;
   const nextWeapon = clamp(input.weapon | 0, 0, WEAPONS.length - 1);
   if (nextWeapon !== prevWeapon) {
+    bank[prevWeapon] = { mag: p.mag, reserve: p.reserve };
     p.weapon = nextWeapon;
     p.reloadingUntil = 0;
-    // troca cancela reload; ajusta caps da nova arma
-    const nw = weaponOf(p.weapon);
-    p.mag = Math.min(nw.magSize, p.mag);
-    p.reserve = Math.min(nw.reserveMax, p.reserve);
+    const slot = bank[nextWeapon]!;
+    p.mag = slot.mag;
+    p.reserve = slot.reserve;
   }
   const wpn = weaponOf(p.weapon);
   const bits = opts?.doorBits ?? 0;
@@ -314,6 +326,7 @@ export function applyInput(
     const m = muzzlePoint(p.x, p.y, p.angle, wpn);
     opts?.spawnThrow?.(input.throw, p.angle, m.x, m.y);
   }
+  syncAmmoToBank(p);
   p.lastProcessedInputSeq = input.seq;
 }
 export function startMatch(sim: GameSim) {
@@ -338,7 +351,8 @@ export function startMatch(sim: GameSim) {
     p.throwCd = 0;
     p.stamina = MAX_STAMINA;
     p.weapon = i % WEAPONS.length;
-    const ammo = fillAmmo(p.weapon);
+    p.ammoBank = fullAmmoBank();
+    const ammo = p.ammoBank[p.weapon]!;
     p.mag = ammo.mag;
     p.reserve = ammo.reserve;
     p.reloadingUntil = 0;
@@ -496,7 +510,8 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
       p.hp = MAX_HP;
       p.alive = true;
       p.stamina = MAX_STAMINA;
-      const ammo = fillAmmo(p.weapon);
+      p.ammoBank = fullAmmoBank();
+      const ammo = p.ammoBank[p.weapon]!;
       p.mag = ammo.mag;
       p.reserve = ammo.reserve;
       p.reloadingUntil = 0;
@@ -752,6 +767,7 @@ function tickAmmoDrops(sim: GameSim, dt: number) {
       const room = wpn.reserveMax - p.reserve;
       const take = Math.min(room, d.amount);
       p.reserve += take;
+      syncAmmoToBank(p);
       sim.events.push({
         kind: "dropTaken",
         a: d.id,
@@ -765,5 +781,11 @@ function tickAmmoDrops(sim: GameSim, dt: number) {
   void dt;
 }
 export function clonePlayerState(p: PlayerState): PlayerState {
-  return { ...p };
+  const src = p as SimLikePlayer;
+  const out: SimLikePlayer = { ...p };
+  if (src.ammoBank) {
+    out.ammoBank = src.ammoBank.map((a) => ({ mag: a.mag, reserve: a.reserve }));
+  }
+  if (src.reloadingUntil != null) out.reloadingUntil = src.reloadingUntil;
+  return out;
 }

@@ -1,7 +1,7 @@
 /**
  * prediction.ts — movimento local + colisão do mapa + spawn visual de balas.
  */
-import { MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
+import { ARENA_H, ARENA_W, MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
 import {
   MAX_STAMINA,
   SPRINT_MULT,
@@ -10,12 +10,14 @@ import {
   TIRED_MULT,
   TIRED_THRESHOLD,
   WEAPONS,
+  fullAmmoBank,
   muzzlePoint,
   weaponOf,
+  type AmmoStack,
 } from "../../../shared/gear";
 import { resolveWalls } from "../../../shared/map";
 import type { BulletState, PlayerInput, PlayerState } from "../../../shared/protocol";
-import { applyInput, clonePlayerState } from "../../../shared/sim";
+import { applyInput, clonePlayerState, type SimLikePlayer } from "../../../shared/sim";
 
 function clamp(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));
@@ -27,13 +29,24 @@ export class PredictionBuffer {
   doorBits = 0;
   /** tempo do último snapshot (para replay de reload) */
   serverTime = 0;
+  /** inventário de munição por arma (preservado na reconciliação) */
+  ammoBank: AmmoStack[] = fullAmmoBank();
   /** balas locais (shotgun leque / feel) — não autoritativas */
   localBullets: BulletState[] = [];
   private nextLocalId = 900000;
   private maxKeep = 90;
 
+  attachAmmo(p: PlayerState) {
+    const sp = p as SimLikePlayer;
+    sp.ammoBank = this.ammoBank;
+    this.ammoBank[p.weapon] = { mag: p.mag, reserve: p.reserve };
+  }
+
   reset(state: PlayerState) {
     this.predicted = clonePlayerState(state);
+    this.ammoBank = fullAmmoBank();
+    this.ammoBank[state.weapon] = { mag: state.mag, reserve: state.reserve };
+    this.attachAmmo(this.predicted);
     this.inputs = [];
     this.localBullets = [];
   }
@@ -93,7 +106,14 @@ export class PredictionBuffer {
         y: b.y + b.vy * dt,
         life: b.life - dt * 1000,
       }))
-      .filter((b) => b.life > 0 && b.x > -40 && b.y > -40 && b.x < 1000 && b.y < 680);
+      .filter(
+        (b) =>
+          b.life > 0 &&
+          b.x > -40 &&
+          b.y > -40 &&
+          b.x < ARENA_W + 40 &&
+          b.y < ARENA_H + 40,
+      );
   }
 
   /** Disparo previsto — mesma origem/spread envelope do host. */

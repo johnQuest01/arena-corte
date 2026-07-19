@@ -222,7 +222,17 @@ export function muzzlePoint(
   };
 }
 
-export function fillAmmo(weapon: number): { mag: number; reserve: number } {
+export interface AmmoStack {
+  mag: number;
+  reserve: number;
+}
+
+export function fillAmmo(weapon: number): AmmoStack {
   const w = weaponOf(weapon);
   return { mag: w.magSize, reserve: w.reserveMax };
+}
+
+/** Pente + reserva cheios para cada arma (inventário). */
+export function fullAmmoBank(): AmmoStack[] {
+  return WEAPONS.map((_, i) => fillAmmo(i));
 }
