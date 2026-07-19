@@ -61,6 +61,7 @@ import {
   initDecals,
   processGoreEvents,
   spawnDust,
+  spawnGiantStepDust,
   stampBulletMark,
   stampShell,
   tickGore,
@@ -173,6 +174,12 @@ export class GameClient {
   private pendingCast = false;
   /** alvo travado por id do Gigante → { kind, id } */
   private giantTargets = new Map<number, { kind: 0 | 1 | 2; id: number }>();
+  /** juice client-side do Gigante (passos / windup / massa) */
+  private giantBobPrev = new Map<number, number>();
+  private giantStatePrev = new Map<number, number>();
+  private giantPosPrev = new Map<number, { x: number; y: number }>();
+  private giantWindupAt = new Map<number, number>();
+  private giantVis = new Map<number, { facing: number; skew: number; windupFlash: number }>();
 
   setMuted(m: boolean) {
     setMuted(m);
@@ -494,22 +501,26 @@ export class GameClient {
           // Conjurador já tem FX predito; peers/bots veem o evento do host
           if (e.b !== this.selfId) {
             spawnGiantSummonFx(e.x, e.y);
-            playSfx("explosion", e.x, e.y, listener);
             const dist = Math.hypot(e.x - listener.x, e.y - listener.y);
             if (dist < 520) {
               this.feel.shake = Math.max(this.feel.shake, 1.1 * (1 - dist / 520));
             }
           }
+          playSfx("giant_roar", e.x, e.y, listener);
         }
         if (e.kind === "giantHit") {
           this.giantTargets.delete(e.a);
+          this.giantBobPrev.delete(e.a);
+          this.giantStatePrev.delete(e.a);
+          this.giantPosPrev.delete(e.a);
+          this.giantWindupAt.delete(e.a);
+          this.giantVis.delete(e.a);
           spawnGiantHitFx(e.x, e.y);
-          playSfx("hit_flesh", e.x, e.y, listener);
-          playSfx("explosion", e.x, e.y, listener);
+          playSfx("giant_hit", e.x, e.y, listener);
           const dist = Math.hypot(e.x - listener.x, e.y - listener.y);
-          if (dist < 640) {
-            const fall = 1 - dist / 640;
-            this.feel.shake = Math.max(this.feel.shake, 2.8 * fall);
+          if (dist < 720) {
+            const fall = Math.max(0.4, 1 - dist / 720);
+            this.feel.shake = Math.max(this.feel.shake, 6 * fall);
             this.feel.bodyKick = Math.max(this.feel.bodyKick, fall);
           }
           // sync vítima local: death com killer no evento, OU weaponId com player id
@@ -534,6 +545,11 @@ export class GameClient {
         }
         if (e.kind === "giantExpire") {
           this.giantTargets.delete(e.a);
+          this.giantBobPrev.delete(e.a);
+          this.giantStatePrev.delete(e.a);
+          this.giantPosPrev.delete(e.a);
+          this.giantWindupAt.delete(e.a);
+          this.giantVis.delete(e.a);
           spawnGiantExpireFx(e.x, e.y);
           playSfx("empty_click", e.x, e.y, listener);
         }
@@ -700,12 +716,11 @@ export class GameClient {
               this.feel.shake = Math.max(this.feel.shake, 1.2);
               playSfx("water_whoosh", pred.x, pred.y, { x: pred.x, y: pred.y });
             } else if (ab.id === 1) {
-              spawnGiantSummonFx(
-                pred.x + Math.cos(raw.aim) * 28,
-                pred.y + Math.sin(raw.aim) * 28,
-              );
+              const gx = pred.x + Math.cos(raw.aim) * 28;
+              const gy = pred.y + Math.sin(raw.aim) * 28;
+              spawnGiantSummonFx(gx, gy);
               this.feel.shake = Math.max(this.feel.shake, 1.3);
-              playSfx("explosion", pred.x, pred.y, { x: pred.x, y: pred.y });
+              // rugido longo no evento giantSpawn (evita dobrar com predição)
             }
           }
         }
@@ -873,12 +888,84 @@ export class GameClient {
     for (const gid of [...this.giantTargets.keys()]) {
       if (!liveEnemies.some((e) => e.id === gid && e.type === 2)) {
         this.giantTargets.delete(gid);
+        this.giantBobPrev.delete(gid);
+        this.giantStatePrev.delete(gid);
+        this.giantPosPrev.delete(gid);
+        this.giantWindupAt.delete(gid);
+        this.giantVis.delete(gid);
       }
     }
-    // micro-tremor se Gigante perto do player
-    if (local?.alive) {
-      for (const en of liveEnemies) {
-        if (en.type !== 2) continue;
+
+    // juice do Gigante: passos, windup, massa, micro-tremor
+    const listenerPos = local
+      ? { x: local.x, y: local.y }
+      : { x: focusX, y: focusY };
+    for (const en of liveEnemies) {
+      if (en.type !== 2) continue;
+      const windup = en.state === 2 || en.state === 4;
+      const chase = en.state === 1;
+      const prevState = this.giantStatePrev.get(en.id) ?? en.state;
+      this.giantStatePrev.set(en.id, en.state);
+
+      // facing / skew (massa ao virar)
+      const prevP = this.giantPosPrev.get(en.id);
+      let facing = this.giantVis.get(en.id)?.facing ?? 0;
+      let skew = (this.giantVis.get(en.id)?.skew ?? 0) * 0.85;
+      if (prevP) {
+        const dx = en.x - prevP.x;
+        const dy = en.y - prevP.y;
+        if (dx * dx + dy * dy > 0.35) {
+          const nf = Math.atan2(dy, dx);
+          let dAng = nf - facing;
+          while (dAng > Math.PI) dAng -= Math.PI * 2;
+          while (dAng < -Math.PI) dAng += Math.PI * 2;
+          facing = nf;
+          skew = Math.max(-0.08, Math.min(0.08, dAng * 2.8));
+        }
+      }
+      this.giantPosPrev.set(en.id, { x: en.x, y: en.y });
+
+      // início do windup → rugido curto + flash
+      if (windup && prevState !== 2 && prevState !== 4) {
+        this.giantWindupAt.set(en.id, now);
+        playSfx("giant_roar_short", en.x, en.y, listenerPos);
+      }
+      let windupFlash = 0;
+      if (windup) {
+        const started = this.giantWindupAt.get(en.id) ?? now;
+        windupFlash = Math.max(0, 1 - (now - started) / 150);
+        if (local?.alive) {
+          const d = Math.hypot(en.x - local.x, en.y - local.y);
+          if (d < 560) {
+            const prog = 1 - windupFlash;
+            this.feel.shake = Math.max(
+              this.feel.shake,
+              (0.9 + prog * 2.6) * (1 - d / 560),
+            );
+          }
+        }
+      } else {
+        this.giantWindupAt.delete(en.id);
+      }
+      this.giantVis.set(en.id, { facing, skew, windupFlash });
+
+      // pisada: cruzamento da fase baixa do bob
+      const phase = Math.sin(now * 0.01 + en.id);
+      const prevPhase = this.giantBobPrev.get(en.id) ?? phase;
+      this.giantBobPrev.set(en.id, phase);
+      if (chase && prevPhase > 0 && phase <= 0) {
+        if (local?.alive) {
+          const d = Math.hypot(en.x - local.x, en.y - local.y);
+          if (d < 560) {
+            this.feel.shake = Math.max(this.feel.shake, 2.2 * (1 - d / 560));
+          }
+        }
+        spawnGiantStepDust(en.x, en.y);
+        playSfx("giant_step", en.x, en.y, listenerPos);
+      }
+
+      // micro-tremor contínuo perto
+      if (local?.alive) {
         const d = Math.hypot(en.x - local.x, en.y - local.y);
         if (d < 120) {
           this.feel.shake = Math.max(this.feel.shake, 0.35 * (1 - d / 120));
@@ -892,6 +979,7 @@ export class GameClient {
       remotes,
       enemies: liveEnemies,
       giantTargets: this.giantTargets,
+      giantVis: this.giantVis,
       bullets,
       throwables: this.lastSnap?.throwables ?? [],
       flashes: this.flashes,

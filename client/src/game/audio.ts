@@ -14,6 +14,10 @@ const NAMES = [
   "footstep_1",
   "footstep_2",
   "footstep_3",
+  "giant_step",
+  "giant_roar",
+  "giant_roar_short",
+  "giant_hit",
 ] as const;
 
 export type SfxName = (typeof NAMES)[number] | string;
@@ -35,14 +39,17 @@ export async function preloadSfx(): Promise<void> {
   const ac = ensureCtx();
   await Promise.all(
     NAMES.map(async (name) => {
-      try {
-        const res = await fetch(`/assets/sfx/${name}.ogg`);
-        if (!res.ok) return;
-        const ab = await res.arrayBuffer();
-        const buf = await ac.decodeAudioData(ab.slice(0));
-        buffers.set(name, buf);
-      } catch {
-        /* ignore missing */
+      for (const ext of ["ogg", "wav"] as const) {
+        try {
+          const res = await fetch(`/assets/sfx/${name}.${ext}`);
+          if (!res.ok) continue;
+          const ab = await res.arrayBuffer();
+          const buf = await ac.decodeAudioData(ab.slice(0));
+          buffers.set(name, buf);
+          return;
+        } catch {
+          /* try next ext */
+        }
       }
     }),
   );
@@ -132,6 +139,37 @@ function synthSplash() {
   src.start();
 }
 
+/** Fallback grave se giant_*.wav/ogg faltar — ainda posicional via vol externo. */
+function synthGiant(kind: "step" | "roar" | "roar_short" | "hit", volScale: number) {
+  const ac = ensureCtx();
+  const dur =
+    kind === "roar" ? 1.05 : kind === "roar_short" ? 0.32 : kind === "hit" ? 0.26 : 0.16;
+  const len = Math.floor(ac.sampleRate * dur);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    let env = Math.exp(-t * (kind === "roar" ? 3.2 : kind === "roar_short" ? 9 : 22));
+    if (kind === "roar" || kind === "roar_short") env *= Math.min(1, t * 10);
+    const f0 = kind === "step" ? 55 : kind === "hit" ? 70 : 88 + Math.sin(t * 7) * 28;
+    let s = Math.sin(2 * Math.PI * f0 * t) * 0.55;
+    s += Math.sin(2 * Math.PI * (f0 * 0.5) * t) * 0.35;
+    s += (Math.random() * 2 - 1) * (kind === "step" ? 0.3 : 0.42);
+    data[i] = Math.max(-1, Math.min(1, s * env));
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = kind === "roar" || kind === "roar_short" ? 900 : 480;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : volScale * master * 0.7;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
 export function playSfx(
   name: SfxName,
   x?: number,
@@ -141,11 +179,20 @@ export function playSfx(
   if (!unlocked) return;
   if (muted || master <= 0) return;
   const ac = ensureCtx();
-  const buf = buffers.get(name);
+  let buf = buffers.get(name);
+  // fallbacks CC0 já no pack se giant_* ausente
+  if (!buf && name === "giant_step") buf = buffers.get("explosion");
+  else if (!buf && (name === "giant_roar" || name === "giant_roar_short")) {
+    buf = buffers.get("explosion");
+  } else if (!buf && name === "giant_hit") buf = buffers.get("hit_flesh");
   if (!buf) {
     if (name === "empty_click" || name === "pickup" || name === "reload") synthClick();
     if (name === "water_whoosh") synthWhoosh();
     if (name === "splash") synthSplash();
+    if (name === "giant_step") synthGiant("step", 0.9);
+    if (name === "giant_roar") synthGiant("roar", 1);
+    if (name === "giant_roar_short") synthGiant("roar_short", 0.95);
+    if (name === "giant_hit") synthGiant("hit", 1);
     return;
   }
 

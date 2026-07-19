@@ -428,3 +428,33 @@ export function spawnDust(x: number, y: number) {
     });
   }
 }
+
+/** Anel de poeira no pé do Gigante (impacto de passo). */
+export function spawnGiantStepDust(x: number, y: number) {
+  for (let i = 0; i < 3; i++) {
+    const ang = (Math.PI * 2 * i) / 3 + Math.random() * 0.4;
+    pushPart({
+      x: x + Math.cos(ang) * 10,
+      y: y + 10 + Math.sin(ang) * 4,
+      vx: Math.cos(ang) * (20 + Math.random() * 25),
+      vy: -8 - Math.random() * 18,
+      life: 280,
+      max: 280,
+      r: 2.5,
+      color: "#a88850",
+      kind: "dust",
+    });
+  }
+  // rastro leve (1 part. / passo)
+  pushPart({
+    x: x + (Math.random() - 0.5) * 4,
+    y: y + 12,
+    vx: (Math.random() - 0.5) * 12,
+    vy: -4 - Math.random() * 10,
+    life: 320,
+    max: 320,
+    r: 2,
+    color: "#8a7048",
+    kind: "dust",
+  });
+}

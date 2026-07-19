@@ -1,4 +1,4 @@
-Kenney.nl audio packs (Creative Commons CC0 1.0)
+﻿Kenney.nl audio packs (Creative Commons CC0 1.0)
 Credit Kenney.nl is appreciated but not required.
 
 Sources:
@@ -22,3 +22,10 @@ Mapped files in this folder:
   hit_flesh.ogg   ← impactPunch_medium_002.ogg
   door.ogg        ← doorOpen_1.ogg (RPG)
   footstep_1..3   ← footstep_concrete_000..002.ogg
+
+Giant SFX (procedural WAV, CC0 — original synthesis for Arena Corte):
+  giant_step.wav       ← low thump + noise (foot plant)
+  giant_roar.wav       ← long grit roar (summon)
+  giant_roar_short.wav ← short roar (attack windup)
+  giant_hit.wav        ← heavy impact (kill strike)
+  Fallback if missing: explosion.ogg / hit_flesh.ogg (Kenney CC0)

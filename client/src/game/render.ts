@@ -106,6 +106,8 @@ export interface RenderView {
   enemies: EnemySnap[];
   /** mapa giantId → alvo travado (pra marca visual) */
   giantTargets?: Map<number, { kind: 0 | 1 | 2; id: number }>;
+  /** juice visual do Gigante (facing/skew/flash de windup) */
+  giantVis?: Map<number, { facing: number; skew: number; windupFlash: number }>;
   bullets: BulletState[];
   throwables: ThrowableState[];
   flashes: MuzzleFlash[];
@@ -594,7 +596,7 @@ function drawSilenceIcon(ctx: CanvasRenderingContext2D, x: number, y: number) {
   ctx.restore();
 }
 
-function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number) {
+function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, view: RenderView) {
   const def =
     en.type === 2
       ? ENEMY_DEFS[2]!
@@ -607,24 +609,52 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number) {
   const stun = en.state === 6;
   const charge = en.state === 5;
   const chase = en.state === 1;
+  const gVis = en.type === 2 ? view.giantVis?.get(en.id) : undefined;
+  const skew = gVis?.skew ?? 0;
+  const facing = gVis?.facing ?? 0;
+  const windupFlash = gVis?.windupFlash ?? 0;
 
   ctx.save();
   ctx.translate(en.x, en.y + bob);
 
   if (en.type === 2) {
-    // Gigante — humanoide grande, silhueta escura
+    // Gigante — humanoide grande, silhueta escura + peso visual
     const s = scale;
-    ctx.fillStyle = "rgba(10,8,12,0.5)";
+    const shadowOx = Math.cos(facing) * 6 * s;
+    const shadowOy = Math.sin(facing) * 4 * s;
+    ctx.fillStyle = "rgba(0,0,0,0.62)";
     ctx.beginPath();
-    ctx.ellipse(0, 20 * s, 22 * s, 8 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(shadowOx, 22 * s + shadowOy, 34 * s, 12 * s, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    if (windup) {
-      const pulse = 0.35 + Math.sin(tMs * 0.04) * 0.2;
-      ctx.fillStyle = `rgba(200,140,40,${pulse})`;
+    // massa ao virar
+    ctx.transform(1, 0, skew, 1, 0, 0);
+
+    // halo de aggro (CHASE) — pulso mais rápido perto do local
+    if (chase && view.local?.alive) {
+      const dist = Math.hypot(en.x - view.local.x, en.y - view.local.y);
+      const near = 1 - Math.min(1, dist / 520);
+      const pulseHz = 0.012 + near * 0.05;
+      const pulse = 0.18 + (0.12 + near * 0.14) * (0.5 + 0.5 * Math.sin(tMs * pulseHz));
+      ctx.fillStyle = `rgba(190,24,18,${pulse})`;
       ctx.beginPath();
-      ctx.arc(0, -8 * s, 28 * s, 0, Math.PI * 2);
+      ctx.arc(0, -4 * s, 30 * s, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    if (windup) {
+      const pulse = 0.4 + Math.sin(tMs * 0.055) * 0.22 + windupFlash * 0.35;
+      ctx.fillStyle = `rgba(220,30,20,${Math.min(0.85, pulse)})`;
+      ctx.beginPath();
+      ctx.arc(0, -8 * s, 30 * s, 0, Math.PI * 2);
+      ctx.fill();
+      if (windupFlash > 0.05) {
+        ctx.strokeStyle = `rgba(255,60,40,${0.55 + windupFlash * 0.4})`;
+        ctx.lineWidth = 3 + windupFlash * 2;
+        ctx.beginPath();
+        ctx.arc(0, -4 * s, 32 * s, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
 
     // pernas
@@ -632,13 +662,13 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number) {
     ctx.fillRect(-10 * s, 4 * s, 7 * s, 16 * s);
     ctx.fillRect(3 * s, 4 * s, 7 * s, 16 * s);
     // torso largo
-    ctx.fillStyle = windup ? "#3a2820" : chase ? "#221820" : "#1a1418";
+    ctx.fillStyle = windup ? "#4a2018" : chase ? "#221820" : "#1a1418";
     ctx.beginPath();
     ctx.ellipse(0, -4 * s, 16 * s, 18 * s, 0, 0, Math.PI * 2);
     ctx.fill();
     // contorno
-    ctx.strokeStyle = "#c8a060";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = windup ? "#ff5030" : "#c8a060";
+    ctx.lineWidth = windup ? 2.2 : 1.5;
     ctx.beginPath();
     ctx.ellipse(0, -4 * s, 16 * s, 18 * s, 0, 0, Math.PI * 2);
     ctx.stroke();
@@ -646,7 +676,7 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number) {
     ctx.strokeStyle = "#2a2028";
     ctx.lineWidth = 5 * s;
     ctx.lineCap = "round";
-    const armUp = windup ? -28 * s : 10 * s;
+    const armUp = windup ? -32 * s - windupFlash * 6 * s : 10 * s;
     ctx.beginPath();
     ctx.moveTo(14 * s, -8 * s);
     ctx.lineTo(22 * s, armUp);
@@ -658,11 +688,11 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number) {
     ctx.beginPath();
     ctx.arc(0, -26 * s, 11 * s, 0, Math.PI * 2);
     ctx.fill();
-    ctx.strokeStyle = "#e8c070";
+    ctx.strokeStyle = windup ? "#ff7050" : "#e8c070";
     ctx.lineWidth = 1.2;
     ctx.stroke();
     // olhos
-    ctx.fillStyle = windup ? "#ffcc44" : "#e8a838";
+    ctx.fillStyle = windup ? "#ff4020" : "#e8a838";
     ctx.beginPath();
     ctx.arc(-4 * s, -27 * s, 2 * s, 0, Math.PI * 2);
     ctx.arc(4 * s, -27 * s, 2 * s, 0, Math.PI * 2);
@@ -808,8 +838,15 @@ function drawBossEdgeMarker(
   viewW: number,
   viewH: number,
   tMs: number,
+  view: RenderView,
 ) {
   if (en.type !== 1 && en.type !== 2) return;
+  const isGiant = en.type === 2;
+  // seta do Gigante: só quem É o alvo travado
+  if (isGiant) {
+    const t = view.giantTargets?.get(en.id);
+    if (!t || t.kind !== 0 || t.id !== view.selfId) return;
+  }
   const pad = 28;
   const onScreen =
     en.x >= camX - 20 &&
@@ -821,13 +858,17 @@ function drawBossEdgeMarker(
   const mx = Math.max(camX + pad, Math.min(camX + viewW - pad, en.x));
   const my = Math.max(camY + pad, Math.min(camY + viewH - pad, en.y));
   const ang = Math.atan2(en.y - my, en.x - mx);
-  const pulse = 0.7 + Math.sin(tMs * 0.015) * 0.3;
-  const isGiant = en.type === 2;
+  let pulseHz = 0.015;
+  if (isGiant && view.local) {
+    const dist = Math.hypot(en.x - view.local.x, en.y - view.local.y);
+    pulseHz = 0.018 + (1 - Math.min(1, dist / 700)) * 0.06;
+  }
+  const pulse = 0.7 + Math.sin(tMs * pulseHz) * 0.3;
 
   ctx.save();
   ctx.translate(mx, my);
   ctx.rotate(ang);
-  ctx.fillStyle = isGiant ? `rgba(200,160,80,${pulse})` : `rgba(232,168,56,${pulse})`;
+  ctx.fillStyle = isGiant ? `rgba(220,40,30,${pulse})` : `rgba(232,168,56,${pulse})`;
   ctx.beginPath();
   ctx.moveTo(14, 0);
   ctx.lineTo(-8, 10);
@@ -835,7 +876,7 @@ function drawBossEdgeMarker(
   ctx.closePath();
   ctx.fill();
   ctx.rotate(-ang);
-  ctx.fillStyle = isGiant ? "#e8c070" : "#ffcc44";
+  ctx.fillStyle = isGiant ? "#ff5040" : "#ffcc44";
   ctx.font = "bold 11px sans-serif";
   ctx.textAlign = "center";
   ctx.fillText(isGiant ? "GIGANTE" : "CHEFE", 0, -16);
@@ -849,12 +890,12 @@ function drawGiantTargetMarks(
 ) {
   const marks = view.giantTargets;
   if (!marks || marks.size === 0) return;
-  const pulse = 0.55 + Math.sin(tMs * 0.02) * 0.25;
 
   for (const [, t] of marks) {
     let x = 0;
     let y = 0;
     let ok = false;
+    const isSelfTarget = t.kind === 0 && t.id === view.selfId;
     if (t.kind === 0) {
       if (view.local && view.selfId === t.id) {
         x = view.local.x;
@@ -879,17 +920,32 @@ function drawGiantTargetMarks(
       }
     }
     if (!ok) continue;
+    // ALVO intensificado só pra quem é o alvo
+    const pulseHz = isSelfTarget ? 0.045 : 0.02;
+    const pulse = isSelfTarget
+      ? 0.7 + Math.sin(tMs * pulseHz) * 0.3
+      : 0.45 + Math.sin(tMs * pulseHz) * 0.2;
+    const col = isSelfTarget
+      ? `rgba(255,48,32,${pulse})`
+      : `rgba(232,168,56,${pulse})`;
     ctx.save();
     ctx.translate(x, y - 36);
-    ctx.strokeStyle = `rgba(232,168,56,${pulse})`;
-    ctx.lineWidth = 2;
+    if (isSelfTarget) {
+      ctx.strokeStyle = `rgba(255,80,50,${0.25 + pulse * 0.35})`;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.arc(0, 8, 18 + Math.sin(tMs * pulseHz) * 3, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.strokeStyle = col;
+    ctx.lineWidth = isSelfTarget ? 2.6 : 2;
     ctx.beginPath();
     ctx.moveTo(-8, 0);
     ctx.lineTo(0, -8);
     ctx.lineTo(8, 0);
     ctx.stroke();
-    ctx.fillStyle = `rgba(232,168,56,${pulse})`;
-    ctx.font = "bold 9px sans-serif";
+    ctx.fillStyle = col;
+    ctx.font = isSelfTarget ? "bold 11px sans-serif" : "bold 9px sans-serif";
     ctx.textAlign = "center";
     ctx.fillText("ALVO", 0, -12);
     ctx.restore();
@@ -1383,10 +1439,10 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   // inimigos + Gigante
   for (const en of view.enemies ?? []) {
-    drawEnemy(ctx, en, tMs);
+    drawEnemy(ctx, en, tMs, view);
   }
   for (const en of view.enemies ?? []) {
-    drawBossEdgeMarker(ctx, en, camX, camY, viewW, viewH, tMs);
+    drawBossEdgeMarker(ctx, en, camX, camY, viewW, viewH, tMs, view);
   }
   drawGiantTargetMarks(ctx, view, tMs);
 

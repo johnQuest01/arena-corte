@@ -224,11 +224,11 @@ export function spawnGiantSummonFx(x: number, y: number) {
 }
 
 export function spawnGiantHitFx(x: number, y: number) {
-  for (let i = 0; i < 22; i++) {
+  for (let i = 0; i < 28; i++) {
     const ang = Math.random() * Math.PI * 2;
-    const spd = 180 + Math.random() * 220;
-    const life = 200 + Math.random() * 180;
-    const r = 2 + Math.random() * 2.5;
+    const spd = 180 + Math.random() * 260;
+    const life = 200 + Math.random() * 200;
+    const r = 2 + Math.random() * 3;
     pushPart({
       x,
       y,
@@ -238,10 +238,28 @@ export function spawnGiantHitFx(x: number, y: number) {
       max: life,
       r,
       baseR: r,
-      color: "#e8c070",
+      color: i % 3 === 0 ? "#ff6040" : "#e8c070",
       alpha: 0.9,
       depth: "front",
       splash: true,
+    });
+  }
+  // poeira pesada no impacto
+  for (let i = 0; i < 8; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    pushPart({
+      x: x + Math.cos(ang) * 8,
+      y: y + Math.sin(ang) * 6,
+      vx: Math.cos(ang) * (40 + Math.random() * 60),
+      vy: Math.sin(ang) * (30 + Math.random() * 40) - 20,
+      life: 320,
+      max: 320,
+      r: 3,
+      baseR: 3,
+      color: "#6a5040",
+      alpha: 0.75,
+      depth: "mid",
+      splash: false,
     });
   }
 }
