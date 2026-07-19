@@ -618,85 +618,133 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
   ctx.translate(en.x, en.y + bob);
 
   if (en.type === 2) {
-    // Gigante — humanoide grande, silhueta escura + peso visual
+    // Gigante procedural — silhueta monstruosa (ombros largos, corcunda, olhos vermelhos)
     const s = scale;
-    const shadowOx = Math.cos(facing) * 6 * s;
-    const shadowOy = Math.sin(facing) * 4 * s;
-    ctx.fillStyle = "rgba(0,0,0,0.62)";
+    const shadowOx = Math.cos(facing) * 5 * s;
+    const shadowOy = Math.sin(facing) * 3 * s;
+    ctx.fillStyle = "rgba(6,4,8,0.55)";
     ctx.beginPath();
-    ctx.ellipse(shadowOx, 22 * s + shadowOy, 34 * s, 12 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(shadowOx, 22 * s + shadowOy, 26 * s, 9 * s, 0, 0, Math.PI * 2);
     ctx.fill();
 
-    // massa ao virar
+    // massa ao virar (juice)
     ctx.transform(1, 0, skew, 1, 0, 0);
 
-    // halo de aggro (CHASE) — pulso mais rápido perto do local
-    if (chase && view.local?.alive) {
-      const dist = Math.hypot(en.x - view.local.x, en.y - view.local.y);
-      const near = 1 - Math.min(1, dist / 520);
-      const pulseHz = 0.012 + near * 0.05;
-      const pulse = 0.18 + (0.12 + near * 0.14) * (0.5 + 0.5 * Math.sin(tMs * pulseHz));
-      ctx.fillStyle = `rgba(190,24,18,${pulse})`;
+    // aura de aggro contínua (chase) + pulso perto do local
+    if (chase) {
+      let alpha = 0.08;
+      if (view.local?.alive) {
+        const dist = Math.hypot(en.x - view.local.x, en.y - view.local.y);
+        const near = 1 - Math.min(1, dist / 520);
+        const pulseHz = 0.012 + near * 0.05;
+        alpha = 0.08 + near * 0.12 * (0.5 + 0.5 * Math.sin(tMs * pulseHz));
+      }
+      ctx.fillStyle = `rgba(190,24,18,${alpha})`;
       ctx.beginPath();
       ctx.arc(0, -4 * s, 30 * s, 0, Math.PI * 2);
       ctx.fill();
     }
 
+    // halo de windup vermelho (perigo)
     if (windup) {
-      const pulse = 0.4 + Math.sin(tMs * 0.055) * 0.22 + windupFlash * 0.35;
-      ctx.fillStyle = `rgba(220,30,20,${Math.min(0.85, pulse)})`;
+      const pulse = 0.4 + Math.sin(tMs * 0.05) * 0.22 + windupFlash * 0.3;
+      ctx.fillStyle = `rgba(200,40,30,${Math.min(0.85, pulse)})`;
       ctx.beginPath();
-      ctx.arc(0, -8 * s, 30 * s, 0, Math.PI * 2);
+      ctx.arc(0, -6 * s, 30 * s, 0, Math.PI * 2);
       ctx.fill();
       if (windupFlash > 0.05) {
-        ctx.strokeStyle = `rgba(255,60,40,${0.55 + windupFlash * 0.4})`;
-        ctx.lineWidth = 3 + windupFlash * 2;
+        ctx.strokeStyle = `rgba(255,60,40,${0.5 + windupFlash * 0.4})`;
+        ctx.lineWidth = 2.5 + windupFlash * 2;
         ctx.beginPath();
         ctx.arc(0, -4 * s, 32 * s, 0, Math.PI * 2);
         ctx.stroke();
       }
     }
 
-    // pernas
-    ctx.fillStyle = "#1a1418";
-    ctx.fillRect(-10 * s, 4 * s, 7 * s, 16 * s);
-    ctx.fillRect(3 * s, 4 * s, 7 * s, 16 * s);
-    // torso largo
-    ctx.fillStyle = windup ? "#4a2018" : chase ? "#221820" : "#1a1418";
-    ctx.beginPath();
-    ctx.ellipse(0, -4 * s, 16 * s, 18 * s, 0, 0, Math.PI * 2);
-    ctx.fill();
-    // contorno
-    ctx.strokeStyle = windup ? "#ff5030" : "#c8a060";
-    ctx.lineWidth = windup ? 2.2 : 1.5;
-    ctx.beginPath();
-    ctx.ellipse(0, -4 * s, 16 * s, 18 * s, 0, 0, Math.PI * 2);
-    ctx.stroke();
-    // braço levantado no windup
-    ctx.strokeStyle = "#2a2028";
-    ctx.lineWidth = 5 * s;
+    // pernas grossas e curtas
+    ctx.fillStyle = "#0f0b10";
+    ctx.fillRect(-11 * s, 6 * s, 9 * s, 15 * s);
+    ctx.fillRect(2 * s, 6 * s, 9 * s, 15 * s);
+
+    // braços longos ANTES do torso (ficam atrás)
+    ctx.strokeStyle = "#181016";
+    ctx.lineWidth = 7 * s;
     ctx.lineCap = "round";
-    const armUp = windup ? -32 * s - windupFlash * 6 * s : 10 * s;
+    const armUp = windup ? -30 * s - windupFlash * 6 * s : 14 * s;
     ctx.beginPath();
-    ctx.moveTo(14 * s, -8 * s);
-    ctx.lineTo(22 * s, armUp);
-    ctx.moveTo(-14 * s, -8 * s);
-    ctx.lineTo(-18 * s, 8 * s);
+    ctx.moveTo(15 * s, -10 * s);
+    ctx.lineTo(24 * s, armUp);
     ctx.stroke();
-    // cabeça
-    ctx.fillStyle = "#141018";
     ctx.beginPath();
-    ctx.arc(0, -26 * s, 11 * s, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = windup ? "#ff7050" : "#e8c070";
-    ctx.lineWidth = 1.2;
+    ctx.moveTo(-15 * s, -10 * s);
+    ctx.lineTo(-20 * s, 16 * s);
     ctx.stroke();
-    // olhos
-    ctx.fillStyle = windup ? "#ff4020" : "#e8a838";
+    // garras/mãos
+    ctx.fillStyle = "#0f0b10";
     ctx.beginPath();
-    ctx.arc(-4 * s, -27 * s, 2 * s, 0, Math.PI * 2);
-    ctx.arc(4 * s, -27 * s, 2 * s, 0, Math.PI * 2);
+    ctx.arc(24 * s, armUp, 4.5 * s, 0, Math.PI * 2);
     ctx.fill();
+    ctx.beginPath();
+    ctx.arc(-20 * s, 16 * s, 4.5 * s, 0, Math.PI * 2);
+    ctx.fill();
+
+    // torso — ombros largos retos, afunila na cintura (+ respiração)
+    const breath = 1 + Math.sin(tMs * 0.004 + en.id) * 0.02;
+    ctx.save();
+    ctx.scale(1, breath);
+    const bodyCol = windup ? "#3a1e18" : chase ? "#241820" : "#181016";
+    ctx.fillStyle = bodyCol;
+    ctx.beginPath();
+    ctx.moveTo(-18 * s, -14 * s);
+    ctx.lineTo(18 * s, -14 * s);
+    ctx.lineTo(12 * s, 8 * s);
+    ctx.lineTo(-12 * s, 8 * s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(0, -6 * s, 15 * s, 12 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = chase || windup ? "#a03828" : "#5a3a30";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(-18 * s, -14 * s);
+    ctx.lineTo(18 * s, -14 * s);
+    ctx.lineTo(12 * s, 8 * s);
+    ctx.lineTo(-12 * s, 8 * s);
+    ctx.closePath();
+    ctx.stroke();
+
+    // espinhos/crista nos ombros
+    ctx.fillStyle = "#0f0b10";
+    ctx.beginPath();
+    ctx.moveTo(-18 * s, -14 * s);
+    ctx.lineTo(-24 * s, -26 * s);
+    ctx.lineTo(-10 * s, -16 * s);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(18 * s, -14 * s);
+    ctx.lineTo(24 * s, -26 * s);
+    ctx.lineTo(10 * s, -16 * s);
+    ctx.closePath();
+    ctx.fill();
+
+    // cabeça baixa entre os ombros (corcunda)
+    ctx.fillStyle = "#0d0a10";
+    ctx.beginPath();
+    ctx.arc(0, -20 * s, 9 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // olhos vermelhos brilhantes
+    const eye = windup ? "#ff3a3a" : chase ? "#e02020" : "#a01818";
+    ctx.fillStyle = eye;
+    ctx.shadowColor = eye;
+    ctx.shadowBlur = windup ? 14 : chase ? 8 : 4;
+    ctx.beginPath();
+    ctx.arc(-3.5 * s, -21 * s, 2.4 * s, 0, Math.PI * 2);
+    ctx.arc(3.5 * s, -21 * s, 2.4 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
   } else if (en.type === 1) {
     // Brutamontes — monstro enorme, inconfundível
     const s = scale * 0.55;
