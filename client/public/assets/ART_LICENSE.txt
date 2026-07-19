@@ -1,0 +1,11 @@
+Arena Corte — arte em client/public/assets/art/
+
+Status: pasta pronta para assets gerados (Retro Diffusion / PixelLab).
+Enquanto os PNGs não forem adicionados, o jogo usa desenho procedural.
+
+Ao gerar/baixar assets, preencha:
+- Ferramenta: _______________
+- Data: _______________
+- Plano/termos: uso comercial permitido? (sim/não — conferir nos termos)
+- Paleta: Lospec Resurrect 64
+- Notas: _______________

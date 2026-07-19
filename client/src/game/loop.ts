@@ -40,6 +40,7 @@ import {
   setMuted,
   unlockAudio,
 } from "./audio";
+import { preloadArt } from "./art";
 import {
   clearDecals,
   drawDecalLayer,
@@ -56,6 +57,7 @@ import { InputController } from "./input";
 import {
   createFeel,
   drawFrame,
+  invalidateGroundCache,
   pulseShotFeel,
   pushFlashesFromEvents,
   pushFxFromEvents,
@@ -207,6 +209,7 @@ export class GameClient {
     };
     window.addEventListener("pointerdown", unlock);
     void preloadSfx();
+    void preloadArt().then(() => invalidateGroundCache());
 
     this.transport.on({
       onMessage: (data) => this.onMsg(data),

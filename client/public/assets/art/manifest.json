@@ -1,0 +1,42 @@
+{
+  "frameSize": 32,
+  "chars": [
+    {
+      "id": 0,
+      "idle": { "file": "char0_idle.png", "frames": 2, "fps": 3 },
+      "walk": { "file": "char0_walk.png", "frames": 6, "fps": 10 },
+      "death": { "file": "char0_death.png", "frames": 4, "fps": 12 }
+    }
+  ],
+  "guns": {
+    "0": "gun_pistol.png",
+    "1": "gun_m4a1.png",
+    "2": "gun_m16.png",
+    "3": "gun_ak47.png",
+    "4": "gun_shotgun.png",
+    "5": "gun_smg.png",
+    "6": "gun_sniper.png"
+  },
+  "throws": {
+    "1": "throw_grenade.png",
+    "2": "throw_flash.png",
+    "3": "throw_smoke.png",
+    "4": "throw_molotov.png"
+  },
+  "items": {
+    "ammo": "item_ammo.png"
+  },
+  "tiles": {
+    "sand": ["tile_sand_a.png", "tile_sand_b.png", "tile_sand_c.png"],
+    "floorWood": "tile_floor_wood.png",
+    "floorConcrete": "tile_floor_concrete.png",
+    "wall": "tile_wall.png",
+    "roof": "tile_roof.png"
+  },
+  "props": {
+    "crate": "prop_crate.png",
+    "barrel": "prop_barrel.png",
+    "car": "prop_car.png"
+  },
+  "door": "door.png"
+}

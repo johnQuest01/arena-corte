@@ -22,6 +22,16 @@ import type {
   ThrowableState,
   TickEvent,
 } from "../../../shared/protocol";
+import {
+  drawSheetFrame,
+  getCharAnim,
+  getDoorImg,
+  getGunImg,
+  getItemImg,
+  getPropImg,
+  getThrowImg,
+  getTileImg,
+} from "./art";
 
 export const LOSPEC = {
   sand: "#c8a35a",
@@ -104,6 +114,25 @@ export interface RenderView {
 
 const LIGHT_DIR = { x: 0.35, y: 0.55 };
 
+/** Chão estático pré-renderizado (não redesenha tile a tile por frame). */
+let groundCache: HTMLCanvasElement | null = null;
+
+export function invalidateGroundCache() {
+  groundCache = null;
+}
+
+function ensureGroundCache() {
+  if (groundCache) return groundCache;
+  const c = document.createElement("canvas");
+  c.width = ARENA_W;
+  c.height = ARENA_H;
+  const g = c.getContext("2d")!;
+  g.imageSmoothingEnabled = false;
+  paintGround(g);
+  groundCache = c;
+  return c;
+}
+
 export function resizeCanvas(canvas: HTMLCanvasElement) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const w = Math.max(320, Math.min(window.innerWidth - 16, ARENA_W + 40));
@@ -140,26 +169,40 @@ function tileColor(t: number, shade: number): string {
   return base;
 }
 
-function drawGround(ctx: CanvasRenderingContext2D) {
+function paintGround(ctx: CanvasRenderingContext2D) {
   for (let ty = 0; ty < GROUND.length; ty++) {
     for (let tx = 0; tx < GROUND[0]!.length; tx++) {
       const t = GROUND[ty]![tx]!;
       const shade = (tx * 3 + ty * 5) % 2;
-      ctx.fillStyle = tileColor(t, shade);
-      ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
-      if (t === T.SAND || t === T.DIRT) {
-        ctx.fillStyle = "rgba(0,0,0,0.06)";
-        ctx.fillRect(tx * TILE + 4, ty * TILE + 8, 3, 2);
-        ctx.fillRect(tx * TILE + 18, ty * TILE + 20, 4, 2);
-      }
-      // detalhe fixo por tile (semente do mapa)
-      if ((tx * 17 + ty * 31) % 8 === 0) {
-        ctx.fillStyle = "rgba(60,40,20,0.18)";
-        ctx.fillRect(tx * TILE + ((tx * 3) % 20), ty * TILE + ((ty * 5) % 22), 3, 2);
-        ctx.fillRect(tx * TILE + 10, ty * TILE + 14, 5, 1);
+      const x = tx * TILE;
+      const y = ty * TILE;
+      let img: HTMLImageElement | null = null;
+      if (t === T.SAND || t === T.DIRT) img = getTileImg("sand", tx, ty);
+      else if (t === T.WOOD) img = getTileImg("floorWood", tx, ty);
+      else if (t === T.CONCRETE) img = getTileImg("floorConcrete", tx, ty);
+
+      if (img) {
+        ctx.drawImage(img, x, y, TILE, TILE);
+      } else {
+        ctx.fillStyle = tileColor(t, shade);
+        ctx.fillRect(x, y, TILE, TILE);
+        if (t === T.SAND || t === T.DIRT) {
+          ctx.fillStyle = "rgba(0,0,0,0.06)";
+          ctx.fillRect(x + 4, y + 8, 3, 2);
+          ctx.fillRect(x + 18, y + 20, 4, 2);
+        }
+        if ((tx * 17 + ty * 31) % 8 === 0) {
+          ctx.fillStyle = "rgba(60,40,20,0.18)";
+          ctx.fillRect(x + ((tx * 3) % 20), y + ((ty * 5) % 22), 3, 2);
+          ctx.fillRect(x + 10, y + 14, 5, 1);
+        }
       }
     }
   }
+}
+
+function drawGround(ctx: CanvasRenderingContext2D) {
+  ctx.drawImage(ensureGroundCache(), 0, 0);
 }
 
 function drawSolids(ctx: CanvasRenderingContext2D) {
@@ -171,6 +214,34 @@ function drawSolids(ctx: CanvasRenderingContext2D) {
       const y = ty * TILE;
       ctx.fillStyle = LOSPEC.shadow;
       ctx.fillRect(x + LIGHT_DIR.x * 6, y + LIGHT_DIR.y * 6, TILE, TILE);
+
+      if (t === T.CRATE) {
+        const prop = getPropImg("crate");
+        if (prop) {
+          ctx.drawImage(prop, x, y, TILE, TILE);
+          continue;
+        }
+      } else if (t === T.BARREL) {
+        const prop = getPropImg("barrel");
+        if (prop) {
+          ctx.drawImage(prop, x, y, TILE, TILE);
+          continue;
+        }
+      } else if (t === T.CAR) {
+        const prop = getPropImg("car");
+        if (prop) {
+          // carcaça pode ser 96×48 — encaixa no tile atual (vizinho também CAR)
+          ctx.drawImage(prop, x, y, TILE, TILE);
+          continue;
+        }
+      } else if (t === T.WALL || t === T.METAL) {
+        const wall = getTileImg("wall", tx, ty);
+        if (wall) {
+          ctx.drawImage(wall, x, y, TILE, TILE);
+          continue;
+        }
+      }
+
       ctx.fillStyle = tileColor(t, 0);
       ctx.fillRect(x, y, TILE, TILE);
       ctx.fillStyle = "rgba(255,255,255,0.08)";
@@ -196,6 +267,7 @@ function drawDoors(
   doorsBits: number,
   doorAnim: Map<number, number>,
 ) {
+  const doorImg = getDoorImg();
   for (const d of DOOR_DEFS) {
     const openT = doorAnim.get(d.id) ?? (doorsBits & (1 << d.id) ? 1 : 0);
     const r = doorWorldRect(d);
@@ -205,11 +277,21 @@ function drawDoors(
     ctx.translate(hingeX, hingeY);
     const ang = openT * (Math.PI / 2) * (d.orient === "h" ? -1 : 1);
     ctx.rotate(ang);
-    ctx.fillStyle = "#5a3a28";
-    if (d.orient === "h") ctx.fillRect(0, -6, TILE, 12);
-    else ctx.fillRect(-6, 0, 12, TILE);
-    ctx.fillStyle = "#c8a35a";
-    ctx.fillRect(d.orient === "h" ? TILE - 6 : -2, d.orient === "h" ? -2 : TILE - 6, 4, 4);
+    if (doorImg) {
+      if (d.orient === "h") ctx.drawImage(doorImg, 0, -6, TILE, 12);
+      else {
+        ctx.save();
+        ctx.rotate(Math.PI / 2);
+        ctx.drawImage(doorImg, 0, -6, TILE, 12);
+        ctx.restore();
+      }
+    } else {
+      ctx.fillStyle = "#5a3a28";
+      if (d.orient === "h") ctx.fillRect(0, -6, TILE, 12);
+      else ctx.fillRect(-6, 0, 12, TILE);
+      ctx.fillStyle = "#c8a35a";
+      ctx.fillRect(d.orient === "h" ? TILE - 6 : -2, d.orient === "h" ? -2 : TILE - 6, 4, 4);
+    }
     ctx.restore();
   }
 }
@@ -238,6 +320,28 @@ function drawWeaponLayer(
   ctx.rotate(aim);
   if (facingLeft) ctx.scale(1, -1);
   ctx.translate(-gunKick * 5, 0);
+
+  const gunImg = getGunImg(weaponId);
+  if (gunImg) {
+    const targetLen = Math.max(12, tip);
+    const scale = targetLen / Math.max(1, gunImg.naturalWidth);
+    const dw = gunImg.naturalWidth * scale;
+    const dh = gunImg.naturalHeight * scale;
+    ctx.drawImage(gunImg, 0, -dh / 2, dw, dh);
+    if (muzzleFlash) {
+      const mx = tip;
+      const g = ctx.createRadialGradient(mx, 0, 0, mx, 0, 22);
+      g.addColorStop(0, "rgba(255,230,120,0.95)");
+      g.addColorStop(0.4, "rgba(255,140,40,0.55)");
+      g.addColorStop(1, "rgba(255,80,0,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(mx, 0, 22, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+    return;
+  }
 
   ctx.fillStyle = w.color;
 
@@ -396,38 +500,44 @@ function drawPersonSide(
   ctx.scale(CHAR, CHAR);
   ctx.transform(1, 0, aimSkew, 1, 0, 0);
 
-  // pés (swing em X)
-  ctx.fillStyle = look.shoes;
-  ctx.fillRect(-3 + legSwing, 8, 4, 3);
-  ctx.fillRect(1 - legSwing, 8, 4, 3);
-
-  // pernas
-  ctx.fillStyle = look.pants;
-  ctx.fillRect(-2.5 + legSwing * 0.7, 1, 3.5, 8);
-  ctx.fillRect(0.5 - legSwing * 0.7, 1, 3.5, 8);
-
-  // tronco
-  ctx.fillStyle = look.shirt;
-  ctx.fillRect(-5, -9, 10, 11);
-
-  // braços apontando pra arma (lado direito local = mira)
-  ctx.fillStyle = look.shirt;
-  ctx.fillRect(3, -7, 7, 3);
-  ctx.fillStyle = look.skin;
-  ctx.fillRect(8, -6.5, 4, 2.5);
-  // braço de trás (sutil)
-  ctx.fillStyle = look.shirt;
-  ctx.fillRect(-1, -5, 5, 2.5);
-
-  // cabeça no topo
-  ctx.fillStyle = look.skin;
-  ctx.beginPath();
-  ctx.arc(0, -14, 5.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = look.hair;
-  ctx.beginPath();
-  ctx.arc(0, -15.5, 5.2, Math.PI * 1.05, Math.PI * 1.95);
-  ctx.fill();
+  const animState = !p.alive ? "death" : speed > 25 ? "walk" : "idle";
+  const anim = getCharAnim(p.id, animState as "idle" | "walk" | "death");
+  if (anim) {
+    const speedFps =
+      animState === "walk"
+        ? anim.fps * Math.max(0.55, Math.min(2.2, speed / 140))
+        : anim.fps;
+    const frame =
+      animState === "death"
+        ? anim.frames - 1
+        : Math.floor((tMs / 1000) * speedFps) % anim.frames;
+    const fs = anim.frameSize;
+    drawSheetFrame(ctx, anim, frame, -fs / 2, -fs * 0.72, fs, fs);
+  } else {
+    // fallback procedural
+    ctx.fillStyle = look.shoes;
+    ctx.fillRect(-3 + legSwing, 8, 4, 3);
+    ctx.fillRect(1 - legSwing, 8, 4, 3);
+    ctx.fillStyle = look.pants;
+    ctx.fillRect(-2.5 + legSwing * 0.7, 1, 3.5, 8);
+    ctx.fillRect(0.5 - legSwing * 0.7, 1, 3.5, 8);
+    ctx.fillStyle = look.shirt;
+    ctx.fillRect(-5, -9, 10, 11);
+    ctx.fillStyle = look.shirt;
+    ctx.fillRect(3, -7, 7, 3);
+    ctx.fillStyle = look.skin;
+    ctx.fillRect(8, -6.5, 4, 2.5);
+    ctx.fillStyle = look.shirt;
+    ctx.fillRect(-1, -5, 5, 2.5);
+    ctx.fillStyle = look.skin;
+    ctx.beginPath();
+    ctx.arc(0, -14, 5.5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = look.hair;
+    ctx.beginPath();
+    ctx.arc(0, -15.5, 5.2, Math.PI * 1.05, Math.PI * 1.95);
+    ctx.fill();
+  }
 
   ctx.restore(); // fim flip corpo
 
@@ -449,19 +559,30 @@ function drawRoofs(
   ctx: CanvasRenderingContext2D,
   roofAlpha: Map<number, number>,
 ) {
+  const roofTile = getTileImg("roof");
   for (const b of BUILDINGS) {
     const a = roofAlpha.get(b.id) ?? 1;
     if (a <= 0.02) continue;
     const r = roofRect(b);
     ctx.globalAlpha = a;
-    ctx.fillStyle = LOSPEC.roof;
-    ctx.fillRect(r.x, r.y, r.w, r.h);
-    ctx.fillStyle = "rgba(0,0,0,0.2)";
-    for (let i = 0; i < r.w; i += 16) {
-      ctx.fillRect(r.x + i, r.y, 2, r.h);
+    if (roofTile) {
+      for (let y = r.y; y < r.y + r.h; y += TILE) {
+        for (let x = r.x; x < r.x + r.w; x += TILE) {
+          const dw = Math.min(TILE, r.x + r.w - x);
+          const dh = Math.min(TILE, r.y + r.h - y);
+          ctx.drawImage(roofTile, 0, 0, dw, dh, x, y, dw, dh);
+        }
+      }
+    } else {
+      ctx.fillStyle = LOSPEC.roof;
+      ctx.fillRect(r.x, r.y, r.w, r.h);
+      ctx.fillStyle = "rgba(0,0,0,0.2)";
+      for (let i = 0; i < r.w; i += 16) {
+        ctx.fillRect(r.x + i, r.y, 2, r.h);
+      }
+      ctx.fillStyle = "rgba(180,120,80,0.25)";
+      ctx.fillRect(r.x + 4, r.y + 4, r.w - 8, 6);
     }
-    ctx.fillStyle = "rgba(180,120,80,0.25)";
-    ctx.fillRect(r.x + 4, r.y + 4, r.w - 8, 6);
   }
   ctx.globalAlpha = 1;
 }
@@ -652,6 +773,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   const oy = (ch - ARENA_H * scale) / 2;
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = "#1a1410";
   ctx.fillRect(0, 0, cw, ch);
 
@@ -663,6 +785,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   const zy = (ARENA_H * (1 - z)) / 2;
 
   ctx.setTransform(scale * z, 0, 0, scale * z, ox + sx * scale - zx * scale, oy + sy * scale - zy * scale);
+  ctx.imageSmoothingEnabled = false;
 
   drawGround(ctx);
   view.drawDecals(ctx);
@@ -670,24 +793,34 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   drawDoors(ctx, view.doorsBits, view.doorAnim);
 
   // drops de munição
+  const ammoImg = getItemImg("ammo");
   for (const d of view.ammoDrops) {
     const bob = Math.sin(tMs * 0.006 + d.id) * 3;
     ctx.fillStyle = LOSPEC.shadow;
     ctx.beginPath();
     ctx.ellipse(d.x, d.y + 6, 8, 3, 0, 0, Math.PI * 2);
     ctx.fill();
-    ctx.fillStyle = "#E8A838";
-    ctx.fillRect(d.x - 7, d.y - 6 + bob, 14, 10);
-    ctx.fillStyle = "#2a2010";
-    ctx.fillRect(d.x - 5, d.y - 3 + bob, 10, 5);
+    if (ammoImg) {
+      ctx.drawImage(ammoImg, d.x - 8, d.y - 8 + bob, 16, 16);
+    } else {
+      ctx.fillStyle = "#E8A838";
+      ctx.fillRect(d.x - 7, d.y - 6 + bob, 14, 10);
+      ctx.fillStyle = "#2a2010";
+      ctx.fillRect(d.x - 5, d.y - 3 + bob, 10, 5);
+    }
   }
 
   // throwables
   for (const t of view.throwables) {
-    ctx.fillStyle = "#c8a35a";
-    ctx.beginPath();
-    ctx.arc(t.x, t.y, 5, 0, Math.PI * 2);
-    ctx.fill();
+    const timg = getThrowImg(t.kind);
+    if (timg) {
+      ctx.drawImage(timg, t.x - 8, t.y - 8, 16, 16);
+    } else {
+      ctx.fillStyle = "#c8a35a";
+      ctx.beginPath();
+      ctx.arc(t.x, t.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 
   view.drawGore(ctx);
