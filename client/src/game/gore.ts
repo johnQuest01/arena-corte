@@ -1,7 +1,7 @@
 /**
- * gore.ts — sangue, gibs, cadáveres, decals (client-only).
+ * gore.ts — sangue, gibs, cadáveres, decals + números de dano/kill (client-only).
  */
-import { LOADOUTS } from "../../../shared/gear";
+import { LOADOUTS, weaponOf } from "../../../shared/gear";
 import type { TickEvent } from "../../../shared/protocol";
 
 export interface Particle {
@@ -37,10 +37,25 @@ export interface Corpse {
   t: number;
 }
 
+interface FloatNum {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+  max: number;
+  text: string;
+  color: string;
+  size: number;
+  /** outline escuro pra ler no sangue */
+  stroke: string;
+}
+
 const MAX_PARTS = 400;
 const particles: Particle[] = [];
 const gibs: Gib[] = [];
 const corpses: Corpse[] = [];
+const floats: FloatNum[] = [];
 const flashHit = new Map<number, number>(); // playerId → untilMs
 
 let decal: HTMLCanvasElement | null = null;
@@ -63,12 +78,62 @@ export function clearDecals() {
   particles.length = 0;
   gibs.length = 0;
   corpses.length = 0;
+  floats.length = 0;
   flashHit.clear();
 }
 
 function pushPart(p: Particle) {
   particles.push(p);
   while (particles.length > MAX_PARTS) particles.shift();
+}
+
+function pushFloat(f: FloatNum) {
+  floats.push(f);
+  while (floats.length > 40) floats.shift();
+}
+
+function damageFromHit(weaponId: number | undefined): number {
+  const id = weaponId ?? 0;
+  if (id === 100) return 55;
+  if (id === 101) return 12;
+  if (id >= 0 && id <= 6) return weaponOf(id).damage;
+  return 20;
+}
+
+function spawnDamageFloat(
+  x: number,
+  y: number,
+  amount: number,
+  kind: "out" | "in",
+) {
+  const crit = amount >= 50;
+  pushFloat({
+    x: x + (Math.random() - 0.5) * 18,
+    y: y - 20,
+    vx: (Math.random() - 0.5) * 28,
+    vy: -45 - Math.random() * 35,
+    life: crit ? 900 : 750,
+    max: crit ? 900 : 750,
+    text: `-${amount}`,
+    color: kind === "out" ? (crit ? "#ffe566" : "#fff2c8") : "#ff4a4a",
+    size: kind === "out" ? (crit ? 22 : 16) : 18,
+    stroke: kind === "out" ? "#3a1800" : "#4a0000",
+  });
+}
+
+function spawnKillFloat(x: number, y: number) {
+  pushFloat({
+    x,
+    y: y - 36,
+    vx: 0,
+    vy: -55,
+    life: 1400,
+    max: 1400,
+    text: "+1 KILL",
+    color: "#ffd24a",
+    size: 20,
+    stroke: "#2a1800",
+  });
 }
 
 function stampDecal(x: number, y: number, r: number, color: string, a = 0.55) {
@@ -101,11 +166,9 @@ function lookOf(id: number) {
   return LOADOUTS[id % LOADOUTS.length]!;
 }
 
-export function processGoreEvents(events: TickEvent[], now: number) {
+export function processGoreEvents(events: TickEvent[], now: number, selfId = -1) {
   for (const e of events) {
     if (e.kind === "hit" && e.b !== 255) {
-      const dir = Math.atan2(e.y - (e.y - 1), e.x); // fallback
-      void dir;
       const ang = Math.random() * Math.PI * 2;
       const n = 4 + Math.floor(Math.random() * 5);
       for (let i = 0; i < n; i++) {
@@ -124,8 +187,19 @@ export function processGoreEvents(events: TickEvent[], now: number) {
         });
       }
       flashHit.set(e.b, now + 50);
+
+      // números de dano: você acertou / te acertaram
+      const dmg = damageFromHit(e.weaponId);
+      if (e.a === selfId && e.b !== selfId) {
+        spawnDamageFloat(e.x, e.y, dmg, "out");
+      } else if (e.b === selfId) {
+        spawnDamageFloat(e.x, e.y, dmg, "in");
+      }
     }
     if (e.kind === "death") {
+      if (e.a === selfId && e.b !== selfId) {
+        spawnKillFloat(e.x, e.y);
+      }
       const cause = e.weaponId ?? 0;
       const look = lookOf(e.b);
       if (cause === 100) {
@@ -266,6 +340,17 @@ export function tickGore(dtMs: number, now: number) {
   for (const [id, until] of flashHit) {
     if (now > until) flashHit.delete(id);
   }
+
+  for (const f of floats) {
+    f.x += f.vx * (dtMs / 1000);
+    f.y += f.vy * (dtMs / 1000);
+    f.vy += 55 * (dtMs / 1000); // sobe e desacelera
+    f.vx *= 0.98;
+    f.life -= dtMs;
+  }
+  for (let i = floats.length - 1; i >= 0; i--) {
+    if (floats[i]!.life <= 0) floats.splice(i, 1);
+  }
 }
 
 export function hitFlashActive(id: number, now: number) {
@@ -309,6 +394,23 @@ export function drawGoreActors(ctx: CanvasRenderingContext2D) {
     ctx.fill();
   }
   ctx.globalAlpha = 1;
+
+  // números de dano / kill por cima do sangue
+  for (const f of floats) {
+    const u = f.life / f.max;
+    const a = Math.min(1, u * 1.4);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.font = `bold ${f.size}px "Segoe UI", system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = f.stroke;
+    ctx.fillStyle = f.color;
+    ctx.strokeText(f.text, f.x, f.y);
+    ctx.fillText(f.text, f.x, f.y);
+    ctx.restore();
+  }
 }
 
 export function spawnDust(x: number, y: number) {

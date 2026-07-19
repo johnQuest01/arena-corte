@@ -1,7 +1,7 @@
-﻿/**
+/**
  * laghistory.ts â€” ring buffer de posiÃ§Ãµes + portas para lag compensation.
  */
-import { INTERP_DELAY_MS, PLAYER_R } from "./constants";
+import { INTERP_DELAY_MS, PLAYER_HIT_R, PLAYER_HIT_Y } from "./constants";
 import { hitsSolid } from "./map";
 import type { GameSim } from "./sim";
 import { doorBitsOf } from "./sim";
@@ -112,8 +112,8 @@ export class LagHistory {
       if (blocked) continue;
       const cx = ox + dx * proj;
       const cy = oy + dy * proj;
-      const dist = Math.hypot(pos.x - cx, pos.y - cy);
-      if (dist <= PLAYER_R + 4) {
+      const dist = Math.hypot(pos.x - cx, pos.y + PLAYER_HIT_Y - cy);
+      if (dist <= PLAYER_HIT_R + 4) {
         if (!best || proj < best.dist) {
           best = { hitId: p.id, x: pos.x, y: pos.y, dist: proj };
         }

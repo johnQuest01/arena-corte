@@ -1,4 +1,4 @@
-﻿/** Constantes compartilhadas â€” cliente e servidor. */
+/** Constantes compartilhadas â€” cliente e servidor. */
 import { MAP_SPAWNS } from "./map";
 export const TICK_HZ = 30;
 export const TICK_MS = 1000 / TICK_HZ;
@@ -17,6 +17,13 @@ export const ARENA_H = 1792;
 export const CAM_VIEW_W = 960;
 export const CAM_VIEW_H = 640;
 export const PLAYER_R = 14;
+/**
+ * Raio de ACERTO (balas/melee) — alinhado ao tamanho visual do personagem
+ * (sprite ~112px). PLAYER_R fica menor só pra portas/paredes.
+ */
+export const PLAYER_HIT_R = 48;
+/** Centro do torso acima do pivot (pés) — onde a figura é desenhada. */
+export const PLAYER_HIT_Y = -30;
 export const BULLET_SPEED = 520;
 export const BULLET_R = 3;
 export const MOVE_SPEED = 210;

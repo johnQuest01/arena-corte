@@ -15,6 +15,7 @@ interface Props {
   masterVol?: number;
   onMuteToggle?: () => void;
   onVolume?: (v: number) => void;
+  mobile?: boolean;
 }
 
 export function Hud({
@@ -26,6 +27,7 @@ export function Hud({
   masterVol = 0.85,
   onMuteToggle,
   onVolume,
+  mobile = false,
 }: Props) {
   const players = hud.lobby?.players ?? hud.snapshot?.players.map((p) => ({
     id: p.id,
@@ -54,7 +56,13 @@ export function Hud({
               P{p.id + 1} {p.kills}
             </span>
           ))}
-          {hud.phase === "playing" && (
+          {hud.phase === "playing" && (hud.mode ?? 0) === 1 && (
+            <span className="mono" style={{ color: "var(--giz)" }}>
+              Onda {hud.wave ?? 0} · resta {hud.waveLeft ?? 0} · vivos {hud.playersAlive ?? 0}
+              {hud.bossAlive ? " · BRUTAMONTES!" : ""}
+            </span>
+          )}
+          {hud.phase === "playing" && (hud.mode ?? 0) !== 1 && (
             <span className="mono" style={{ color: "var(--sand)" }}>
               {mm}:{ss}
             </span>
@@ -72,7 +80,7 @@ export function Hud({
               {muted ? "som off" : "som"}
             </button>
           )}
-          {onVolume && (
+          {!mobile && onVolume && (
             <input
               type="range"
               min={0}
@@ -93,8 +101,14 @@ export function Hud({
       {(hud.phase === "lobby" || hud.phase === "connecting") && (
         <div className="lobby-overlay">
           <div className="lobby-card stack">
-            <h2 style={{ margin: 0 }}>Sala — aguardando</h2>
-            <p className="hint">Máximo 3 jogadores. Host inicia com 2+.</p>
+            <h2 style={{ margin: 0 }}>
+              Sala — {(hud.lobby?.mode ?? hud.welcome?.mode) === 1 ? "Survival Zumbis" : "aguardando"}
+            </h2>
+            <p className="hint">
+              {(hud.lobby?.mode ?? hud.welcome?.mode) === 1
+                ? "Ondas de zumbis. Brutamontes entra a partir da onda 2. Fogo amigo LIGADO."
+                : "Máximo 3 jogadores. Host inicia com 2+."}
+            </p>
             <ul className="player-list">
               {players.map((p) => (
                 <li key={p.id}>
@@ -186,7 +200,7 @@ export function Hud({
                 </span>
                 <span style={{ color: "var(--muted)" }}> / {hud.reserve ?? 0}</span>
               </div>
-              <div>{hud.weaponName ?? "Pistola"} · 1-7 · R reload</div>
+              <div>{hud.weaponName ?? "Pistola"}</div>
               {(hud.reloadProgress ?? 0) > 0 && (
                 <div className="hp-bar" style={{ width: 120, marginLeft: "auto", marginTop: 4 }}>
                   <div
@@ -198,7 +212,36 @@ export function Hud({
                   />
                 </div>
               )}
-              <div>shift · e porta · g/f/c/v throw</div>
+              {!mobile && (
+                <>
+                  <div className="ability-hud" title={hud.abilityName ?? "Jato de Água"}>
+                    <div
+                      className={`ability-icon${(hud.abilityCd ?? 1) < 1 ? " cooling" : ""}${hud.stunned ? " stunned" : ""}`}
+                      style={{ ["--cd" as string]: String(1 - (hud.abilityCd ?? 1)) }}
+                    >
+                      <span className="ability-glyph">
+                        {(hud.abilityName ?? "").includes("Gigante") ? "G" : "W"}
+                      </span>
+                      <span className="ability-key">Q</span>
+                    </div>
+                    <div className="ability-label mono">
+                      {hud.abilityName ?? "Jato"}
+                      {(hud.abilityCd ?? 1) < 1
+                        ? ` ${Math.ceil(((1 - (hud.abilityCd ?? 1)) * (hud.abilityCdMs ?? 6000)) / 1000)}s`
+                        : " pronta"}
+                    </div>
+                  </div>
+                  <div>1-7 arma · R reload · Q poder · T troca · shift sprint</div>
+                </>
+              )}
+              {mobile && (
+                <div className="ability-label mono" style={{ marginTop: 4 }}>
+                  {hud.abilityName ?? "Jato"}
+                  {(hud.abilityCd ?? 1) < 1
+                    ? ` ${Math.ceil(((1 - (hud.abilityCd ?? 1)) * (hud.abilityCdMs ?? 6000)) / 1000)}s`
+                    : " pronta"}
+                </div>
+              )}
             </div>
           )}
         </div>

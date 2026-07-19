@@ -33,7 +33,13 @@
     }
   ],
   "guns": {
-    "1": "gun_m4a1.png"
+    "0": "gun_pistol.png",
+    "1": "gun_m4a1.png",
+    "2": "gun_m16.png",
+    "3": "gun_ak47.png",
+    "4": "gun_shotgun.png",
+    "5": "gun_smg.png",
+    "6": "gun_sniper.png"
   },
   "throws": {},
   "items": {},

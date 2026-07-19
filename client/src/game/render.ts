@@ -2,7 +2,7 @@
  * render.ts — mapa deserto tilemap, personagens estilo Gungeon (em pé), arma, feel.
  */
 import { ARENA_H, ARENA_W, CAM_VIEW_H, CAM_VIEW_W } from "../../../shared/constants";
-import { LOADOUTS, muzzlePoint, weaponOf } from "../../../shared/gear";
+import { LOADOUTS, MAX_STAMINA, GUN_HAND, GUN_VISUAL_SCALE, gunBarrelLocal, muzzlePoint, weaponOf } from "../../../shared/gear";
 import {
   BUILDINGS,
   DOOR_DEFS,
@@ -18,10 +18,12 @@ import {
 } from "../../../shared/map";
 import type {
   BulletState,
+  EnemySnap,
   PlayerState,
   ThrowableState,
   TickEvent,
 } from "../../../shared/protocol";
+import { ENEMY_DEFS } from "../../../shared/enemies";
 import {
   aimToDir8,
   drawDirFrame,
@@ -94,10 +96,16 @@ export interface RenderView {
     alive: boolean;
     weapon: number;
     stamina: number;
+    /** 0..1 enquanto recarrega; 0 = idle */
+    reloadProgress: number;
+    stunnedUntil: number;
     vx: number;
     vy: number;
   } | null;
-  remotes: PlayerState[];
+  remotes: (PlayerState & { flashUntil?: number })[];
+  enemies: EnemySnap[];
+  /** mapa giantId → alvo travado (pra marca visual) */
+  giantTargets?: Map<number, { kind: 0 | 1 | 2; id: number }>;
   bullets: BulletState[];
   throwables: ThrowableState[];
   flashes: MuzzleFlash[];
@@ -109,6 +117,7 @@ export interface RenderView {
   doorAnim: Map<number, number>; // id → 0 fechada .. 1 aberta
   roofAlpha: Map<number, number>; // building id → alpha
   ammoDrops: { id: number; x: number; y: number; amount: number }[];
+  weaponDrops: { id: number; x: number; y: number; weaponId: number; mag: number; reserve: number }[];
   camZoom: number;
   /** canto superior-esquerdo da câmera no mundo */
   camX: number;
@@ -117,6 +126,10 @@ export interface RenderView {
   hitFlashSelf: boolean;
   drawDecals: (ctx: CanvasRenderingContext2D) => void;
   drawGore: (ctx: CanvasRenderingContext2D) => void;
+  drawAbilityGround: (ctx: CanvasRenderingContext2D) => void;
+  drawAbilityWater: (ctx: CanvasRenderingContext2D) => void;
+  /** serverTime do snapshot (para stun UI) */
+  serverTime: number;
 }
 
 /**
@@ -174,8 +187,18 @@ export function cameraScreenLayout(
 
 export function resizeCanvas(canvas: HTMLCanvasElement) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
-  const w = Math.max(320, Math.min(window.innerWidth - 16, CAM_VIEW_W));
-  const h = Math.max(240, Math.min(window.innerHeight - 120, CAM_VIEW_H));
+  const fill = canvas.dataset.fill === "1";
+  const parent = canvas.parentElement;
+  let w: number;
+  let h: number;
+  if (fill && parent) {
+    const r = parent.getBoundingClientRect();
+    w = Math.max(320, Math.floor(r.width || window.innerWidth));
+    h = Math.max(240, Math.floor(r.height || window.innerHeight));
+  } else {
+    w = Math.max(320, Math.min(window.innerWidth - 16, CAM_VIEW_W));
+    h = Math.max(240, Math.min(window.innerHeight - 120, CAM_VIEW_H));
+  }
   const bw = Math.floor(w * dpr);
   const bh = Math.floor(h * dpr);
   canvas.style.width = `${w}px`;
@@ -339,20 +362,19 @@ function drawDoors(
  * Arma em silhueta lateral (Gungeon): gira pela mira contínua.
  * Pivô na mão; tip = muzzleForward - HAND (casa com muzzlePoint do shared).
  */
-function drawGripHands(ctx: CanvasRenderingContext2D, tip: number, skin = "#d4a574") {
-  // duas mãos na arma (coords locais: cano +X)
+function drawGripHands(ctx: CanvasRenderingContext2D, gunLen: number, skin = "#d4a574") {
   ctx.fillStyle = skin;
-  // mão traseira (empunhadura / coronha)
+  // mão traseira (punho/coronha) — logo à frente da origem
   ctx.beginPath();
-  ctx.ellipse(6, 3, 5, 4, 0.15, 0, Math.PI * 2);
+  ctx.ellipse(3, 3, 5, 4, 0.15, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
-  ctx.ellipse(6, 4, 4, 2.5, 0.15, 0, Math.PI * 2);
+  ctx.ellipse(3, 4, 4, 2.5, 0.15, 0, Math.PI * 2);
   ctx.fill();
-  // mão dianteira (guarda-mão)
+  // mão dianteira (guarda-mão) — ~55% do comprimento da arma
+  const fx = gunLen * 0.55;
   ctx.fillStyle = skin;
-  const fx = Math.max(18, tip * 0.42);
   ctx.beginPath();
   ctx.ellipse(fx, 4, 5.5, 4.2, -0.1, 0, Math.PI * 2);
   ctx.fill();
@@ -370,9 +392,8 @@ function drawWeaponLayer(
   muzzleFlash: boolean,
 ) {
   const w = weaponOf(weaponId);
-  /** pivô mais à frente = leitura de ombro + duas mãos */
-  const HAND = 18;
-  const tip = w.muzzleForward - HAND;
+  const HAND = GUN_HAND;
+  const barrel = gunBarrelLocal(w);
   const facingLeft = Math.cos(aim) < 0;
 
   ctx.save();
@@ -386,22 +407,36 @@ function drawWeaponLayer(
 
   const gunImg = getGunImg(weaponId);
   if (gunImg) {
-    const targetLen = Math.max(16, tip) * 2.25;
-    const scale = targetLen / Math.max(1, gunImg.naturalWidth);
+    const VISUAL_SCALE = GUN_VISUAL_SCALE;
+    const grip = (w.gripInset ?? 4) * VISUAL_SCALE;
+    const visualLen = w.length * VISUAL_SCALE;
+    const scale = visualLen / Math.max(1, gunImg.naturalWidth);
     const dw = gunImg.naturalWidth * scale;
     const dh = gunImg.naturalHeight * scale;
-    // coronha um pouco atrás do pivô (duas mãos)
-    ctx.drawImage(gunImg, -dw * 0.12, -dh / 2, dw, dh);
-    drawGripHands(ctx, tip);
+
+    const backX = -grip;
+    ctx.drawImage(gunImg, backX, -dh / 2, dw, dh);
+
+    drawGripHands(ctx, visualLen);
     if (muzzleFlash) {
-      const mx = tip;
-      const g = ctx.createRadialGradient(mx, 0, 0, mx, 0, 28);
-      g.addColorStop(0, "rgba(255,230,120,0.95)");
-      g.addColorStop(0.4, "rgba(255,140,40,0.55)");
-      g.addColorStop(1, "rgba(255,80,0,0)");
+      // buraco real do cano (acima do centro da sprite)
+      const mx = barrel.x;
+      const my = barrel.y;
+      const g = ctx.createRadialGradient(mx, my, 0, mx, my, 20);
+      g.addColorStop(0, "rgba(255,245,180,1)");
+      g.addColorStop(0.25, "rgba(255,200,80,0.85)");
+      g.addColorStop(0.55, "rgba(255,100,30,0.4)");
+      g.addColorStop(1, "rgba(255,60,0,0)");
       ctx.fillStyle = g;
       ctx.beginPath();
-      ctx.arc(mx, 0, 28, 0, Math.PI * 2);
+      ctx.arc(mx, my, 20, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "rgba(255,230,140,0.95)";
+      ctx.beginPath();
+      ctx.moveTo(mx - 1, my - 2.5);
+      ctx.lineTo(mx + 14, my);
+      ctx.lineTo(mx - 1, my + 2.5);
+      ctx.closePath();
       ctx.fill();
     }
     ctx.restore();
@@ -409,7 +444,7 @@ function drawWeaponLayer(
   }
 
   // fallback procedural
-  const T = tip;
+  const T = barrel.x;
   const th = 1.55;
 
   ctx.fillStyle = w.color;
@@ -483,23 +518,384 @@ function drawWeaponLayer(
     ctx.fillRect(T * 0.7, -2.5 * th, T * 0.32, 5 * th);
   }
 
-  drawGripHands(ctx, tip);
+  drawGripHands(ctx, T);
 
   if (muzzleFlash) {
-    const mx = tip;
-    const g = ctx.createRadialGradient(mx, 0, 0, mx, 0, 28);
+    const mx = barrel.x;
+    const my = barrel.y;
+    const g = ctx.createRadialGradient(mx, my, 0, mx, my, 22);
     g.addColorStop(0, "rgba(255,230,120,0.95)");
     g.addColorStop(0.4, "rgba(255,140,40,0.55)");
     g.addColorStop(1, "rgba(255,80,0,0)");
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(mx, 0, 28, 0, Math.PI * 2);
+    ctx.arc(mx, my, 22, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
 }
 
 /** Corpo em pé (estilo Gungeon): cabeça cima / pés baixo; flip L/R pela mira. */
+function drawHeadBars(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  stamina: number,
+  reloadProgress: number,
+) {
+  const barW = 44;
+  const barH = 5;
+  const gap = 3;
+  let by = y;
+
+  const track = (yy: number) => {
+    ctx.fillStyle = "rgba(10,12,14,0.7)";
+    ctx.fillRect(x - barW / 2, yy, barW, barH);
+    ctx.strokeStyle = "rgba(0,0,0,0.85)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x - barW / 2, yy, barW, barH);
+  };
+
+  // stamina — azul
+  track(by);
+  const st = Math.max(0, Math.min(1, stamina / MAX_STAMINA));
+  ctx.fillStyle = st < 0.2 ? "#3a6ab0" : "#3d8bfd";
+  ctx.fillRect(x - barW / 2, by, barW * st, barH);
+  by += barH + gap;
+
+  // reload — âmbar (só durante carregamento)
+  if (reloadProgress > 0.001 && reloadProgress < 0.999) {
+    track(by);
+    const rp = Math.max(0, Math.min(1, reloadProgress));
+    ctx.fillStyle = "#E8A838";
+    ctx.fillRect(x - barW / 2, by, barW * rp, barH);
+  }
+}
+
+function drawSilenceIcon(ctx: CanvasRenderingContext2D, x: number, y: number) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = "rgba(40,90,160,0.85)";
+  ctx.beginPath();
+  ctx.arc(0, 0, 8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#fff";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(-4, -4);
+  ctx.lineTo(4, 4);
+  ctx.moveTo(4, -4);
+  ctx.lineTo(-4, 4);
+  ctx.stroke();
+  // círculo com traço = mute
+  ctx.beginPath();
+  ctx.arc(0, 0, 5, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number) {
+  const def =
+    en.type === 2
+      ? ENEMY_DEFS[2]!
+      : en.type === 1
+        ? ENEMY_DEFS[1]!
+        : ENEMY_DEFS[0]!;
+  const scale = def.visualScale;
+  const bob = Math.sin(tMs * 0.01 + en.id) * (en.state === 5 ? 0 : 2.5);
+  const windup = en.state === 2 || en.state === 4;
+  const stun = en.state === 6;
+  const charge = en.state === 5;
+  const chase = en.state === 1;
+
+  ctx.save();
+  ctx.translate(en.x, en.y + bob);
+
+  if (en.type === 2) {
+    // Gigante — humanoide grande, silhueta escura
+    const s = scale;
+    ctx.fillStyle = "rgba(10,8,12,0.5)";
+    ctx.beginPath();
+    ctx.ellipse(0, 20 * s, 22 * s, 8 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (windup) {
+      const pulse = 0.35 + Math.sin(tMs * 0.04) * 0.2;
+      ctx.fillStyle = `rgba(200,140,40,${pulse})`;
+      ctx.beginPath();
+      ctx.arc(0, -8 * s, 28 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // pernas
+    ctx.fillStyle = "#1a1418";
+    ctx.fillRect(-10 * s, 4 * s, 7 * s, 16 * s);
+    ctx.fillRect(3 * s, 4 * s, 7 * s, 16 * s);
+    // torso largo
+    ctx.fillStyle = windup ? "#3a2820" : chase ? "#221820" : "#1a1418";
+    ctx.beginPath();
+    ctx.ellipse(0, -4 * s, 16 * s, 18 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // contorno
+    ctx.strokeStyle = "#c8a060";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.ellipse(0, -4 * s, 16 * s, 18 * s, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    // braço levantado no windup
+    ctx.strokeStyle = "#2a2028";
+    ctx.lineWidth = 5 * s;
+    ctx.lineCap = "round";
+    const armUp = windup ? -28 * s : 10 * s;
+    ctx.beginPath();
+    ctx.moveTo(14 * s, -8 * s);
+    ctx.lineTo(22 * s, armUp);
+    ctx.moveTo(-14 * s, -8 * s);
+    ctx.lineTo(-18 * s, 8 * s);
+    ctx.stroke();
+    // cabeça
+    ctx.fillStyle = "#141018";
+    ctx.beginPath();
+    ctx.arc(0, -26 * s, 11 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#e8c070";
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    // olhos
+    ctx.fillStyle = windup ? "#ffcc44" : "#e8a838";
+    ctx.beginPath();
+    ctx.arc(-4 * s, -27 * s, 2 * s, 0, Math.PI * 2);
+    ctx.arc(4 * s, -27 * s, 2 * s, 0, Math.PI * 2);
+    ctx.fill();
+  } else if (en.type === 1) {
+    // Brutamontes — monstro enorme, inconfundível
+    const s = scale * 0.55;
+    ctx.fillStyle = "rgba(20,8,8,0.55)";
+    ctx.beginPath();
+    ctx.ellipse(0, 22 * s, 34 * s, 12 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // aura de ameaça
+    if (charge || windup) {
+      const pulse = 0.35 + Math.sin(tMs * 0.02) * 0.15;
+      ctx.fillStyle = `rgba(180,30,20,${pulse})`;
+      ctx.beginPath();
+      ctx.arc(0, 0, 48 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // corpo gordo
+    ctx.fillStyle = stun ? "#6a5a4a" : charge ? "#8a2820" : "#3a2218";
+    ctx.beginPath();
+    ctx.ellipse(0, 4 * s, 36 * s, 40 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // barriga
+    ctx.fillStyle = stun ? "#7a6a55" : "#4a3020";
+    ctx.beginPath();
+    ctx.ellipse(0, 12 * s, 28 * s, 24 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // cabeça
+    ctx.fillStyle = "#2a1810";
+    ctx.beginPath();
+    ctx.arc(0, -28 * s, 22 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // mandíbula / ombros
+    ctx.fillStyle = "#1a1008";
+    ctx.fillRect(-26 * s, -18 * s, 52 * s, 10 * s);
+    // olhos vermelhos grandes
+    const eye = windup || charge ? "#ff3030" : "#e02020";
+    ctx.fillStyle = eye;
+    ctx.shadowColor = eye;
+    ctx.shadowBlur = charge ? 12 : 6;
+    ctx.beginPath();
+    ctx.arc(-8 * s, -30 * s, 4.5 * s, 0, Math.PI * 2);
+    ctx.arc(8 * s, -30 * s, 4.5 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    // chifres / crista
+    ctx.fillStyle = "#1a1008";
+    ctx.beginPath();
+    ctx.moveTo(-14 * s, -42 * s);
+    ctx.lineTo(-22 * s, -58 * s);
+    ctx.lineTo(-6 * s, -46 * s);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(14 * s, -42 * s);
+    ctx.lineTo(22 * s, -58 * s);
+    ctx.lineTo(6 * s, -46 * s);
+    ctx.fill();
+    // label
+    ctx.fillStyle = "rgba(0,0,0,0.65)";
+    ctx.fillRect(-38 * s, -72 * s, 76 * s, 12 * s);
+    ctx.fillStyle = "#ffcc44";
+    ctx.font = `bold ${Math.round(10 * s)}px sans-serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("BRUTAMONTES", 0, -63 * s);
+  } else {
+    // Zumbi — silhueta podre mais legível
+    const s = scale;
+    ctx.fillStyle = "rgba(20,10,10,0.4)";
+    ctx.beginPath();
+    ctx.ellipse(0, 16 * s, 14 * s, 6 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (windup) {
+      ctx.fillStyle = "rgba(100,180,40,0.25)";
+      ctx.beginPath();
+      ctx.arc(0, 0, 22 * s, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // pernas
+    ctx.fillStyle = "#3a4a28";
+    ctx.fillRect(-8 * s, 6 * s, 5 * s, 12 * s);
+    ctx.fillRect(3 * s, 6 * s, 5 * s, 12 * s);
+    // torso
+    ctx.fillStyle = windup ? "#6a8a40" : chase ? "#4a6a30" : "#3a5a28";
+    ctx.fillRect(-11 * s, -10 * s, 22 * s, 20 * s);
+    // braços caídos
+    ctx.strokeStyle = "#5a7a38";
+    ctx.lineWidth = 4 * s;
+    ctx.lineCap = "round";
+    const armSwing = Math.sin(tMs * 0.012 + en.id) * 0.35;
+    ctx.beginPath();
+    ctx.moveTo(-10 * s, -4 * s);
+    ctx.lineTo(-16 * s, 8 * s + armSwing * 6);
+    ctx.moveTo(10 * s, -4 * s);
+    ctx.lineTo(16 * s, 8 * s - armSwing * 6);
+    ctx.stroke();
+    // cabeça
+    ctx.fillStyle = "#6a8a48";
+    ctx.beginPath();
+    ctx.arc(0, -18 * s, 10 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // olhos pretos / vazios
+    ctx.fillStyle = windup ? "#ff4040" : "#101808";
+    ctx.fillRect(-5 * s, -20 * s, 3.5 * s, 2.5 * s);
+    ctx.fillRect(2 * s, -20 * s, 3.5 * s, 2.5 * s);
+    // boca
+    ctx.fillStyle = "#2a1808";
+    ctx.fillRect(-3 * s, -14 * s, 6 * s, 2 * s);
+  }
+
+  // barra de HP só nos zumbis — chefe sem barra (mistério / pressão)
+  if (en.type !== 1) {
+    const pct = Math.max(0, Math.min(1, en.hp / 255));
+    const bw = 26 * scale;
+    const by = -32 * scale;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(-bw / 2, by, bw, 4);
+    ctx.fillStyle = "#6ecf5a";
+    ctx.fillRect(-bw / 2, by, bw * pct, 4);
+  }
+
+  if (windup && en.type !== 2) {
+    ctx.strokeStyle = en.type === 1 ? "rgba(255,60,30,0.9)" : "rgba(180,255,80,0.7)";
+    ctx.lineWidth = en.type === 1 ? 3 : 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, (en.type === 1 ? 42 : 20) * (en.type === 1 ? scale * 0.55 : scale * 0.5), 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  ctx.restore();
+}
+
+function drawBossEdgeMarker(
+  ctx: CanvasRenderingContext2D,
+  en: EnemySnap,
+  camX: number,
+  camY: number,
+  viewW: number,
+  viewH: number,
+  tMs: number,
+) {
+  if (en.type !== 1 && en.type !== 2) return;
+  const pad = 28;
+  const onScreen =
+    en.x >= camX - 20 &&
+    en.x <= camX + viewW + 20 &&
+    en.y >= camY - 20 &&
+    en.y <= camY + viewH + 20;
+  if (onScreen) return;
+
+  const mx = Math.max(camX + pad, Math.min(camX + viewW - pad, en.x));
+  const my = Math.max(camY + pad, Math.min(camY + viewH - pad, en.y));
+  const ang = Math.atan2(en.y - my, en.x - mx);
+  const pulse = 0.7 + Math.sin(tMs * 0.015) * 0.3;
+  const isGiant = en.type === 2;
+
+  ctx.save();
+  ctx.translate(mx, my);
+  ctx.rotate(ang);
+  ctx.fillStyle = isGiant ? `rgba(200,160,80,${pulse})` : `rgba(232,168,56,${pulse})`;
+  ctx.beginPath();
+  ctx.moveTo(14, 0);
+  ctx.lineTo(-8, 10);
+  ctx.lineTo(-8, -10);
+  ctx.closePath();
+  ctx.fill();
+  ctx.rotate(-ang);
+  ctx.fillStyle = isGiant ? "#e8c070" : "#ffcc44";
+  ctx.font = "bold 11px sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText(isGiant ? "GIGANTE" : "CHEFE", 0, -16);
+  ctx.restore();
+}
+
+function drawGiantTargetMarks(
+  ctx: CanvasRenderingContext2D,
+  view: RenderView,
+  tMs: number,
+) {
+  const marks = view.giantTargets;
+  if (!marks || marks.size === 0) return;
+  const pulse = 0.55 + Math.sin(tMs * 0.02) * 0.25;
+
+  for (const [, t] of marks) {
+    let x = 0;
+    let y = 0;
+    let ok = false;
+    if (t.kind === 0) {
+      if (view.local && view.selfId === t.id) {
+        x = view.local.x;
+        y = view.local.y;
+        ok = view.local.alive;
+      } else {
+        const p = view.remotes.find((r) => r.id === t.id);
+        if (p?.alive) {
+          x = p.x;
+          y = p.y;
+          ok = true;
+        }
+      }
+    } else {
+      const en = view.enemies.find((e) =>
+        e.id === t.id && (t.kind === 2 ? e.type === 2 : e.type !== 2),
+      );
+      if (en) {
+        x = en.x;
+        y = en.y;
+        ok = true;
+      }
+    }
+    if (!ok) continue;
+    ctx.save();
+    ctx.translate(x, y - 36);
+    ctx.strokeStyle = `rgba(232,168,56,${pulse})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(-8, 0);
+    ctx.lineTo(0, -8);
+    ctx.lineTo(8, 0);
+    ctx.stroke();
+    ctx.fillStyle = `rgba(232,168,56,${pulse})`;
+    ctx.font = "bold 9px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("ALVO", 0, -12);
+    ctx.restore();
+  }
+}
+
 function drawPersonSide(
   ctx: CanvasRenderingContext2D,
   p: {
@@ -509,6 +905,10 @@ function drawPersonSide(
     angle: number;
     alive: boolean;
     weapon: number;
+    stamina?: number;
+    reloadProgress?: number;
+    stunnedUntil?: number;
+    flashUntil?: number;
     vx?: number;
     vy?: number;
   },
@@ -516,6 +916,7 @@ function drawPersonSide(
   isSelf: boolean,
   muzzle: boolean,
   feel: FeelState,
+  serverTime = 0,
 ) {
   const look = LOADOUTS[p.id % LOADOUTS.length]!;
   const speed = Math.hypot(p.vx ?? 0, p.vy ?? 0);
@@ -650,6 +1051,31 @@ function drawPersonSide(
   }
 
   ctx.restore();
+
+  if (isSelf && p.alive) {
+    const headY = p.y + bob + kickY - CHAR_PX * 0.72;
+    drawHeadBars(ctx, p.x + kickX, headY, p.stamina ?? MAX_STAMINA, p.reloadProgress ?? 0);
+  }
+
+  if (p.alive && (p.stunnedUntil ?? 0) > serverTime) {
+    drawSilenceIcon(ctx, p.x + kickX, p.y + bob + kickY - CHAR_PX * 0.82);
+  }
+
+  // flashbang: halo branco (bots / outros jogadores)
+  if (p.alive && !isSelf && (p.flashUntil ?? 0) > serverTime) {
+    const left = (p.flashUntil! - serverTime) / 2800;
+    const a = Math.min(0.85, 0.35 + left * 0.55);
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.beginPath();
+    ctx.ellipse(p.x + kickX, p.y + bob + kickY - 18, 28, 36, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255,250,220,${0.5 * a})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(p.x + kickX, p.y + bob + kickY - 22, 22 + (1 - left) * 8, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   ctx.globalAlpha = 1;
 }
 
@@ -888,8 +1314,15 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   );
   ctx.imageSmoothingEnabled = false;
 
+  // não deixa FX (água etc.) vazar pro letterbox / fora do layout
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(camX, camY, viewW, viewH);
+  ctx.clip();
+
   drawGround(ctx);
   view.drawDecals(ctx);
+  view.drawAbilityGround(ctx);
   drawSolids(ctx);
   drawDoors(ctx, view.doorsBits, view.doorAnim);
 
@@ -911,6 +1344,28 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     }
   }
 
+  // armas dropadas na morte
+  for (const d of view.weaponDrops) {
+    const bob = Math.sin(tMs * 0.005 + d.id * 1.7) * 2.5;
+    const gun = getGunImg(d.weaponId);
+    const w = weaponOf(d.weaponId);
+    ctx.fillStyle = LOSPEC.shadow;
+    ctx.beginPath();
+    ctx.ellipse(d.x, d.y + 8, 26, 7, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (gun) {
+      const dw = Math.min(110, Math.max(64, w.length * 1.55));
+      const scale = dw / Math.max(1, gun.naturalWidth);
+      const dh = gun.naturalHeight * scale;
+      ctx.drawImage(gun, d.x - dw / 2, d.y - dh / 2 + bob, dw, dh);
+    } else {
+      ctx.fillStyle = w.color;
+      ctx.fillRect(d.x - 36, d.y - 5 + bob, 72, 10);
+      ctx.fillStyle = w.accent;
+      ctx.fillRect(d.x - 36, d.y - 5 + bob, 16, 10);
+    }
+  }
+
   // throwables
   for (const t of view.throwables) {
     const timg = getThrowImg(t.kind);
@@ -926,12 +1381,29 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   view.drawGore(ctx);
 
+  // inimigos + Gigante
+  for (const en of view.enemies ?? []) {
+    drawEnemy(ctx, en, tMs);
+  }
+  for (const en of view.enemies ?? []) {
+    drawBossEdgeMarker(ctx, en, camX, camY, viewW, viewH, tMs);
+  }
+  drawGiantTargetMarks(ctx, view, tMs);
+
   const selfMuzzle = view.flashes.some(
     (f) => f.t > 30 && (f.owner === undefined || f.owner === view.selfId),
   );
 
   if (view.local) {
-    drawPersonSide(ctx, { ...view.local, id: view.selfId }, tMs, true, selfMuzzle, view.feel);
+    drawPersonSide(
+      ctx,
+      { ...view.local, id: view.selfId },
+      tMs,
+      true,
+      selfMuzzle,
+      view.feel,
+      view.serverTime,
+    );
   }
   for (const r of view.remotes) {
     const muzzle = view.events.some((e) => e.kind === "shot" && e.a === r.id);
@@ -942,8 +1414,12 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       false,
       muzzle,
       view.feel,
+      view.serverTime,
     );
   }
+
+  // massa de água / spray por cima dos personagens
+  view.drawAbilityWater(ctx);
 
   // balas — rastro
   for (const b of view.bullets) {
@@ -1025,6 +1501,8 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     ctx.fillStyle = `rgba(255,255,255,${view.flashBlind})`;
     ctx.fillRect(camX, camY, viewW, viewH);
   }
+
+  ctx.restore(); // clip da janela da câmera
 
   void doorsFromBits;
   void dpr;

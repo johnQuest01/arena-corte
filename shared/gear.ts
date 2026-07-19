@@ -1,4 +1,4 @@
-﻿/** Armas, throwables, loadouts visuais e stamina. */
+/** Armas, throwables, loadouts visuais e stamina. */
 
 export type WeaponId = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 export type ThrowId = 0 | 1 | 2 | 3 | 4;
@@ -16,6 +16,8 @@ export interface WeaponDef {
   spread: number;
   muzzleForward: number;
   muzzleSide: number;
+  /** Distância (px mundo) da borda traseira do PNG até a mão na coronha. Só visual. */
+  gripInset: number;
   pellets: number;
   bulletLifeMs: number;
   magSize: number;
@@ -37,6 +39,7 @@ export const WEAPONS: WeaponDef[] = [
     spread: 0.04,
     muzzleForward: 42,
     muzzleSide: 8,
+    gripInset: 2,
     pellets: 1,
     bulletLifeMs: 0,
     magSize: 12,
@@ -56,6 +59,7 @@ export const WEAPONS: WeaponDef[] = [
     spread: 0.03,
     muzzleForward: 62,
     muzzleSide: 8,
+    gripInset: 5,
     pellets: 1,
     bulletLifeMs: 0,
     magSize: 30,
@@ -75,6 +79,7 @@ export const WEAPONS: WeaponDef[] = [
     spread: 0.025,
     muzzleForward: 64,
     muzzleSide: 8,
+    gripInset: 5,
     pellets: 1,
     bulletLifeMs: 0,
     magSize: 30,
@@ -94,6 +99,7 @@ export const WEAPONS: WeaponDef[] = [
     spread: 0.05,
     muzzleForward: 62,
     muzzleSide: 8,
+    gripInset: 5,
     pellets: 1,
     bulletLifeMs: 0,
     magSize: 35,
@@ -113,6 +119,7 @@ export const WEAPONS: WeaponDef[] = [
     spread: 0.22,
     muzzleForward: 60,
     muzzleSide: 8,
+    gripInset: 5,
     pellets: 6,
     bulletLifeMs: 280,
     magSize: 6,
@@ -132,6 +139,7 @@ export const WEAPONS: WeaponDef[] = [
     spread: 0.07,
     muzzleForward: 50,
     muzzleSide: 8,
+    gripInset: 4,
     pellets: 1,
     bulletLifeMs: 0,
     magSize: 40,
@@ -151,6 +159,7 @@ export const WEAPONS: WeaponDef[] = [
     spread: 0.004,
     muzzleForward: 74,
     muzzleSide: 7,
+    gripInset: 6,
     pellets: 1,
     bulletLifeMs: 0,
     magSize: 5,
@@ -210,15 +219,67 @@ export function weaponOf(id: number): WeaponDef {
   return WEAPONS[id as WeaponId] ?? WEAPONS[0]!;
 }
 
+/** Deve bater com drawWeaponLayer em render.ts */
+export const GUN_HAND = 18;
+export const GUN_VISUAL_SCALE = 2.15;
+
+/**
+ * Ponta do cano no PNG (px): tipX/tipY medidos nos assets.
+ * Y cresce pra baixo na imagem — tipY < h/2 ⇒ cano acima do centro.
+ */
+const GUN_BARREL_PX: Record<number, { tipX: number; tipY: number; w: number; h: number }> = {
+  0: { tipX: 56, tipY: 6, w: 58, h: 42 },
+  1: { tipX: 120, tipY: 17.5, w: 122, h: 49 },
+  2: { tipX: 46, tipY: 8, w: 48, h: 24 },
+  3: { tipX: 126, tipY: 9.5, w: 128, h: 41 },
+  4: { tipX: 127, tipY: 4.5, w: 129, h: 32 },
+  5: { tipX: 45, tipY: 4.4, w: 48, h: 24 },
+  6: { tipX: 110, tipY: 14.5, w: 112, h: 33 },
+};
+
+/** Local da arma: (0,0) = mão traseira, +X = cano, +Y = “baixo” da sprite. */
+export function gunBarrelLocal(wpn: WeaponDef): { x: number; y: number } {
+  const meta = GUN_BARREL_PX[wpn.id] ?? {
+    tipX: wpn.length,
+    tipY: 10,
+    w: wpn.length,
+    h: 24,
+  };
+  const grip = (wpn.gripInset ?? 4) * GUN_VISUAL_SCALE;
+  const visualLen = wpn.length * GUN_VISUAL_SCALE;
+  const scale = visualLen / Math.max(1, meta.w);
+  const dh = meta.h * scale;
+  return {
+    x: -grip + meta.tipX * scale,
+    y: -dh / 2 + meta.tipY * scale,
+  };
+}
+
+/** @deprecated use gunBarrelLocal — só eixo X */
+export function gunBarrelLocalX(wpn: WeaponDef): number {
+  return gunBarrelLocal(wpn).x;
+}
+
+/**
+ * Mundo: fogo / bala no buraco do cano (mesma geometria da arma desenhada).
+ */
 export function muzzlePoint(
   x: number,
   y: number,
   angle: number,
   wpn: WeaponDef,
 ): { x: number; y: number } {
+  const b = gunBarrelLocal(wpn);
+  const side = wpn.muzzleSide * 0.35;
+  const facingLeft = Math.cos(angle) < 0;
+  // render faz scale(1,-1) ao mirar esquerda — espelha o Y local do cano
+  const lx = b.x;
+  const ly = facingLeft ? -b.y : b.y;
+  const hx = Math.cos(angle) * GUN_HAND - Math.sin(angle) * side;
+  const hy = Math.sin(angle) * GUN_HAND + Math.cos(angle) * side;
   return {
-    x: x + Math.cos(angle) * wpn.muzzleForward - Math.sin(angle) * wpn.muzzleSide,
-    y: y + Math.sin(angle) * wpn.muzzleForward + Math.cos(angle) * wpn.muzzleSide,
+    x: x + hx + Math.cos(angle) * lx - Math.sin(angle) * ly,
+    y: y + hy + Math.sin(angle) * lx + Math.cos(angle) * ly,
   };
 }
 

@@ -85,6 +85,53 @@ function synthClick() {
   o.stop(ac.currentTime + 0.07);
 }
 
+function synthWhoosh() {
+  const ac = ensureCtx();
+  const len = Math.floor(ac.sampleRate * 0.35);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    const env = Math.exp(-t * 6) * (1 - t / 0.35);
+    data[i] = (Math.random() * 2 - 1) * env * 0.4;
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 900;
+  filter.Q.value = 0.7;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : 0.55 * master;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
+function synthSplash() {
+  const ac = ensureCtx();
+  const len = Math.floor(ac.sampleRate * 0.22);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    const env = Math.exp(-t * 14) * (0.4 + 0.6 * Math.random());
+    data[i] = (Math.random() * 2 - 1) * env * 0.45;
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 1400;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : 0.5 * master;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
 export function playSfx(
   name: SfxName,
   x?: number,
@@ -97,6 +144,8 @@ export function playSfx(
   const buf = buffers.get(name);
   if (!buf) {
     if (name === "empty_click" || name === "pickup" || name === "reload") synthClick();
+    if (name === "water_whoosh") synthWhoosh();
+    if (name === "splash") synthSplash();
     return;
   }
 

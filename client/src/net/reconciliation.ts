@@ -40,13 +40,40 @@ export function reconcile(
 
   const tickDt = TICK_MS / 1000;
   let t = buffer.serverTime;
-  // agrupa de 2 em 2 (60 Hz → 30 Hz), aplica o último de cada grupo
+  // agrupa de 2 em 2 (60 Hz → 30 Hz); OR de fire/cast como o host
   for (let i = 0; i < pending.length; ) {
     const batch = pending.slice(i, i + 2);
     i += batch.length;
     const latest = batch[batch.length - 1]!;
+    let wantFire = false;
+    let wantCast = false;
+    let wantReload = false;
+    let wantUse = false;
+    let wantThrow = 0;
+    let castAim = latest.aim;
+    let castAbility = latest.ability;
+    for (const inp of batch) {
+      if (inp.fire) wantFire = true;
+      if (inp.reload) wantReload = true;
+      if (inp.use) wantUse = true;
+      if (inp.throw >= 1) wantThrow = inp.throw;
+      if (inp.cast) {
+        wantCast = true;
+        castAim = inp.aim;
+        castAbility = inp.ability;
+      }
+    }
+    const merged: PlayerInput = {
+      ...latest,
+      ...(wantCast ? { aim: castAim, ability: castAbility ?? latest.ability } : {}),
+      fire: wantFire,
+      cast: wantCast,
+      reload: wantReload,
+      use: wantUse,
+      throw: wantThrow,
+    };
     t += TICK_MS;
-    applyInput(replayed, latest, tickDt, { doorBits: buffer.doorBits, serverTime: t });
+    applyInput(replayed, merged, tickDt, { doorBits: buffer.doorBits, serverTime: t });
   }
 
   // se ainda há tecla segurada e não ficou pendente, garante 1 passo na direção atual

@@ -7,7 +7,8 @@ export type LobbyAction =
   | { type: "online_join"; name: string; code: string; override: ModeOverride }
   | { type: "lan_host"; name: string }
   | { type: "lan_join"; name: string; url: string }
-  | { type: "practice"; name: string };
+  | { type: "practice"; name: string }
+  | { type: "coop"; name: string };
 
 interface Props {
   onAction: (a: LobbyAction) => void;
@@ -121,7 +122,13 @@ export function Lobby({
                 className="ghost"
                 onClick={() => onAction({ type: "practice", name: name || "player" })}
               >
-                Treino solo
+                Treino PvP
+              </button>
+              <button
+                type="button"
+                onClick={() => onAction({ type: "coop", name: name || "player" })}
+              >
+                Co-op / Survival
               </button>
             </div>
           </div>

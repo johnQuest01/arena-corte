@@ -1,6 +1,5 @@
 /**
- * LoopbackTransport — host autoritativo na própria aba (treino / demo).
- * Reusa sim.ts; útil pra validar prediction/render sem rede.
+ * LoopbackTransport — host autoritativo na própria aba (treino PvP / co-op).
  */
 import { TICK_MS, MAX_PLAYERS } from "../../../shared/constants";
 import { LagHistory } from "../../../shared/laghistory";
@@ -39,9 +38,13 @@ export class LoopbackTransport implements Transport {
   private timer: ReturnType<typeof setInterval> | null = null;
   private name = "player";
   private bots = true;
+  /** 0 pvp, 1 coop */
+  private mode = 0;
 
-  constructor(opts?: { bots?: boolean }) {
+  constructor(opts?: { bots?: boolean; mode?: number }) {
     this.bots = opts?.bots ?? true;
+    this.mode = opts?.mode ?? 0;
+    this.sim.mode = this.mode;
   }
 
   on(h: TransportHandlers) {
@@ -49,7 +52,7 @@ export class LoopbackTransport implements Transport {
   }
 
   async connect() {
-    // noop — pronto imediatamente
+    // noop
   }
 
   send(data: ArrayBuffer) {
@@ -58,6 +61,7 @@ export class LoopbackTransport implements Transport {
     if (type === MSG.HELLO) {
       const name = decodeHello(data) || "player";
       this.name = name;
+      this.sim.mode = this.mode;
       const p = addPlayer(this.sim, name);
       if (!p) {
         this.handlers?.onMessage(encodeCtrl(MSG.ROOM_FULL), "host");
@@ -70,7 +74,12 @@ export class LoopbackTransport implements Transport {
         }
       }
       this.handlers?.onMessage(
-        encodeWelcome({ selfId: p.id, roomCode: "TREINO", isHost: true }),
+        encodeWelcome({
+          selfId: p.id,
+          roomCode: this.mode === 1 ? "SURVIVAL" : "TREINO",
+          isHost: true,
+          mode: this.mode,
+        }),
         "host",
       );
       this.emitLobby();
@@ -91,6 +100,7 @@ export class LoopbackTransport implements Transport {
 
     if (type === MSG.START) {
       clearBotMemory();
+      this.sim.mode = this.mode;
       if (startMatch(this.sim)) {
         this.handlers?.onMessage(encodeCtrl(MSG.START), "host");
       }
@@ -109,11 +119,13 @@ export class LoopbackTransport implements Transport {
       ready: true,
       ping: 0,
     }));
+    const min = this.mode === 1 ? 1 : 2;
     this.handlers?.onMessage(
       encodeLobby({
         players,
         hostId: 0,
-        canStart: players.length >= 2,
+        canStart: players.length >= min,
+        mode: this.mode,
       }),
       "host",
     );
@@ -125,7 +137,6 @@ export class LoopbackTransport implements Transport {
       if (this.sim.phase === 1) {
         this.driveBots();
         this.lag.push(this.sim);
-        // treino: só projéteis (sem hitscan) — bots com lag-comp viram aimbot
         stepSim(this.sim, TICK_MS / 1000, null);
         this.handlers?.onMessage(encodeSnapshot(toSnapshot(this.sim)), "host");
       } else if (this.sim.phase === 2) {
@@ -137,6 +148,7 @@ export class LoopbackTransport implements Transport {
   private driveBots() {
     const self = this.sim.players.find((x) => x.id === Number(this.selfId));
     const bits = doorBitsOf(this.sim);
+    const enemies = this.sim.enemies;
     for (const p of this.sim.players) {
       if (p.id === Number(this.selfId)) continue;
       if (!p.alive) continue;
@@ -146,6 +158,7 @@ export class LoopbackTransport implements Transport {
         bits,
         this.sim.tick * 10 + p.id,
         this.sim.serverTime,
+        this.mode === 1 ? enemies : undefined,
       );
       queueInput(this.sim, p.id, input);
     }

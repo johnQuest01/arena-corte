@@ -1,4 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  enterGameFullscreen,
+  exitGameFullscreen,
+  isMobileViewport,
+} from "../game/fullscreen";
 import { GameClient, type GameHud } from "../game/loop";
 import { CloudTransport } from "../net/cloudTransport";
 import { LanClientTransport, httpToWs } from "../net/lanTransport";
@@ -13,6 +18,7 @@ import {
 import type { Transport } from "../net/transport";
 import { Hud } from "./Hud";
 import { Lobby, type LobbyAction } from "./Lobby";
+import { TouchControls } from "./TouchControls";
 
 const PARTY_HOST =
   import.meta.env.VITE_PARTY_HOST || "localhost:1999";
@@ -33,6 +39,7 @@ function randomRoomCode() {
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const shellRef = useRef<HTMLDivElement>(null);
   const clientRef = useRef<GameClient | null>(null);
   const [screen, setScreen] = useState<"lobby" | "game">("lobby");
   const [hud, setHud] = useState<GameHud | null>(null);
@@ -43,6 +50,27 @@ export function App() {
   const [hostInfoUrl, setHostInfoUrl] = useState<string | null>(null);
   const [muted, setMuted] = useState(false);
   const [masterVol, setMasterVol] = useState(0.85);
+  const [mobileUi, setMobileUi] = useState(() => isMobileViewport());
+
+  useEffect(() => {
+    const onViewport = () => setMobileUi(isMobileViewport());
+    onViewport();
+    window.addEventListener("resize", onViewport);
+    return () => window.removeEventListener("resize", onViewport);
+  }, []);
+
+  // mobile + playing: canvas preenche o arena-wrap (tela toda)
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    c.dataset.fill = mobileUi && hud?.phase === "playing" ? "1" : "0";
+    window.dispatchEvent(new Event("resize"));
+  }, [mobileUi, hud?.phase, screen]);
+
+  const goFullscreen = useCallback(async () => {
+    if (!isMobileViewport()) return;
+    await enterGameFullscreen(shellRef.current);
+  }, []);
 
   useEffect(() => {
     // se a página veio do host LAN, captura info
@@ -85,6 +113,7 @@ export function App() {
     clientRef.current = null;
     setHud(null);
     setScreen("lobby");
+    void exitGameFullscreen();
   }, []);
 
   const boot = useCallback(async (transport: Transport, name: string) => {
@@ -92,6 +121,7 @@ export function App() {
     clientRef.current = null;
     setHud(null);
     setScreen("game");
+    await goFullscreen();
 
     // espera o shell ficar visível antes de medir o canvas
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -110,6 +140,10 @@ export function App() {
         mag: 0,
         reserve: 0,
         reloadProgress: 0,
+        abilityName: "Jato de Água",
+        abilityCd: 1,
+        abilityCdMs: 6000,
+        stunned: false,
         error: "Canvas não disponível",
       });
       return;
@@ -133,10 +167,14 @@ export function App() {
         mag: 0,
         reserve: 0,
         reloadProgress: 0,
+        abilityName: "Jato de Água",
+        abilityCd: 1,
+        abilityCdMs: 6000,
+        stunned: false,
         error: e instanceof Error ? e.message : "falha ao conectar",
       });
     }
-  }, []);
+  }, [goFullscreen]);
 
   const onAction = useCallback(
     async (a: LobbyAction) => {
@@ -198,7 +236,10 @@ export function App() {
       }
 
       if (a.type === "practice") {
-        await boot(new LoopbackTransport({ bots: true }), a.name);
+        await boot(new LoopbackTransport({ bots: true, mode: 0 }), a.name);
+      }
+      if (a.type === "coop") {
+        await boot(new LoopbackTransport({ bots: true, mode: 1 }), a.name);
       }
     },
     [boot, recommendation],
@@ -217,12 +258,30 @@ export function App() {
         />
       )}
 
-      <div className="game-shell" style={{ display: screen === "game" ? "flex" : "none" }}>
+      <div
+        ref={shellRef}
+        className={`game-shell${mobileUi ? " mobile" : ""}${mobileUi && hud?.phase === "playing" ? " is-playing" : ""}`}
+        style={{ display: screen === "game" ? "flex" : "none" }}
+      >
         {hud && (
           <Hud
             hud={hud}
-            onStart={() => clientRef.current?.startMatch()}
-            onRematch={() => clientRef.current?.startMatch()}
+            mobile={mobileUi}
+            onStart={() => {
+              void goFullscreen();
+              clientRef.current?.startMatch();
+              // remedir canvas pra ocupar a tela toda
+              requestAnimationFrame(() => {
+                if (canvasRef.current) {
+                  canvasRef.current.dataset.fill = mobileUi ? "1" : "0";
+                  window.dispatchEvent(new Event("resize"));
+                }
+              });
+            }}
+            onRematch={() => {
+              void goFullscreen();
+              clientRef.current?.startMatch();
+            }}
             onLeave={leave}
             muted={muted}
             masterVol={masterVol}
@@ -239,7 +298,19 @@ export function App() {
         )}
         <div className="arena-wrap">
           {/* width/height só via JS — atributo React apaga o bitmap a cada re-render */}
-          <canvas ref={canvasRef} />
+          <canvas
+            ref={canvasRef}
+            data-fill={mobileUi && hud?.phase === "playing" ? "1" : "0"}
+          />
+          {mobileUi && hud?.phase === "playing" && (
+            <TouchControls
+              client={clientRef.current}
+              abilityName={hud.abilityName}
+              abilityCd={hud.abilityCd}
+              stunned={hud.stunned}
+              weaponId={hud.snapshot?.players.find((p) => p.id === hud.welcome?.selfId)?.weapon ?? 0}
+            />
+          )}
         </div>
         {hud?.phase === "error" && (
           <div className="lobby-overlay">

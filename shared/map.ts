@@ -315,7 +315,7 @@ export function resolveWalls(
   const solids = solidRects(doorBits);
 
   // várias passadas: cantos / vários AABBs
-  for (let iter = 0; iter < 6; iter++) {
+  for (let iter = 0; iter < 8; iter++) {
     let moved = false;
     for (const o of solids) {
       const next = separateCircleRect(px, py, r, o);
@@ -329,6 +329,52 @@ export function resolveWalls(
     if (!moved) break;
   }
   return { x: px, y: py };
+}
+
+/**
+ * Move com colisão em eixos separados (desliza na parede em vez de grudar)
+ * e devolve a velocidade com componente “para dentro da parede” zerada.
+ */
+export function moveAndSlide(
+  x: number,
+  y: number,
+  vx: number,
+  vy: number,
+  dt: number,
+  r: number,
+  doorBits = 0,
+): { x: number; y: number; vx: number; vy: number } {
+  const dx = vx * dt;
+  const dy = vy * dt;
+  // tenta X e Y separados → desliza em cantos/paredes
+  let nx = x;
+  let ny = y;
+  let ovx = vx;
+  let ovy = vy;
+
+  if (Math.abs(dx) > 1e-8) {
+    const tryX = x + dx;
+    const posX = resolveWalls(tryX, y, r, doorBits);
+    if (Math.abs(posX.x - tryX) > 0.01) {
+      // bateu em X — cancela vx para dentro
+      ovx = 0;
+    }
+    nx = posX.x;
+  }
+
+  if (Math.abs(dy) > 1e-8) {
+    const tryY = ny + dy;
+    const posY = resolveWalls(nx, tryY, r, doorBits);
+    if (Math.abs(posY.y - tryY) > 0.01) {
+      ovy = 0;
+    }
+    ny = posY.y;
+    nx = posY.x;
+  }
+
+  // passada final (cantos / overlap residual)
+  const end = resolveWalls(nx, ny, r, doorBits);
+  return { x: end.x, y: end.y, vx: ovx, vy: ovy };
 }
 
 export function hitsSolid(x: number, y: number, r: number, doorBits: number): boolean {

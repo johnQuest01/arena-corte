@@ -15,7 +15,7 @@ import {
   weaponOf,
   type AmmoStack,
 } from "../../../shared/gear";
-import { resolveWalls } from "../../../shared/map";
+import { moveAndSlide } from "../../../shared/map";
 import type { BulletState, PlayerInput, PlayerState } from "../../../shared/protocol";
 import { applyInput, clonePlayerState, type SimLikePlayer } from "../../../shared/sim";
 
@@ -87,13 +87,22 @@ export class PredictionBuffer {
     }
 
     const speed = MOVE_SPEED * speedMult;
-    p.vx = mx * speed;
-    p.vy = my * speed;
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    const pos = resolveWalls(p.x, p.y, PLAYER_R, this.doorBits);
-    p.x = pos.x;
-    p.y = pos.y;
+    const moveVx = mx * speed;
+    const moveVy = my * speed;
+    const kb = Math.hypot(p.vx, p.vy);
+    const moveScale = kb > 1500 ? 0.18 : kb > 800 ? 0.35 : kb > 300 ? 0.65 : 1;
+    const totalVx = moveVx * moveScale + p.vx;
+    const totalVy = moveVy * moveScale + p.vy;
+    const slid = moveAndSlide(p.x, p.y, totalVx, totalVy, dt, PLAYER_R, this.doorBits);
+    p.x = slid.x;
+    p.y = slid.y;
+    const damp = Math.exp(-(kb > 500 ? 1.55 : 2.8) * dt);
+    if (Math.abs(totalVx) > 1 && Math.abs(slid.vx) < 1e-6) p.vx = 0;
+    else p.vx *= damp;
+    if (Math.abs(totalVy) > 1 && Math.abs(slid.vy) < 1e-6) p.vy = 0;
+    else p.vy *= damp;
+    if (Math.abs(p.vx) < 3) p.vx = 0;
+    if (Math.abs(p.vy) < 3) p.vy = 0;
     p.angle = aim;
     p.weapon = clamp(weapon, 0, WEAPONS.length - 1);
 
@@ -143,6 +152,20 @@ export class PredictionBuffer {
         life: wpn.bulletLifeMs || 800,
       });
     }
+  }
+
+  /** Aplica loot de arma dropada (host) no inventário local. */
+  applyWeaponLoot(weaponId: number, mag: number, reserve: number) {
+    const wpn = weaponOf(weaponId);
+    const slot = this.ammoBank[weaponId] ?? { mag: 0, reserve: 0 };
+    slot.mag = Math.min(wpn.magSize, slot.mag + mag);
+    slot.reserve = Math.min(wpn.reserveMax, slot.reserve + reserve);
+    this.ammoBank[weaponId] = slot;
+    if (this.predicted && this.predicted.weapon === weaponId) {
+      this.predicted.mag = slot.mag;
+      this.predicted.reserve = slot.reserve;
+    }
+    if (this.predicted) this.attachAmmo(this.predicted);
   }
 
   replayOne(input: PlayerInput, dt: number) {
