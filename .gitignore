@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+Thumbs.db
+client/dist/
+server/.wrangler/
+# pack completo Kenney (só usamos chars/ no jogo)
+client/public/assets/kenney/

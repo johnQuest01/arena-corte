@@ -1,0 +1,23 @@
+{
+  "name": "arena-corte-server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "party": "wrangler dev -c wrangler.toml --port 1999",
+    "deploy": "wrangler deploy",
+    "host": "tsx local-host.ts"
+  },
+  "dependencies": {
+    "arena-corte": "file:..",
+    "partyserver": "^0.0.72",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241218.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "wrangler": "^3.99.0"
+  }
+}

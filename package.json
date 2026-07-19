@@ -1,0 +1,17 @@
+{
+  "name": "arena-corte",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Shooter 2D top-down — 3 jogadores — online (Cloudflare DO) e local (LAN)",
+  "scripts": {
+    "dev": "npm run dev --prefix client",
+    "build": "npm run build --prefix client",
+    "party": "npm run party --prefix server",
+    "host": "npm run host --prefix server",
+    "deploy:server": "npm run deploy --prefix server",
+    "install:all": "npm install --prefix client && npm install --prefix server"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

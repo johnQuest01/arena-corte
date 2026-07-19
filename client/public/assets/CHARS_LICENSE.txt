@@ -1,0 +1,8 @@
+Kenney.nl — Top-down Shooter (character sprites)
+License: Creative Commons CC0 (public domain)
+https://kenney.nl/assets/top-down-shooter
+
+Credit "Kenney.nl" is appreciated but not required.
+
+Palette reference: Lospec Resurrect 64 by Kerrie Lake
+https://lospec.com/palette-list/resurrect-64
