@@ -1,5 +1,5 @@
-/**
- * protocol.ts — encode/decode binário de inputs e snapshots.
+﻿/**
+ * protocol.ts â€” encode/decode binÃ¡rio de inputs e snapshots.
  */
 export const MSG = {
   HELLO: 1,
@@ -16,9 +16,7 @@ export const MSG = {
   RESULT: 12,
   RESYNC: 13,
 } as const;
-
 export type MsgType = (typeof MSG)[keyof typeof MSG];
-
 export interface PlayerInput {
   seq: number;
   dx: number;
@@ -26,11 +24,12 @@ export interface PlayerInput {
   aim: number;
   fire: boolean;
   sprint: boolean;
-  weapon: number; // 0..3
+  /** tecla E â€” abrir/fechar porta */
+  use: boolean;
+  weapon: number; // 0..6
   throw: number; // 0 none, 1-4 throwable
   clientTime: number;
 }
-
 export interface PlayerState {
   id: number;
   x: number;
@@ -46,7 +45,6 @@ export interface PlayerState {
   weapon: number;
   stamina: number;
 }
-
 export interface BulletState {
   id: number;
   owner: number;
@@ -56,19 +54,21 @@ export interface BulletState {
   py: number;
   vx: number;
   vy: number;
+  /** arma que disparou (byte reservado do protocolo) */
+  weapon: number;
+  /** ms restantes (0 = sem limite) â€” host; sync aproximado via byte */
+  life: number;
 }
-
 export interface ThrowableState {
   id: number;
-  kind: number; // 1..4
+  kind: number;
   owner: number;
   x: number;
   y: number;
   vx: number;
   vy: number;
-  fuse: number; // ms remaining
+  fuse: number;
 }
-
 export type EventKind =
   | "shot"
   | "hit"
@@ -77,8 +77,9 @@ export type EventKind =
   | "explode"
   | "flash"
   | "smoke"
-  | "fire";
-
+  | "fire"
+  | "doorOpen"
+  | "doorClose";
 export interface TickEvent {
   kind: EventKind;
   a: number;
@@ -86,7 +87,6 @@ export interface TickEvent {
   x: number;
   y: number;
 }
-
 export interface Snapshot {
   tick: number;
   serverTime: number;
@@ -96,24 +96,22 @@ export interface Snapshot {
   bullets: BulletState[];
   throwables: ThrowableState[];
   events: TickEvent[];
+  /** bitfield: bit i = porta i aberta */
+  doorsBits: number;
 }
-
 export interface WelcomeMsg {
   selfId: number;
   roomCode: string;
   isHost: boolean;
 }
-
 export interface LobbyMsg {
   players: { id: number; name: string; ready: boolean; ping: number }[];
   hostId: number;
   canStart: boolean;
 }
-
 function f32(v: number) {
   return Math.fround(v);
 }
-
 export function encodeInput(input: PlayerInput): ArrayBuffer {
   const buf = new ArrayBuffer(1 + 4 + 4 + 4 + 4 + 1 + 1 + 1 + 1 + 8);
   const v = new DataView(buf);
@@ -127,14 +125,15 @@ export function encodeInput(input: PlayerInput): ArrayBuffer {
   o += 4;
   v.setFloat32(o, f32(input.aim), true);
   o += 4;
-  v.setUint8(o++, input.fire ? 1 : 0);
-  v.setUint8(o++, input.sprint ? 1 : 0);
+  const flags =
+    (input.fire ? 1 : 0) | (input.sprint ? 2 : 0) | (input.use ? 4 : 0);
+  v.setUint8(o++, flags);
+  v.setUint8(o++, 0); // pad (era sprint byte)
   v.setUint8(o++, input.weapon & 0xff);
   v.setUint8(o++, input.throw & 0xff);
   v.setFloat64(o, input.clientTime, true);
   return buf;
 }
-
 export function decodeInput(buf: ArrayBuffer): PlayerInput | null {
   if (buf.byteLength < 29) return null;
   const v = new DataView(buf);
@@ -148,14 +147,24 @@ export function decodeInput(buf: ArrayBuffer): PlayerInput | null {
   o += 4;
   const aim = v.getFloat32(o, true);
   o += 4;
-  const fire = v.getUint8(o++) === 1;
-  const sprint = v.getUint8(o++) === 1;
+  const flags = v.getUint8(o++);
+  o++; // pad
   const weapon = v.getUint8(o++);
   const thr = v.getUint8(o++);
   const clientTime = v.getFloat64(o, true);
-  return { seq, dx, dy, aim, fire, sprint, weapon, throw: thr, clientTime };
+  return {
+    seq,
+    dx,
+    dy,
+    aim,
+    fire: (flags & 1) !== 0,
+    sprint: (flags & 2) !== 0,
+    use: (flags & 4) !== 0,
+    weapon,
+    throw: thr,
+    clientTime,
+  };
 }
-
 const EVENT_KIND: Record<EventKind, number> = {
   shot: 0,
   hit: 1,
@@ -165,6 +174,8 @@ const EVENT_KIND: Record<EventKind, number> = {
   flash: 5,
   smoke: 6,
   fire: 7,
+  doorOpen: 8,
+  doorClose: 9,
 };
 const KIND_FROM: EventKind[] = [
   "shot",
@@ -175,20 +186,33 @@ const KIND_FROM: EventKind[] = [
   "flash",
   "smoke",
   "fire",
+  "doorOpen",
+  "doorClose",
 ];
-
 const PLAYER_BYTES = 36;
 const BULLET_BYTES = 28;
 const THROW_BYTES = 24;
 const EVENT_BYTES = 14;
-
 export function encodeSnapshot(s: Snapshot): ArrayBuffer {
   const nP = s.players.length;
   const nB = s.bullets.length;
   const nT = s.throwables.length;
   const nE = s.events.length;
   const size =
-    1 + 4 + 8 + 4 + 1 + 1 + 1 + 1 + 1 + nP * PLAYER_BYTES + nB * BULLET_BYTES + nT * THROW_BYTES + nE * EVENT_BYTES;
+    1 +
+    4 +
+    8 +
+    4 +
+    1 +
+    1 +
+    1 +
+    1 +
+    1 +
+    2 + // doorsBits
+    nP * PLAYER_BYTES +
+    nB * BULLET_BYTES +
+    nT * THROW_BYTES +
+    nE * EVENT_BYTES;
   const buf = new ArrayBuffer(size);
   const v = new DataView(buf);
   let o = 0;
@@ -204,7 +228,8 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
   v.setUint8(o++, nB);
   v.setUint8(o++, nT);
   v.setUint8(o++, nE);
-
+  v.setUint16(o, (s.doorsBits ?? 0) & 0xffff, true);
+  o += 2;
   for (const p of s.players) {
     v.setUint8(o++, p.id);
     v.setFloat32(o, f32(p.x), true);
@@ -229,7 +254,6 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     v.setUint16(o, 0, true);
     o += 2;
   }
-
   for (const b of s.bullets) {
     v.setUint16(o, b.id, true);
     o += 2;
@@ -246,9 +270,8 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     o += 4;
     v.setFloat32(o, f32(b.vy), true);
     o += 4;
-    v.setUint8(o++, 0);
+    v.setUint8(o++, (b.weapon ?? 0) & 0xff);
   }
-
   for (const t of s.throwables) {
     v.setUint16(o, t.id, true);
     o += 2;
@@ -265,7 +288,6 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     v.setFloat32(o, f32(t.fuse), true);
     o += 4;
   }
-
   for (const e of s.events) {
     v.setUint8(o++, EVENT_KIND[e.kind] ?? 0);
     v.setUint8(o++, e.a);
@@ -277,12 +299,10 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     v.setUint16(o, 0, true);
     o += 2;
   }
-
   return buf;
 }
-
 export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
-  if (buf.byteLength < 21) return null;
+  if (buf.byteLength < 23) return null;
   const v = new DataView(buf);
   if (v.getUint8(0) !== MSG.SNAPSHOT) return null;
   let o = 1;
@@ -297,7 +317,8 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
   const nB = v.getUint8(o++);
   const nT = v.getUint8(o++);
   const nE = v.getUint8(o++);
-
+  const doorsBits = v.getUint16(o, true);
+  o += 2;
   const players: PlayerState[] = [];
   for (let i = 0; i < nP; i++) {
     const id = v.getUint8(o++);
@@ -337,7 +358,6 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
       stamina,
     });
   }
-
   const bullets: BulletState[] = [];
   for (let i = 0; i < nB; i++) {
     const id = v.getUint16(o, true);
@@ -355,10 +375,9 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 4;
     const vy = v.getFloat32(o, true);
     o += 4;
-    o += 1;
-    bullets.push({ id, owner, x, y, px, py, vx, vy });
+    const weapon = v.getUint8(o++);
+    bullets.push({ id, owner, x, y, px, py, vx, vy, weapon, life: 0 });
   }
-
   const throwables: ThrowableState[] = [];
   for (let i = 0; i < nT; i++) {
     const id = v.getUint16(o, true);
@@ -377,7 +396,6 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 4;
     throwables.push({ id, kind, owner, x, y, vx, vy, fuse });
   }
-
   const events: TickEvent[] = [];
   for (let i = 0; i < nE; i++) {
     const kind = KIND_FROM[v.getUint8(o++)] ?? "shot";
@@ -390,10 +408,8 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 2;
     events.push({ kind, a, b, x, y });
   }
-
-  return { tick, serverTime, matchLeftMs, phase, players, bullets, throwables, events };
+  return { tick, serverTime, matchLeftMs, phase, players, bullets, throwables, events, doorsBits };
 }
-
 export function encodeHello(name: string): ArrayBuffer {
   const enc = new TextEncoder();
   const nameBytes = enc.encode(name.slice(0, 16));
@@ -404,14 +420,12 @@ export function encodeHello(name: string): ArrayBuffer {
   new Uint8Array(buf, 2).set(nameBytes);
   return buf;
 }
-
 export function decodeHello(buf: ArrayBuffer): string | null {
   const v = new DataView(buf);
   if (v.getUint8(0) !== MSG.HELLO) return null;
   const len = v.getUint8(1);
   return new TextDecoder().decode(new Uint8Array(buf, 2, len));
 }
-
 export function encodeWelcome(w: WelcomeMsg): ArrayBuffer {
   const enc = new TextEncoder();
   const code = enc.encode(w.roomCode.slice(0, 8));
@@ -424,7 +438,6 @@ export function encodeWelcome(w: WelcomeMsg): ArrayBuffer {
   new Uint8Array(buf, 4).set(code);
   return buf;
 }
-
 export function decodeWelcome(buf: ArrayBuffer): WelcomeMsg | null {
   const v = new DataView(buf);
   if (v.getUint8(0) !== MSG.WELCOME) return null;
@@ -434,7 +447,6 @@ export function decodeWelcome(buf: ArrayBuffer): WelcomeMsg | null {
   const roomCode = new TextDecoder().decode(new Uint8Array(buf, 4, len));
   return { selfId, roomCode, isHost };
 }
-
 export function encodeLobby(m: LobbyMsg): ArrayBuffer {
   const json = JSON.stringify(m);
   const bytes = new TextEncoder().encode(json);
@@ -443,7 +455,6 @@ export function encodeLobby(m: LobbyMsg): ArrayBuffer {
   new Uint8Array(buf, 1).set(bytes);
   return buf;
 }
-
 export function decodeLobby(buf: ArrayBuffer): LobbyMsg | null {
   const v = new DataView(buf);
   if (v.getUint8(0) !== MSG.LOBBY) return null;
@@ -453,7 +464,6 @@ export function decodeLobby(buf: ArrayBuffer): LobbyMsg | null {
     return null;
   }
 }
-
 export function encodeCtrl(type: MsgType, ...nums: number[]): ArrayBuffer {
   const buf = new ArrayBuffer(1 + nums.length * 4);
   const v = new DataView(buf);
@@ -461,12 +471,10 @@ export function encodeCtrl(type: MsgType, ...nums: number[]): ArrayBuffer {
   nums.forEach((n, i) => v.setFloat32(1 + i * 4, n, true));
   return buf;
 }
-
 export function msgType(buf: ArrayBuffer): number {
   if (buf.byteLength < 1) return -1;
   return new DataView(buf).getUint8(0);
 }
-
 export function encodePing(t: number): ArrayBuffer {
   const buf = new ArrayBuffer(9);
   const v = new DataView(buf);
@@ -474,7 +482,6 @@ export function encodePing(t: number): ArrayBuffer {
   v.setFloat64(1, t, true);
   return buf;
 }
-
 export function encodePong(t: number): ArrayBuffer {
   const buf = new ArrayBuffer(9);
   const v = new DataView(buf);
@@ -482,7 +489,6 @@ export function encodePong(t: number): ArrayBuffer {
   v.setFloat64(1, t, true);
   return buf;
 }
-
 export function decodePingTime(buf: ArrayBuffer): number {
   return new DataView(buf).getFloat64(1, true);
 }

@@ -1,30 +1,39 @@
 /**
- * render.ts — rua noturna top-down, corpo completo, armas, luz/sombra.
+ * render.ts — mapa deserto tilemap, personagens 3/4 8-dir, arma em camada, feel.
  */
+import { ARENA_H, ARENA_W } from "../../../shared/constants";
+import { LOADOUTS, muzzlePoint, weaponOf } from "../../../shared/gear";
 import {
-  ARENA_H,
-  ARENA_W,
-  OBSTACLES,
-  PLAYER_R,
-  STREET_LAMPS,
-} from "../../../shared/constants";
-import { LOADOUTS, WEAPONS, weaponOf } from "../../../shared/gear";
+  BUILDINGS,
+  DOOR_DEFS,
+  GROUND,
+  SOLID,
+  T,
+  TILE,
+  USE_VISION,
+  buildingAt,
+  doorWorldRect,
+  doorsFromBits,
+  roofRect,
+} from "../../../shared/map";
 import type {
   BulletState,
   PlayerState,
   ThrowableState,
   TickEvent,
 } from "../../../shared/protocol";
-import { getCharSprite, kenneyReady, pickPose } from "./sprites";
 
-/** Paleta Lospec Resurrect-64 (tons usados na rua / UI do canvas). */
 export const LOSPEC = {
-  asphalt: "#313638",
-  sidewalk: "#374e4a",
-  line: "#f9c22b",
-  night: "#2e222f",
-  lamp: "#fbb954",
-  shadow: "rgba(46,34,47,0.55)",
+  sand: "#c8a35a",
+  sandDark: "#a8843e",
+  dirt: "#8a6a3a",
+  wood: "#6b4a2a",
+  concrete: "#6a6a60",
+  wall: "#7a4a3a",
+  metal: "#5a5a52",
+  roof: "#4a3830",
+  shadow: "rgba(46,34,47,0.5)",
+  night: "rgba(20,16,12,0.28)",
 };
 
 export interface MuzzleFlash {
@@ -32,6 +41,7 @@ export interface MuzzleFlash {
   y: number;
   angle: number;
   t: number;
+  sparks?: { dx: number; dy: number; life: number }[];
 }
 
 export interface FxPool {
@@ -39,7 +49,25 @@ export interface FxPool {
   y: number;
   r: number;
   t: number;
-  kind: "fire" | "smoke" | "explode";
+  kind: "fire" | "smoke" | "explode" | "dust";
+}
+
+export interface ShellCas {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number;
+}
+
+export interface FeelState {
+  /** 0..1 arma recuo */
+  gunKick: number;
+  /** 0..1 coice corpo */
+  bodyKick: number;
+  /** amplitude shake restante */
+  shake: number;
+  shells: ShellCas[];
 }
 
 export interface RenderView {
@@ -60,11 +88,14 @@ export interface RenderView {
   throwables: ThrowableState[];
   flashes: MuzzleFlash[];
   fx: FxPool[];
-  flashBlind: number; // 0..1
+  flashBlind: number;
   events: TickEvent[];
+  doorsBits: number;
+  feel: FeelState;
+  doorAnim: Map<number, number>; // id → 0 fechada .. 1 aberta
+  roofAlpha: Map<number, number>; // building id → alpha
 }
 
-/** Luz principal da rua (lua / poste dominante) — direção da sombra. */
 const LIGHT_DIR = { x: 0.35, y: 0.55 };
 
 export function resizeCanvas(canvas: HTMLCanvasElement) {
@@ -81,104 +112,144 @@ export function resizeCanvas(canvas: HTMLCanvasElement) {
   }
 }
 
-function drawStreet(ctx: CanvasRenderingContext2D, tMs: number) {
-  // asfalto (Lospec)
-  ctx.fillStyle = LOSPEC.asphalt;
-  ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+function tileColor(t: number, shade: number): string {
+  const base =
+    t === T.DIRT
+      ? LOSPEC.dirt
+      : t === T.WOOD
+        ? LOSPEC.wood
+        : t === T.CONCRETE
+          ? LOSPEC.concrete
+          : t === T.WALL
+            ? LOSPEC.wall
+            : t === T.METAL
+              ? LOSPEC.metal
+              : t === T.CRATE
+                ? "#8a7040"
+                : t === T.BARREL
+                  ? "#4a5a30"
+                  : t === T.CAR
+                    ? "#3a4048"
+                    : shade ? LOSPEC.sandDark : LOSPEC.sand;
+  return base;
+}
 
-  // calçadas
-  ctx.fillStyle = LOSPEC.sidewalk;
-  ctx.fillRect(0, 0, 48, ARENA_H);
-  ctx.fillRect(ARENA_W - 48, 0, 48, ARENA_H);
-  ctx.fillRect(0, 0, ARENA_W, 36);
-  ctx.fillRect(0, ARENA_H - 36, ARENA_W, 36);
-
-  // faixa central
-  ctx.strokeStyle = "rgba(249,194,43,0.4)";
-  ctx.lineWidth = 3;
-  ctx.setLineDash([18, 16]);
-  ctx.beginPath();
-  ctx.moveTo(ARENA_W / 2, 40);
-  ctx.lineTo(ARENA_W / 2, ARENA_H - 40);
-  ctx.stroke();
-  ctx.setLineDash([]);
-
-  // faixa de pedestre
-  ctx.fillStyle = "rgba(199,220,208,0.14)";
-  for (let i = 0; i < 8; i++) {
-    ctx.fillRect(420 + i * 14, 300, 8, 50);
-  }
-
-  // rachaduras
-  ctx.fillStyle = "rgba(46,34,47,0.35)";
-  for (let i = 0; i < 30; i++) {
-    const x = (i * 137 + tMs * 0.00002) % ARENA_W;
-    const y = (i * 89) % ARENA_H;
-    ctx.fillRect(x, y, 4 + (i % 3), 2);
+function drawGround(ctx: CanvasRenderingContext2D) {
+  for (let ty = 0; ty < GROUND.length; ty++) {
+    for (let tx = 0; tx < GROUND[0]!.length; tx++) {
+      const t = GROUND[ty]![tx]!;
+      const shade = (tx * 3 + ty * 5) % 2;
+      ctx.fillStyle = tileColor(t, shade);
+      ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+      if (t === T.SAND || t === T.DIRT) {
+        ctx.fillStyle = "rgba(0,0,0,0.06)";
+        ctx.fillRect(tx * TILE + 4, ty * TILE + 8, 3, 2);
+        ctx.fillRect(tx * TILE + 18, ty * TILE + 20, 4, 2);
+      }
+    }
   }
 }
 
-function drawObstacle(ctx: CanvasRenderingContext2D, o: (typeof OBSTACLES)[0]) {
-  const kind = o.kind ?? "box";
-  // sombra no chão (offset pela luz)
-  ctx.fillStyle = "rgba(0,0,0,0.45)";
-  ctx.fillRect(o.x + LIGHT_DIR.x * 8, o.y + LIGHT_DIR.y * 8, o.w, o.h);
-
-  if (kind === "car") {
-    ctx.fillStyle = "#2a3540";
-    ctx.fillRect(o.x, o.y, o.w, o.h);
-    ctx.fillStyle = "#1a2228";
-    ctx.fillRect(o.x + 6, o.y + 6, o.w - 12, o.h - 12);
-    ctx.fillStyle = "#4a8";
-    ctx.fillRect(o.x + 4, o.y + 2, 10, 4);
-    ctx.fillRect(o.x + o.w - 14, o.y + 2, 10, 4);
-    ctx.fillStyle = "#111";
-    ctx.fillRect(o.x + 8, o.y + o.h - 5, 12, 4);
-    ctx.fillRect(o.x + o.w - 20, o.y + o.h - 5, 12, 4);
-  } else if (kind === "dumpster") {
-    ctx.fillStyle = "#1F4A3D";
-    ctx.fillRect(o.x, o.y, o.w, o.h);
-    ctx.fillStyle = "#2a6352";
-    ctx.fillRect(o.x, o.y, o.w, 8);
-    ctx.fillStyle = "#0f2a22";
-    ctx.fillRect(o.x + 6, o.y + 14, o.w - 12, 10);
-  } else {
-    ctx.fillStyle = "#3a3228";
-    ctx.fillRect(o.x, o.y, o.w, o.h);
-    ctx.fillStyle = "#5a4a38";
-    ctx.fillRect(o.x, o.y, o.w, 6);
-    ctx.fillStyle = "#2F5FD0";
-    ctx.fillRect(o.x + 8, o.y + 14, 12, 8);
+function drawSolids(ctx: CanvasRenderingContext2D) {
+  for (let ty = 0; ty < SOLID.length; ty++) {
+    for (let tx = 0; tx < SOLID[0]!.length; tx++) {
+      const t = SOLID[ty]![tx]!;
+      if (t < 10) continue;
+      const x = tx * TILE;
+      const y = ty * TILE;
+      ctx.fillStyle = LOSPEC.shadow;
+      ctx.fillRect(x + LIGHT_DIR.x * 6, y + LIGHT_DIR.y * 6, TILE, TILE);
+      ctx.fillStyle = tileColor(t, 0);
+      ctx.fillRect(x, y, TILE, TILE);
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(x, y, TILE, 4);
+      if (t === T.CRATE) {
+        ctx.strokeStyle = "rgba(0,0,0,0.35)";
+        ctx.strokeRect(x + 4, y + 4, TILE - 8, TILE - 8);
+      } else if (t === T.CAR) {
+        ctx.fillStyle = "#1a2228";
+        ctx.fillRect(x + 4, y + 8, TILE - 8, TILE - 14);
+      } else if (t === T.BARREL) {
+        ctx.fillStyle = "#2a3a20";
+        ctx.beginPath();
+        ctx.ellipse(x + 16, y + 16, 10, 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
   }
 }
 
-function drawWeapon(
+function drawDoors(
+  ctx: CanvasRenderingContext2D,
+  doorsBits: number,
+  doorAnim: Map<number, number>,
+) {
+  for (const d of DOOR_DEFS) {
+    const openT = doorAnim.get(d.id) ?? (doorsBits & (1 << d.id) ? 1 : 0);
+    const r = doorWorldRect(d);
+    const hingeX = d.orient === "h" ? r.x : r.x + r.w / 2;
+    const hingeY = d.orient === "v" ? r.y : r.y + r.h / 2;
+    ctx.save();
+    ctx.translate(hingeX, hingeY);
+    const ang = openT * (Math.PI / 2) * (d.orient === "h" ? -1 : 1);
+    ctx.rotate(ang);
+    ctx.fillStyle = "#5a3a28";
+    if (d.orient === "h") ctx.fillRect(0, -6, TILE, 12);
+    else ctx.fillRect(-6, 0, 12, TILE);
+    ctx.fillStyle = "#c8a35a";
+    ctx.fillRect(d.orient === "h" ? TILE - 6 : -2, d.orient === "h" ? -2 : TILE - 6, 4, 4);
+    ctx.restore();
+  }
+}
+
+/** 8 dirs: 0=E, 1=SE, 2=S, 3=SO, 4=O, 5=NO, 6=N, 7=NE — a partir de angle (atan2, 0=+X). */
+function aimDir(angle: number): number {
+  return Math.round(angle / (Math.PI / 4)) & 7;
+}
+
+function moveDir(vx: number, vy: number, fallback: number): number {
+  if (Math.hypot(vx, vy) < 20) return fallback;
+  return Math.round(Math.atan2(vy, vx) / (Math.PI / 4)) & 7;
+}
+
+function dirAngle(dir: number): number {
+  return dir * (Math.PI / 4);
+}
+
+function drawWeaponLayer(
   ctx: CanvasRenderingContext2D,
   weaponId: number,
+  aim: number,
+  gunKick: number,
   muzzleFlash: boolean,
 ) {
   const w = weaponOf(weaponId);
   const L = w.length;
   const W = w.width;
-  // corpo da arma (ao longo do +X, personagem olha pra +X após rotate)
+  const facingLeft = aim > Math.PI / 2 || aim < -Math.PI / 2;
+  ctx.save();
+  ctx.rotate(aim);
+  if (facingLeft) ctx.scale(1, -1);
+  ctx.translate(-gunKick * 3.5, 0);
+
   ctx.fillStyle = w.color;
   if (weaponId === 0) {
-    // pistola — curta, guarda
     ctx.fillRect(6, -W / 2, L * 0.55, W);
     ctx.fillStyle = w.accent;
     ctx.fillRect(6 + L * 0.35, -W * 0.8, 4, W * 1.6);
-    ctx.fillRect(4, 0, 6, W * 1.2);
-  } else if (weaponId === 1) {
-    // M4A1 — handguard + carry handle
-    ctx.fillRect(8, -W / 2, L * 0.75, W);
+  } else if (weaponId === 4) {
+    ctx.fillRect(8, -W / 2, L * 0.7, W);
     ctx.fillStyle = w.accent;
-    ctx.fillRect(8 + L * 0.2, -W * 0.9, L * 0.35, W * 0.5);
-    ctx.fillRect(8 + L * 0.55, -W * 1.1, 6, W * 0.7); // miras
-    ctx.fillStyle = "#222";
-    ctx.fillRect(8 + L * 0.7, -1.5, L * 0.25, 3); // cano
+    ctx.fillRect(8 + L * 0.5, -W * 0.3, L * 0.35, W * 0.6);
+  } else if (weaponId === 5) {
+    ctx.fillRect(7, -W / 2, L * 0.65, W);
+    ctx.fillStyle = w.accent;
+    ctx.fillRect(7 + L * 0.25, W / 2, 5, W);
+  } else if (weaponId === 6) {
+    ctx.fillRect(8, -W / 2, L * 0.85, W * 0.8);
+    ctx.fillStyle = w.accent;
+    ctx.fillRect(8 + L * 0.75, -1, L * 0.35, 2);
   } else if (weaponId === 2) {
-    // M16 — mais longo, triangular handguard
-    ctx.fillStyle = w.color;
     ctx.fillRect(8, -W / 2, L * 0.7, W);
     ctx.beginPath();
     ctx.moveTo(8 + L * 0.15, -W / 2);
@@ -186,21 +257,16 @@ function drawWeapon(
     ctx.lineTo(8 + L * 0.45, W / 2);
     ctx.closePath();
     ctx.fill();
-    ctx.fillStyle = w.accent;
-    ctx.fillRect(8 + L * 0.65, -1.5, L * 0.3, 3);
   } else {
-    // AK-47 — madeira + curva do pente
-    ctx.fillStyle = w.color;
-    ctx.fillRect(8, -W / 2, L * 0.65, W);
-    ctx.fillStyle = "#3a2818";
-    ctx.fillRect(8, -W / 2, L * 0.22, W); // coronha madeira
+    ctx.fillRect(8, -W / 2, L * 0.75, W);
     ctx.fillStyle = w.accent;
-    ctx.fillRect(8 + L * 0.35, 0, 8, W * 1.4); // pente curvo
-    ctx.fillRect(8 + L * 0.6, -1.5, L * 0.28, 3);
+    ctx.fillRect(8 + L * 0.55, -W * 1.1, 6, W * 0.7);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(8 + L * 0.7, -1.5, L * 0.25, 3);
   }
 
   if (muzzleFlash) {
-    const tip = 8 + L;
+    const tip = w.muzzleForward - 4;
     const g = ctx.createRadialGradient(tip, 0, 0, tip, 0, 14);
     g.addColorStop(0, "rgba(255,230,120,0.95)");
     g.addColorStop(0.4, "rgba(255,140,40,0.55)");
@@ -210,9 +276,10 @@ function drawWeapon(
     ctx.arc(tip, 0, 14, 0, Math.PI * 2);
     ctx.fill();
   }
+  ctx.restore();
 }
 
-function drawPerson(
+function drawPerson34(
   ctx: CanvasRenderingContext2D,
   p: {
     id: number;
@@ -227,265 +294,407 @@ function drawPerson(
   tMs: number,
   isSelf: boolean,
   muzzle: boolean,
+  feel: FeelState,
 ) {
   const look = LOADOUTS[p.id % LOADOUTS.length]!;
   const speed = Math.hypot(p.vx ?? 0, p.vy ?? 0);
-  // informations.MD: balanço leve ao correr
-  const bob = speed > 20 ? Math.sin(tMs * 0.02 + p.id) * 2.2 : 0;
-  const runLean = Math.min(0.12, speed / 1000);
+  const bodyDir = aimDir(p.angle);
+  let legDir = moveDir(p.vx ?? 0, p.vy ?? 0, bodyDir);
+  // strafe: pernas vs mira > 90°
+  let da = Math.abs(((dirAngle(legDir) - p.angle + Math.PI) % (Math.PI * 2)) - Math.PI);
+  if (da > Math.PI / 2 && speed > 25) {
+    /* keep legDir from movement */
+  } else {
+    legDir = bodyDir;
+  }
+
+  const bob = speed > 20 ? Math.sin(tMs * 0.02 + p.id) * 1.2 : 0;
+  const idleScale = speed < 25 ? 1 + Math.sin(tMs * 0.004 + p.id) * 0.01 : 1;
+  const runPhase = speed > 25 ? (tMs * 0.012 * (speed / 180)) % (Math.PI * 2) : 0;
+  const legSwing = Math.sin(runPhase) * Math.min(5, speed / 50);
+  const bodyKick = isSelf ? feel.bodyKick * 1.5 : 0;
+  const gunKick = isSelf ? feel.gunKick : 0;
+  const kickX = -Math.cos(p.angle) * bodyKick;
+  const kickY = -Math.sin(p.angle) * bodyKick;
 
   if (!p.alive) ctx.globalAlpha = 0.35;
 
-  const shx = LIGHT_DIR.x * 10;
-  const shy = LIGHT_DIR.y * 10;
   ctx.fillStyle = LOSPEC.shadow;
   ctx.beginPath();
-  ctx.ellipse(p.x + shx, p.y + shy, PLAYER_R * 1.05, PLAYER_R * 0.55, 0, 0, Math.PI * 2);
+  ctx.ellipse(
+    p.x + LIGHT_DIR.x * 8 + kickX,
+    p.y + LIGHT_DIR.y * 8 + kickY,
+    11,
+    6,
+    0,
+    0,
+    Math.PI * 2,
+  );
   ctx.fill();
 
-  const pose = pickPose(p.weapon, speed);
-  const sprite = kenneyReady() ? getCharSprite(p.id, pose) : null;
-
-  if (sprite) {
-    // Kenney PNG aponta pra cima → +PI/2 pro aim (+X)
-    ctx.save();
-    ctx.translate(p.x, p.y + bob);
-    ctx.rotate(p.angle + Math.PI / 2);
-    ctx.transform(1, 0, runLean * 0.25, 1 - runLean * 0.04, 0, 0);
-    const sc = 0.85;
-    const w = sprite.naturalWidth * sc;
-    const h = sprite.naturalHeight * sc;
-    ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
-    if (muzzle && isSelf) {
-      const tip = h * 0.42;
-      const g = ctx.createRadialGradient(0, -tip, 0, 0, -tip, 16);
-      g.addColorStop(0, "rgba(255,230,120,0.95)");
-      g.addColorStop(0.4, "rgba(255,140,40,0.5)");
-      g.addColorStop(1, "rgba(255,80,0,0)");
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(0, -tip, 16, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    if (isSelf) {
-      ctx.strokeStyle = "rgba(77,155,230,0.75)";
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(-w / 2 - 2, -h / 2 - 2, w + 4, h + 4);
-    }
-    ctx.restore();
-    ctx.globalAlpha = 1;
-    return;
-  }
-
-  // fallback se sprites ainda não carregaram
   ctx.save();
-  ctx.translate(p.x, p.y + bob);
-  ctx.rotate(p.angle);
-  ctx.transform(1, 0, runLean * 0.3, 1 - runLean * 0.05, 0, 0);
+  ctx.translate(p.x + kickX, p.y + bob + kickY);
+  ctx.scale(1, idleScale);
+
+  // --- pernas (dir do movimento) ---
+  ctx.save();
+  ctx.rotate(dirAngle(legDir) + Math.PI / 2); // 3/4: “frente” do sprite pra baixo-ish
   ctx.fillStyle = look.shoes;
-  ctx.fillRect(-5, 7, 5, 5);
-  ctx.fillRect(1, 7, 5, 5);
+  ctx.fillRect(-5, 8 + legSwing, 4, 5);
+  ctx.fillRect(1, 8 - legSwing, 4, 5);
   ctx.fillStyle = look.pants;
-  ctx.fillRect(-7, 1, 14, 8);
+  ctx.fillRect(-6, 2 + legSwing * 0.4, 5, 9);
+  ctx.fillRect(1, 2 - legSwing * 0.4, 5, 9);
+  ctx.restore();
+
+  // --- tronco (dir da mira quantizada) ---
+  ctx.save();
+  ctx.rotate(dirAngle(bodyDir) + Math.PI / 2);
   ctx.fillStyle = look.shirt;
-  ctx.fillRect(-8, -7, 16, 10);
-  ctx.fillRect(-10, -5, 4, 6);
-  ctx.fillRect(6, -5, 4, 6);
-  ctx.fillStyle = look.skin;
-  ctx.fillRect(4, -3, 8, 4);
-  drawWeapon(ctx, p.weapon, muzzle && isSelf);
+  ctx.fillRect(-8, -8, 16, 12);
+  // ombros
+  ctx.fillRect(-11, -6, 5, 7);
+  ctx.fillRect(6, -6, 5, 7);
+  // cabeça
   ctx.fillStyle = look.skin;
   ctx.beginPath();
-  ctx.arc(0, -2, 5.5, 0, Math.PI * 2);
+  ctx.arc(0, -12, 6, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = look.hair;
   ctx.beginPath();
-  ctx.arc(0, -3.5, 5.2, Math.PI * 1.05, Math.PI * 1.95);
+  ctx.arc(0, -14, 5.5, Math.PI * 1.1, Math.PI * 1.9);
   ctx.fill();
+  ctx.restore();
+
+  // --- arma (mira contínua) ---
+  drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf);
+
+  if (isSelf) {
+    ctx.strokeStyle = "rgba(77,155,230,0.65)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(-14, -20, 28, 36);
+  }
+
   ctx.restore();
   ctx.globalAlpha = 1;
 }
 
-function drawLighting(
+function drawRoofs(
   ctx: CanvasRenderingContext2D,
-  view: RenderView,
-  extraLights: { x: number; y: number; r: number; a: number }[],
+  roofAlpha: Map<number, number>,
 ) {
-  // noite base
-  ctx.fillStyle = "rgba(4,8,14,0.42)";
-  ctx.fillRect(0, 0, ARENA_W, ARENA_H);
-
-  ctx.globalCompositeOperation = "lighter";
-  for (const lamp of STREET_LAMPS) {
-    const g = ctx.createRadialGradient(lamp.x, lamp.y, 4, lamp.x, lamp.y, 130);
-    g.addColorStop(0, "rgba(255,220,140,0.28)");
-    g.addColorStop(0.4, "rgba(255,180,80,0.1)");
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(lamp.x, lamp.y, 130, 0, Math.PI * 2);
-    ctx.fill();
-    // poste
-    ctx.globalCompositeOperation = "source-over";
-    ctx.fillStyle = "#333";
-    ctx.fillRect(lamp.x - 2, lamp.y - 8, 4, 12);
-    ctx.fillStyle = "#e8c060";
-    ctx.beginPath();
-    ctx.arc(lamp.x, lamp.y - 8, 3, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.globalCompositeOperation = "lighter";
+  for (const b of BUILDINGS) {
+    const a = roofAlpha.get(b.id) ?? 1;
+    if (a <= 0.02) continue;
+    const r = roofRect(b);
+    ctx.globalAlpha = a;
+    ctx.fillStyle = LOSPEC.roof;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    for (let i = 0; i < r.w; i += 16) {
+      ctx.fillRect(r.x + i, r.y, 2, r.h);
+    }
+    ctx.fillStyle = "rgba(180,120,80,0.25)";
+    ctx.fillRect(r.x + 4, r.y + 4, r.w - 8, 6);
   }
-
-  for (const L of extraLights) {
-    const g = ctx.createRadialGradient(L.x, L.y, 2, L.x, L.y, L.r);
-    g.addColorStop(0, `rgba(255,200,100,${L.a})`);
-    g.addColorStop(1, "rgba(0,0,0,0)");
-    ctx.fillStyle = g;
-    ctx.beginPath();
-    ctx.arc(L.x, L.y, L.r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-  ctx.globalCompositeOperation = "source-over";
+  ctx.globalAlpha = 1;
 }
 
-export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: number) {
-  const { canvas } = ctx;
-  const scale = Math.min(canvas.width / ARENA_W, canvas.height / ARENA_H);
-  const ox = (canvas.width - ARENA_W * scale) / 2;
-  const oy = (canvas.height - ARENA_H * scale) / 2;
-
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = "#050608";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.setTransform(scale, 0, 0, scale, ox, oy);
-
-  drawStreet(ctx, tMs);
-  for (const o of OBSTACLES) drawObstacle(ctx, o);
-
-  // fx chão (fumaça / fogo) antes dos players
-  for (const f of view.fx) {
-    if (f.kind === "smoke") {
-      const a = Math.min(0.55, f.t / 6000);
-      const g = ctx.createRadialGradient(f.x, f.y, 10, f.x, f.y, f.r);
-      g.addColorStop(0, `rgba(160,160,160,${a})`);
-      g.addColorStop(1, "rgba(80,80,80,0)");
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (f.kind === "fire") {
-      const flicker = 0.7 + Math.sin(tMs * 0.02 + f.x) * 0.3;
-      const g = ctx.createRadialGradient(f.x, f.y, 2, f.x, f.y, f.r * flicker);
-      g.addColorStop(0, "rgba(255,220,80,0.85)");
-      g.addColorStop(0.4, "rgba(255,100,20,0.55)");
-      g.addColorStop(1, "rgba(180,40,0,0)");
-      ctx.fillStyle = g;
-      ctx.beginPath();
-      ctx.arc(f.x, f.y, f.r * flicker, 0, Math.PI * 2);
-      ctx.fill();
-    } else if (f.kind === "explode") {
-      const a = Math.max(0, f.t / 400);
-      ctx.fillStyle = `rgba(255,180,60,${a})`;
-      ctx.beginPath();
-      ctx.arc(f.x, f.y, f.r * (1.2 - a), 0, Math.PI * 2);
-      ctx.fill();
+function drawVisionMask(
+  ctx: CanvasRenderingContext2D,
+  ox: number,
+  oy: number,
+  doorsBits: number,
+) {
+  if (!USE_VISION) return;
+  // máscara simples: escurece fora de um cone/raio; paredes bloqueiam raios grossos
+  ctx.fillStyle = "rgba(0,0,0,0.55)";
+  ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+  ctx.globalCompositeOperation = "destination-out";
+  const rays = 72;
+  const range = 280;
+  ctx.beginPath();
+  ctx.moveTo(ox, oy);
+  for (let i = 0; i <= rays; i++) {
+    const a = (i / rays) * Math.PI * 2;
+    let dist = range;
+    const dx = Math.cos(a);
+    const dy = Math.sin(a);
+    for (let d = 0; d < range; d += 6) {
+      const x = ox + dx * d;
+      const y = oy + dy * d;
+      const tx = Math.floor(x / TILE);
+      const ty = Math.floor(y / TILE);
+      if (tx < 0 || ty < 0 || tx >= 30 || ty >= 20) {
+        dist = d;
+        break;
+      }
+      const solid = SOLID[ty]![tx]!;
+      if (solid >= 10) {
+        dist = d;
+        break;
+      }
+      // porta fechada
+      for (const def of DOOR_DEFS) {
+        if (doorsBits & (1 << def.id)) continue;
+        const r = doorWorldRect(def);
+        if (x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h) {
+          dist = d;
+          break;
+        }
+      }
+      if (dist < range && dist === d) break;
     }
+    ctx.lineTo(ox + dx * dist, oy + dy * dist);
   }
-
-  // throwables em voo
-  for (const t of view.throwables) {
-    ctx.fillStyle = t.kind === 4 ? "#c45c20" : t.kind === 2 ? "#e8e0a0" : t.kind === 3 ? "#888" : "#3a5a30";
-    ctx.beginPath();
-    ctx.arc(t.x, t.y, 4, 0, Math.PI * 2);
-    ctx.fill();
-    // sombra
-    ctx.fillStyle = "rgba(0,0,0,0.35)";
-    ctx.beginPath();
-    ctx.ellipse(t.x + 3, t.y + 4, 4, 2, 0, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // balas
-  for (const b of view.bullets) {
-    const grad = ctx.createLinearGradient(b.px, b.py, b.x, b.y);
-    grad.addColorStop(0, "rgba(255,220,120,0)");
-    grad.addColorStop(1, "rgba(255,220,120,0.95)");
-    ctx.strokeStyle = grad;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(b.px, b.py);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-  }
-
-  const muzzleAt = new Set(
-    view.flashes.map((f) => `${Math.round(f.x)}:${Math.round(f.y)}`),
-  );
-
-  for (const r of view.remotes) {
-    if (r.id === view.selfId) continue;
-    drawPerson(
-      ctx,
-      { ...r, weapon: r.weapon ?? 0 },
-      tMs,
-      false,
-      false,
-    );
-  }
-  if (view.local) {
-    const nearMuzzle = view.flashes.some(
-      (f) => Math.hypot(f.x - view.local!.x, f.y - view.local!.y) < 40,
-    );
-    drawPerson(ctx, { ...view.local, id: view.selfId }, tMs, true, nearMuzzle);
-  }
-  void muzzleAt;
-  void WEAPONS;
-
-  // luzes extras: muzzle + fogo
-  const extras: { x: number; y: number; r: number; a: number }[] = [];
-  for (const f of view.flashes) {
-    extras.push({ x: f.x, y: f.y, r: 50, a: 0.35 * (f.t / 50) });
-  }
-  for (const f of view.fx) {
-    if (f.kind === "fire") extras.push({ x: f.x, y: f.y, r: f.r * 1.4, a: 0.22 });
-  }
-  drawLighting(ctx, view, extras);
-
-  // flashbang: tela branca (como print) → visão volta aos poucos
-  if (view.flashBlind > 0.01) {
-    // curva: começa opaco e demora a abrir (sensação de recuperação)
-    const t = Math.min(1, Math.max(0, view.flashBlind));
-    const alpha = Math.pow(t, 0.55); // permanece mais branco no início
-    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
-    ctx.fillRect(0, 0, ARENA_W, ARENA_H);
-    // leve “véu” quente enquanto ainda está cego
-    if (alpha > 0.15) {
-      ctx.fillStyle = `rgba(255,250,230,${alpha * 0.2})`;
-      ctx.fillRect(0, 0, ARENA_W, ARENA_H);
-    }
-  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.globalCompositeOperation = "source-over";
 }
 
 export function pushFlashesFromEvents(flashes: MuzzleFlash[], events: TickEvent[]) {
   for (const e of events) {
-    if (e.kind === "shot") flashes.push({ x: e.x, y: e.y, angle: 0, t: 50 });
+    if (e.kind !== "shot") continue;
+    const sparks = [0, 1, 2].map((i) => {
+      const a = e.b /* unused */ + i;
+      void a;
+      const ang = Math.random() * Math.PI * 2;
+      return { dx: Math.cos(ang) * 8, dy: Math.sin(ang) * 8, life: 80 };
+    });
+    flashes.push({ x: e.x, y: e.y, angle: 0, t: 50, sparks });
   }
 }
 
 export function pushFxFromEvents(fx: FxPool[], events: TickEvent[]) {
   for (const e of events) {
-    if (e.kind === "explode") fx.push({ x: e.x, y: e.y, r: 70, t: 400, kind: "explode" });
-    if (e.kind === "smoke") fx.push({ x: e.x, y: e.y, r: 90, t: 6000, kind: "smoke" });
-    if (e.kind === "fire") fx.push({ x: e.x, y: e.y, r: 55, t: 5000, kind: "fire" });
+    if (e.kind === "explode") fx.push({ x: e.x, y: e.y, r: 40, t: 400, kind: "explode" });
+    if (e.kind === "smoke") fx.push({ x: e.x, y: e.y, r: 50, t: 2000, kind: "smoke" });
+    if (e.kind === "fire") fx.push({ x: e.x, y: e.y, r: 35, t: 1500, kind: "fire" });
+    if (e.kind === "hit" && e.b === 255) fx.push({ x: e.x, y: e.y, r: 8, t: 120, kind: "dust" });
   }
 }
 
-export function tickFlashes(flashes: MuzzleFlash[], dtMs: number) {
-  for (const f of flashes) f.t -= dtMs;
-  return flashes.filter((f) => f.t > 0);
+export function tickFlashes(flashes: MuzzleFlash[], dtMs: number): MuzzleFlash[] {
+  return flashes
+    .map((f) => ({
+      ...f,
+      t: f.t - dtMs,
+      sparks: f.sparks?.map((s) => ({ ...s, life: s.life - dtMs })).filter((s) => s.life > 0),
+    }))
+    .filter((f) => f.t > 0);
 }
 
-export function tickFx(fx: FxPool[], dtMs: number) {
-  for (const f of fx) f.t -= dtMs;
-  return fx.filter((f) => f.t > 0);
+export function tickFx(fx: FxPool[], dtMs: number): FxPool[] {
+  return fx.map((f) => ({ ...f, t: f.t - dtMs })).filter((f) => f.t > 0);
+}
+
+export function createFeel(): FeelState {
+  return { gunKick: 0, bodyKick: 0, shake: 0, shells: [] };
+}
+
+export function pulseShotFeel(feel: FeelState, weapon: number, isSelf: boolean) {
+  const w = weaponOf(weapon);
+  feel.gunKick = 1;
+  feel.bodyKick = 1;
+  if (isSelf) {
+    feel.shake = 2 + (w.damage / 70) * 1.5;
+  }
+  const ang = Math.random() * Math.PI * 2;
+  feel.shells.push({
+    x: 0,
+    y: 0,
+    vx: Math.cos(ang) * 60,
+    vy: Math.sin(ang) * 40 - 40,
+    life: 400,
+  });
+}
+
+export function tickFeel(feel: FeelState, dtMs: number, origin?: { x: number; y: number; angle: number }) {
+  feel.gunKick = Math.max(0, feel.gunKick - dtMs / 90);
+  feel.bodyKick = Math.max(0, feel.bodyKick - dtMs / 60);
+  feel.shake *= Math.exp(-dtMs / 40);
+  if (feel.shake < 0.05) feel.shake = 0;
+  feel.shells = feel.shells
+    .map((s) => {
+      if (origin && s.life === 400) {
+        const m = muzzlePoint(origin.x, origin.y, origin.angle, weaponOf(0));
+        s.x = m.x;
+        s.y = m.y;
+      }
+      return {
+        ...s,
+        x: s.x + s.vx * (dtMs / 1000),
+        y: s.y + s.vy * (dtMs / 1000),
+        vy: s.vy + 280 * (dtMs / 1000),
+        life: s.life - dtMs,
+      };
+    })
+    .filter((s) => s.life > 0);
+}
+
+export function tickDoorAnim(
+  anim: Map<number, number>,
+  bits: number,
+  dtMs: number,
+): Map<number, number> {
+  const next = new Map(anim);
+  for (const d of DOOR_DEFS) {
+    const target = bits & (1 << d.id) ? 1 : 0;
+    const cur = next.get(d.id) ?? target;
+    const step = dtMs / 150;
+    let v = cur;
+    if (v < target) v = Math.min(target, v + step);
+    else if (v > target) v = Math.max(target, v - step);
+    next.set(d.id, v);
+  }
+  return next;
+}
+
+export function tickRoofAlpha(
+  alphas: Map<number, number>,
+  selfX: number,
+  selfY: number,
+  dtMs: number,
+): Map<number, number> {
+  const inside = buildingAt(selfX, selfY);
+  const next = new Map(alphas);
+  const step = dtMs / 200;
+  for (const b of BUILDINGS) {
+    const target = inside === b.id ? 0.15 : 1;
+    const cur = next.get(b.id) ?? 1;
+    let v = cur;
+    if (v < target) v = Math.min(target, v + step);
+    else if (v > target) v = Math.max(target, v - step);
+    next.set(b.id, v);
+  }
+  return next;
+}
+
+export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: number) {
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const cw = ctx.canvas.width;
+  const ch = ctx.canvas.height;
+  const scale = Math.min(cw / ARENA_W, ch / ARENA_H);
+  const ox = (cw - ARENA_W * scale) / 2;
+  const oy = (ch - ARENA_H * scale) / 2;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = "#1a1410";
+  ctx.fillRect(0, 0, cw, ch);
+
+  const shake = view.feel.shake;
+  const sx = shake ? (Math.random() - 0.5) * shake * 2 : 0;
+  const sy = shake ? (Math.random() - 0.5) * shake * 2 : 0;
+
+  ctx.setTransform(scale, 0, 0, scale, ox + sx * scale, oy + sy * scale);
+
+  drawGround(ctx);
+  drawSolids(ctx);
+  drawDoors(ctx, view.doorsBits, view.doorAnim);
+
+  // throwables
+  for (const t of view.throwables) {
+    ctx.fillStyle = "#c8a35a";
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const selfMuzzle = view.flashes.some((f) => f.t > 30);
+
+  if (view.local) {
+    drawPerson34(ctx, { ...view.local, id: view.selfId }, tMs, true, selfMuzzle, view.feel);
+  }
+  for (const r of view.remotes) {
+    const muzzle = view.events.some((e) => e.kind === "shot" && e.a === r.id);
+    drawPerson34(
+      ctx,
+      { ...r, weapon: r.weapon ?? 0 },
+      tMs,
+      false,
+      muzzle,
+      view.feel,
+    );
+  }
+
+  // balas — rastro
+  for (const b of view.bullets) {
+    const sniper = b.weapon === 6;
+    ctx.strokeStyle = sniper ? "rgba(255,240,200,0.85)" : "rgba(255,220,120,0.75)";
+    ctx.lineWidth = sniper ? 1 : 2;
+    ctx.beginPath();
+    ctx.moveTo(b.px, b.py);
+    ctx.lineTo(b.x, b.y);
+    if (sniper) {
+      const dx = b.x - b.px;
+      const dy = b.y - b.py;
+      ctx.lineTo(b.x + dx * 2, b.y + dy * 2);
+    }
+    ctx.stroke();
+  }
+
+  for (const f of view.flashes) {
+    const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, 16);
+    g.addColorStop(0, "rgba(255,230,120,0.9)");
+    g.addColorStop(1, "rgba(255,80,0,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(f.x, f.y, 16, 0, Math.PI * 2);
+    ctx.fill();
+    for (const s of f.sparks ?? []) {
+      ctx.strokeStyle = `rgba(255,200,80,${s.life / 80})`;
+      ctx.beginPath();
+      ctx.moveTo(f.x, f.y);
+      ctx.lineTo(f.x + s.dx, f.y + s.dy);
+      ctx.stroke();
+    }
+  }
+
+  for (const s of view.feel.shells) {
+    ctx.fillStyle = "#c8a060";
+    ctx.fillRect(s.x, s.y, 2, 1);
+  }
+
+  for (const f of view.fx) {
+    const a = Math.min(1, f.t / 300);
+    if (f.kind === "smoke") {
+      ctx.fillStyle = `rgba(120,120,110,${0.35 * a})`;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r * (1.2 - a * 0.2), 0, Math.PI * 2);
+      ctx.fill();
+    } else if (f.kind === "fire") {
+      ctx.fillStyle = `rgba(220,80,20,${0.5 * a})`;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (f.kind === "dust") {
+      ctx.fillStyle = `rgba(200,180,120,${0.6 * a})`;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r, 0, Math.PI * 2);
+      ctx.fill();
+    } else {
+      ctx.fillStyle = `rgba(255,180,60,${0.55 * a})`;
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, f.r * a, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  // telhados por cima
+  drawRoofs(ctx, view.roofAlpha);
+
+  // noite suave
+  ctx.fillStyle = LOSPEC.night;
+  ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+
+  if (view.local) {
+    drawVisionMask(ctx, view.local.x, view.local.y, view.doorsBits);
+  }
+
+  if (view.flashBlind > 0) {
+    ctx.fillStyle = `rgba(255,255,255,${view.flashBlind})`;
+    ctx.fillRect(0, 0, ARENA_W, ARENA_H);
+  }
+
+  void doorsFromBits;
 }

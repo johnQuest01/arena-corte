@@ -2,6 +2,7 @@
  * loop.ts — requestAnimationFrame + netcode (prediction / reconciliação / interp).
  */
 import { ARENA_H, ARENA_W, INPUT_HZ } from "../../../shared/constants";
+import { WEAPONS } from "../../../shared/gear";
 import {
   MSG,
   decodeLobby,
@@ -28,19 +29,23 @@ import {
   type SmoothState,
 } from "../net/reconciliation";
 import { InputController } from "./input";
-import { WEAPONS } from "../../../shared/gear";
 import {
+  createFeel,
   drawFrame,
+  pulseShotFeel,
   pushFlashesFromEvents,
   pushFxFromEvents,
   resizeCanvas,
+  tickDoorAnim,
+  tickFeel,
   tickFlashes,
   tickFx,
+  tickRoofAlpha,
+  type FeelState,
   type FxPool,
   type MuzzleFlash,
   type RenderView,
 } from "./render";
-import { preloadKenneySprites } from "./sprites";
 
 export type GamePhase = "connecting" | "lobby" | "playing" | "result" | "full" | "error";
 
@@ -71,9 +76,10 @@ export class GameClient {
   private name: string;
   private flashes: MuzzleFlash[] = [];
   private fx: FxPool[] = [];
-  /** 0..1 — intensidade da tela branca (flashbang). */
+  private feel: FeelState = createFeel();
+  private doorAnim = new Map<number, number>();
+  private roofAlpha = new Map<number, number>();
   private flashBlind = 0;
-  /** ms com branco total antes de começar a recuperar a visão. */
   private flashHoldMs = 0;
   private lastSnap: Snapshot | null = null;
   private lobby: LobbyMsg | null = null;
@@ -87,9 +93,9 @@ export class GameClient {
   private running = false;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private onResize = () => resizeCanvas(this.canvas);
-  /** Evita setState a cada snapshot (apagava o canvas via re-render React). */
   private lastHudKey = "";
   private hudClock = 0;
+  private localFireCd = 0;
 
   constructor(opts: { transport: Transport; canvas: HTMLCanvasElement; name: string }) {
     this.transport = opts.transport;
@@ -134,7 +140,6 @@ export class GameClient {
     resizeCanvas(this.canvas);
     window.addEventListener("resize", this.onResize);
     this.input.attach(this.canvas);
-    void preloadKenneySprites(); // Kenney CC0 — informations.MD
 
     this.transport.on({
       onMessage: (data) => this.onMsg(data),
@@ -213,14 +218,19 @@ export class GameClient {
       const snap = decodeSnapshot(data);
       if (!snap) return;
       this.lastSnap = snap;
+      this.prediction.doorBits = snap.doorsBits ?? 0;
       this.interp.push(snap);
       pushFlashesFromEvents(this.flashes, snap.events);
       pushFxFromEvents(this.fx, snap.events);
       for (const e of snap.events) {
-        // flash na SUA tela: evento com b = seu id
         if (e.kind === "flash" && e.b === this.selfId) {
           this.flashBlind = 1;
-          this.flashHoldMs = 400; // branco total ~0,4s, depois recupera
+          this.flashHoldMs = 400;
+        }
+        if (e.kind === "shot" && e.a === this.selfId) {
+          pulseShotFeel(this.feel, e.b, true);
+        } else if (e.kind === "shot") {
+          pulseShotFeel(this.feel, e.b, false);
         }
       }
 
@@ -236,6 +246,7 @@ export class GameClient {
           aim: heldRaw.aim,
           fire: heldRaw.fire,
           sprint: heldRaw.sprint,
+          use: heldRaw.use,
           weapon: heldRaw.weapon,
           throw: heldRaw.throw,
           clientTime: performance.now(),
@@ -288,14 +299,24 @@ export class GameClient {
       const py = pred?.y ?? ARENA_H / 2;
       const raw = this.input.sample(this.worldFromScreen, px, py);
 
-      this.prediction.applyHeld(
-        raw.dx,
-        raw.dy,
-        raw.aim,
-        dtSec,
-        raw.sprint,
-        raw.weapon,
-      );
+      this.prediction.applyHeld(raw.dx, raw.dy, raw.aim, dtSec, raw.sprint, raw.weapon);
+
+      this.localFireCd = Math.max(0, this.localFireCd - dtMs);
+      if (raw.fire && this.localFireCd <= 0 && pred?.alive) {
+        const wpn = WEAPONS[raw.weapon] ?? WEAPONS[0]!;
+        this.localFireCd = wpn.cooldownMs;
+        this.prediction.predictFire(raw.aim, raw.weapon);
+        pulseShotFeel(this.feel, raw.weapon, true);
+        pushFlashesFromEvents(this.flashes, [
+          {
+            kind: "shot",
+            a: this.selfId,
+            b: raw.weapon,
+            x: pred.x + Math.cos(raw.aim) * wpn.muzzleForward - Math.sin(raw.aim) * wpn.muzzleSide,
+            y: pred.y + Math.sin(raw.aim) * wpn.muzzleForward + Math.cos(raw.aim) * wpn.muzzleSide,
+          },
+        ]);
+      }
 
       const stepMs = 1000 / INPUT_HZ;
       while (this.accum >= stepMs) {
@@ -307,6 +328,7 @@ export class GameClient {
           aim: raw.aim,
           fire: raw.fire,
           sprint: raw.sprint,
+          use: raw.use,
           weapon: raw.weapon,
           throw: raw.throw,
           clientTime: performance.now(),
@@ -321,12 +343,25 @@ export class GameClient {
 
     this.flashes = tickFlashes(this.flashes, dtMs);
     this.fx = tickFx(this.fx, dtMs);
-    // flashbang: branco total → volta a visão (curva suave, tipo “print” sumindo)
+    const origin = this.prediction.predicted
+      ? {
+          x: this.prediction.predicted.x,
+          y: this.prediction.predicted.y,
+          angle: this.prediction.predicted.angle,
+        }
+      : undefined;
+    tickFeel(this.feel, dtMs, origin);
+
+    const bits = this.lastSnap?.doorsBits ?? 0;
+    this.doorAnim = tickDoorAnim(this.doorAnim, bits, dtMs);
+    const lx = this.prediction.predicted?.x ?? 0;
+    const ly = this.prediction.predicted?.y ?? 0;
+    this.roofAlpha = tickRoofAlpha(this.roofAlpha, lx, ly, dtMs);
+
     if (this.flashHoldMs > 0) {
       this.flashHoldMs = Math.max(0, this.flashHoldMs - dtMs);
       this.flashBlind = 1;
     } else if (this.flashBlind > 0) {
-      // ~2,4s pra zerar; ease-out (fica branco mais tempo no começo)
       this.flashBlind = Math.max(0, this.flashBlind - dtMs / 2400);
     }
 
@@ -367,16 +402,23 @@ export class GameClient {
       }
     }
 
+    const hostBullets = this.lastSnap?.bullets ?? [];
+    const bullets = [...hostBullets, ...this.prediction.localBullets];
+
     const view: RenderView = {
       selfId: this.selfId,
       local,
       remotes,
-      bullets: this.lastSnap?.bullets ?? [],
+      bullets,
       throwables: this.lastSnap?.throwables ?? [],
       flashes: this.flashes,
       fx: this.fx,
       flashBlind: this.flashBlind,
       events: this.lastSnap?.events ?? [],
+      doorsBits: bits,
+      feel: this.feel,
+      doorAnim: this.doorAnim,
+      roofAlpha: this.roofAlpha,
     };
 
     try {
@@ -384,7 +426,7 @@ export class GameClient {
         drawFrame(this.ctx, view, now);
       } else {
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
-        this.ctx.fillStyle = "#0a0e0c";
+        this.ctx.fillStyle = "#1a1410";
         this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
       }
     } catch (err) {

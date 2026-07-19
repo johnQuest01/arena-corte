@@ -1,13 +1,7 @@
 /**
- * prediction.ts — movimento local contínuo + stamina/sprint.
+ * prediction.ts — movimento local + colisão do mapa + spawn visual de balas.
  */
-import {
-  ARENA_H,
-  ARENA_W,
-  MOVE_SPEED,
-  OBSTACLES,
-  PLAYER_R,
-} from "../../../shared/constants";
+import { MOVE_SPEED } from "../../../shared/constants";
 import {
   MAX_STAMINA,
   SPRINT_MULT,
@@ -15,46 +9,31 @@ import {
   STAMINA_REGEN_PER_S,
   TIRED_MULT,
   TIRED_THRESHOLD,
+  WEAPONS,
+  muzzlePoint,
+  weaponOf,
 } from "../../../shared/gear";
-import type { PlayerInput, PlayerState } from "../../../shared/protocol";
+import { resolveWalls } from "../../../shared/map";
+import type { BulletState, PlayerInput, PlayerState } from "../../../shared/protocol";
 import { applyInput, clonePlayerState } from "../../../shared/sim";
 
 function clamp(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));
 }
 
-function resolveWalls(x: number, y: number, r: number): { x: number; y: number } {
-  let px = clamp(x, r, ARENA_W - r);
-  let py = clamp(y, r, ARENA_H - r);
-  for (const o of OBSTACLES) {
-    const nx = clamp(px, o.x, o.x + o.w);
-    const ny = clamp(py, o.y, o.y + o.h);
-    const dx = px - nx;
-    const dy = py - ny;
-    if (dx * dx + dy * dy >= r * r) continue;
-    const left = Math.abs(px - o.x);
-    const right = Math.abs(px - (o.x + o.w));
-    const top = Math.abs(py - o.y);
-    const bottom = Math.abs(py - (o.y + o.h));
-    const m = Math.min(left, right, top, bottom);
-    if (m === left) px = o.x - r;
-    else if (m === right) px = o.x + o.w + r;
-    else if (m === top) py = o.y - r;
-    else py = o.y + o.h + r;
-    px = clamp(px, r, ARENA_W - r);
-    py = clamp(py, r, ARENA_H - r);
-  }
-  return { x: px, y: py };
-}
-
 export class PredictionBuffer {
   inputs: PlayerInput[] = [];
   predicted: PlayerState | null = null;
+  doorBits = 0;
+  /** balas locais (shotgun leque / feel) — não autoritativas */
+  localBullets: BulletState[] = [];
+  private nextLocalId = 900000;
   private maxKeep = 90;
 
   reset(state: PlayerState) {
     this.predicted = clonePlayerState(state);
     this.inputs = [];
+    this.localBullets = [];
   }
 
   record(input: PlayerInput) {
@@ -62,7 +41,14 @@ export class PredictionBuffer {
     if (this.inputs.length > this.maxKeep) this.inputs.shift();
   }
 
-  applyHeld(dx: number, dy: number, aim: number, dt: number, sprint: boolean, weapon: number) {
+  applyHeld(
+    dx: number,
+    dy: number,
+    aim: number,
+    dt: number,
+    sprint: boolean,
+    weapon: number,
+  ) {
     const p = this.predicted;
     if (!p || !p.alive) return;
 
@@ -90,16 +76,56 @@ export class PredictionBuffer {
     p.vy = my * speed;
     p.x += p.vx * dt;
     p.y += p.vy * dt;
-    const pos = resolveWalls(p.x, p.y, PLAYER_R);
+    const pos = resolveWalls(p.x, p.y, 14, this.doorBits);
     p.x = pos.x;
     p.y = pos.y;
     p.angle = aim;
-    p.weapon = weapon;
+    p.weapon = clamp(weapon, 0, WEAPONS.length - 1);
+
+    this.localBullets = this.localBullets
+      .map((b) => ({
+        ...b,
+        px: b.x,
+        py: b.y,
+        x: b.x + b.vx * dt,
+        y: b.y + b.vy * dt,
+        life: b.life - dt * 1000,
+      }))
+      .filter((b) => b.life > 0 && b.x > -40 && b.y > -40 && b.x < 1000 && b.y < 680);
+  }
+
+  /** Disparo previsto — mesma origem/spread envelope do host. */
+  predictFire(angle: number, weapon: number) {
+    const p = this.predicted;
+    if (!p || !p.alive) return;
+    const wpn = weaponOf(weapon);
+    const m = muzzlePoint(p.x, p.y, angle, wpn);
+    const n = wpn.pellets;
+    for (let i = 0; i < n; i++) {
+      let spread = (Math.random() - 0.5) * 2 * wpn.spread;
+      if (n > 1) {
+        spread =
+          (i / (n - 1) - 0.5) * 2 * wpn.spread + (Math.random() - 0.5) * wpn.spread * 0.15;
+      }
+      const a = angle + spread;
+      this.localBullets.push({
+        id: this.nextLocalId++,
+        owner: p.id,
+        x: m.x,
+        y: m.y,
+        px: m.x,
+        py: m.y,
+        vx: Math.cos(a) * wpn.bulletSpeed,
+        vy: Math.sin(a) * wpn.bulletSpeed,
+        weapon,
+        life: wpn.bulletLifeMs || 800,
+      });
+    }
   }
 
   replayOne(input: PlayerInput, dt: number) {
     if (!this.predicted) return;
-    applyInput(this.predicted, input, dt);
+    applyInput(this.predicted, input, dt, { doorBits: this.doorBits });
   }
 
   pendingAfter(seq: number): PlayerInput[] {

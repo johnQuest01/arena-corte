@@ -150,8 +150,8 @@ export function Hud({ hud, onStart, onRematch, onLeave }: Props) {
             </div>
           ) : (
             <div className="hint mono" style={{ textAlign: "right" }}>
-              <div>{hud.weaponName ?? "Pistola"} · 1-4 troca</div>
-              <div>shift corre · g granada · f flash · c fumaça · v molotov</div>
+              <div>{hud.weaponName ?? "Pistola"} · 1-7 arma</div>
+              <div>shift corre · e porta · g/f/c/v throw</div>
             </div>
           )}
         </div>

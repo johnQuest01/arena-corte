@@ -1,4 +1,4 @@
-/** WASD/setas, sprint, armas 1-4, throwables G/F/C/V, mira/tiro. */
+/** WASD/setas, sprint, armas 1-7, throwables G/F/C/V, E porta, mira/tiro. */
 
 export interface RawInput {
   dx: number;
@@ -6,6 +6,7 @@ export interface RawInput {
   aim: number;
   fire: boolean;
   sprint: boolean;
+  use: boolean;
   weapon: number;
   throw: number;
 }
@@ -29,6 +30,10 @@ const EXTRA_CODES = new Set([
   "Digit2",
   "Digit3",
   "Digit4",
+  "Digit5",
+  "Digit6",
+  "Digit7",
+  "KeyE",
   "KeyG",
   "KeyF",
   "KeyC",
@@ -41,7 +46,8 @@ export class InputController {
   mouseY = 0;
   mouseDown = false;
   weapon = 0;
-  private throwPulse = 0; // 1 frame
+  private throwPulse = 0;
+  private usePulse = false;
   touchMove = { x: 0, y: 0, active: false };
   touchAim = { x: 0, y: 0, active: false, firing: false };
   private canvas: HTMLCanvasElement | null = null;
@@ -65,6 +71,10 @@ export class InputController {
       2: "Digit2",
       3: "Digit3",
       4: "Digit4",
+      5: "Digit5",
+      6: "Digit6",
+      7: "Digit7",
+      e: "KeyE",
       g: "KeyG",
       f: "KeyF",
       c: "KeyC",
@@ -87,6 +97,10 @@ export class InputController {
     if (code === "Digit2") this.weapon = 1;
     if (code === "Digit3") this.weapon = 2;
     if (code === "Digit4") this.weapon = 3;
+    if (code === "Digit5") this.weapon = 4;
+    if (code === "Digit6") this.weapon = 5;
+    if (code === "Digit7") this.weapon = 6;
+    if (code === "KeyE") this.usePulse = true;
     if (code === "KeyG") this.throwPulse = 1;
     if (code === "KeyF") this.throwPulse = 2;
     if (code === "KeyC") this.throwPulse = 3;
@@ -217,6 +231,8 @@ export class InputController {
 
     const thr = this.throwPulse;
     this.throwPulse = 0;
+    const use = this.usePulse;
+    this.usePulse = false;
 
     return {
       dx,
@@ -224,6 +240,7 @@ export class InputController {
       aim,
       fire: this.mouseDown || this.touchAim.firing || this.down.has("Space"),
       sprint: this.down.has("ShiftLeft") || this.down.has("ShiftRight"),
+      use,
       weapon: this.weapon,
       throw: thr,
     };

@@ -1,8 +1,11 @@
-Kenney.nl — Top-down Shooter (character sprites)
+Personagens atuais: desenhados proceduralmente no canvas (render.ts) —
+corpo 3/4 com 8 direções. Sem sprite sheet externo.
+
+Kenney.nl — Top-down Shooter (legado em public/assets/chars/, não usado no render 3/4)
 License: Creative Commons CC0 (public domain)
 https://kenney.nl/assets/top-down-shooter
 
-Credit "Kenney.nl" is appreciated but not required.
-
 Palette reference: Lospec Resurrect 64 by Kerrie Lake
 https://lospec.com/palette-list/resurrect-64
+
+Mapa/tiles/portas: arte procedural (shared/map.ts + render.ts).
