@@ -14,3 +14,5 @@ server/.wrangler/
 client/public/assets/kenney/
 # zips/fonte dos sfx (só os .ogg mapeados vão no repo)
 client/public/assets/sfx/_src/
+# sheets originais / cortes intermediários
+client/public/assets/art/_raw/

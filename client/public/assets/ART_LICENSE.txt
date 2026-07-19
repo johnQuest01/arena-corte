@@ -1,11 +1,17 @@
 Arena Corte — arte em client/public/assets/art/
 
-Status: pasta pronta para assets gerados (Retro Diffusion / PixelLab).
-Enquanto os PNGs não forem adicionados, o jogo usa desenho procedural.
+Ferramenta: PixelLab / geração por IA (sheets enviados pelo autor)
+Data: 2026-07-19
+Paleta: tons deserto + personagem jaqueta azul (alinhado Resurrect 64 / estilo do jogo)
 
-Ao gerar/baixar assets, preencha:
-- Ferramenta: _______________
-- Data: _______________
-- Plano/termos: uso comercial permitido? (sim/não — conferir nos termos)
-- Paleta: Lospec Resurrect 64
-- Notas: _______________
+Uso: assets gerados pelo usuário do projeto para Arena Corte.
+Conferir termos do plano PixelLab/ferramenta usada quanto a uso comercial.
+
+Arquivos ativos no jogo:
+- char0_idle.png / char0_walk.png / char0_death.png (perfil, sheet horizontal)
+- gun_*.png (pistola, M4, M16, AK, shotgun, SMG≈compacta, sniper)
+- tile_sand_a/b/c.png
+
+Extras (não usados pelo loader ainda):
+- char0_dirs8.png (8 direções top-down)
+- char0_side_sheet.png, tileset_desert_raw.png, _raw/
