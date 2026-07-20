@@ -62,6 +62,8 @@ export interface PlayerState {
   speedBoostUntil: number;
   /** serverTime até quando a Capa-Escudo acaba; 0 = sem escudo */
   shieldUntil: number;
+  /** serverTime até quando está CONGELADO (trava tudo, incl. movimento); 0 = livre */
+  frozenUntil: number;
   /** Capa de Recuo: cargas atuais (0..DASH_MAX_CHARGES) */
   dashCharges: number;
   /** serverTime em que a próxima carga volta; 0 = cheio */
@@ -80,8 +82,10 @@ export interface BulletState {
   vy: number;
   /** arma que disparou (byte reservado do protocolo) */
   weapon: number;
-  /** ms restantes (0 = sem limite) â€” host; sync aproximado via byte */
+  /** ms restantes (0 = sem limite) — host; sync aproximado via byte */
   life: number;
+  /** ricochetes no escudo C (só host; não precisa no wire) */
+  totemBounces?: number;
 }
 export interface ThrowableState {
   id: number;
@@ -117,19 +121,35 @@ export type EventKind =
   | "giantHit"
   | "giantExpire"
   | "abilityDropSpawn"
-  | "abilityDropTaken";
+  | "abilityDropTaken"
+  | "rift"
+  | "totemSpawn"
+  | "totemHit"
+  | "totemExpire";
 export interface TickEvent {
   kind: EventKind;
   a: number;
   b: number;
   x: number;
   y: number;
-  /** arma/causa (hit/death/shot) — packed no u16 reservado */
+  /** arma/causa (hit/death/shot) — packed no u16 reservado; rift = travelMs */
   weaponId?: number;
   /** ângulo do evento (habilidade); 0 se N/A */
   angle?: number;
+  /** ponto final da Fenda (x1,y1); origem em x,y */
+  x2?: number;
+  y2?: number;
 }
-/** Snapshot de inimigo (~11 bytes). */
+/** Totem de Espinhos no snapshot (~10 bytes). */
+export interface SpikeTotemSnap {
+  id: number;
+  x: number;
+  y: number;
+  ownerId: number;
+  /** abertura do C (rad) */
+  angle: number;
+}
+/** Snapshot de inimigo (~13 bytes). */
 export interface EnemySnap {
   id: number;
   type: number;
@@ -137,6 +157,8 @@ export interface EnemySnap {
   y: number;
   hp: number;
   state: number;
+  /** serverTime até quando congelado; 0 = livre */
+  frozenUntil: number;
 }
 export interface Snapshot {
   tick: number;
@@ -150,6 +172,8 @@ export interface Snapshot {
   /** bitfield: bit i = porta i aberta */
   doorsBits: number;
   enemies?: EnemySnap[];
+  /** Totens de espinhos ativos */
+  spikeTotems?: SpikeTotemSnap[];
   /** 0 = pvp, 1 = coop */
   mode?: number;
   wave?: number;
@@ -256,6 +280,10 @@ const EVENT_KIND: Record<EventKind, number> = {
   giantExpire: 21,
   abilityDropSpawn: 22,
   abilityDropTaken: 23,
+  rift: 24,
+  totemSpawn: 25,
+  totemHit: 26,
+  totemExpire: 27,
 };
 const KIND_FROM: EventKind[] = [
   "shot",
@@ -282,18 +310,29 @@ const KIND_FROM: EventKind[] = [
   "giantExpire",
   "abilityDropSpawn",
   "abilityDropTaken",
+  "rift",
+  "totemSpawn",
+  "totemHit",
+  "totemExpire",
 ];
-/** 41 + boost/shield (4) + dashCharges(1) + dashRechargeLeft(2) + dashUntilLeft(2) */
-const PLAYER_BYTES = 50;
+/** 50 + frozenLeft(2) */
+const PLAYER_BYTES = 52;
+/** id u8 + type|state u8 + x f32 + y f32 + hp u8 + frozenLeft u16 */
+const ENEMY_BYTES = 13;
+/** id u8 + owner u8 + x f32 + y f32 + angle f32 */
+const TOTEM_BYTES = 14;
 const BULLET_BYTES = 28;
 const THROW_BYTES = 24;
-const EVENT_BYTES = 18;
-const ENEMY_BYTES = 11;
+/** kind+a+b+x+y+weaponId+angle+x2+y2 = 25 */
+const EVENT_BYTES = 25;
 /** Eventos que todos precisam ver — prioridade se o tick passar de 255. */
 const EVENT_PRIORITY: ReadonlySet<EventKind> = new Set([
   "death",
   "respawn",
   "ability",
+  "rift",
+  "totemSpawn",
+  "totemExpire",
   "giantSpawn",
   "giantHit",
   "giantExpire",
@@ -318,6 +357,8 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
   const nE = wireEvents.length;
   const enemies = s.enemies ?? [];
   const nEn = Math.min(255, enemies.length);
+  const totems = s.spikeTotems ?? [];
+  const nTot = Math.min(255, totems.length);
   const size =
     1 +
     4 +
@@ -337,7 +378,9 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     nEn * ENEMY_BYTES +
     1 + // mode
     1 + // wave
-    2; // waveLeft
+    2 + // waveLeft
+    1 + // nTot
+    nTot * TOTEM_BYTES;
   const buf = new ArrayBuffer(size);
   const v = new DataView(buf);
   let o = 0;
@@ -397,6 +440,10 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
       0,
       Math.min(65535, Math.round((p.dashUntil ?? 0) - s.serverTime)),
     );
+    const frozenLeft = Math.max(
+      0,
+      Math.min(65535, Math.round((p.frozenUntil ?? 0) - s.serverTime)),
+    );
     v.setUint16(o, cdLeft, true);
     o += 2;
     v.setUint16(o, stunLeft, true);
@@ -409,6 +456,8 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     v.setUint16(o, dashRechargeLeft, true);
     o += 2;
     v.setUint16(o, dashUntilLeft, true);
+    o += 2;
+    v.setUint16(o, frozenLeft, true);
     o += 2;
   }
   for (const b of s.bullets) {
@@ -458,6 +507,10 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     o += 2;
     v.setFloat32(o, f32(e.angle ?? 0), true);
     o += 4;
+    v.setFloat32(o, f32(e.x2 ?? 0), true);
+    o += 4;
+    v.setFloat32(o, f32(e.y2 ?? 0), true);
+    o += 4;
   }
   v.setUint8(o++, nEn);
   for (let i = 0; i < nEn; i++) {
@@ -469,11 +522,29 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     v.setFloat32(o, f32(en.y), true);
     o += 4;
     v.setUint8(o++, Math.max(0, Math.min(255, en.hp | 0)));
+    const enFreezeLeft = Math.max(
+      0,
+      Math.min(65535, Math.round((en.frozenUntil ?? 0) - s.serverTime)),
+    );
+    v.setUint16(o, enFreezeLeft, true);
+    o += 2;
   }
   v.setUint8(o++, (s.mode ?? 0) & 0xff);
   v.setUint8(o++, (s.wave ?? 0) & 0xff);
   v.setUint16(o, (s.waveLeft ?? 0) & 0xffff, true);
   o += 2;
+  v.setUint8(o++, nTot);
+  for (let i = 0; i < nTot; i++) {
+    const t = totems[i]!;
+    v.setUint8(o++, t.id & 0xff);
+    v.setUint8(o++, t.ownerId & 0xff);
+    v.setFloat32(o, f32(t.x), true);
+    o += 4;
+    v.setFloat32(o, f32(t.y), true);
+    o += 4;
+    v.setFloat32(o, f32(t.angle ?? 0), true);
+    o += 4;
+  }
   return buf;
 }
 export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
@@ -532,6 +603,8 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 2;
     const dashUntilLeft = v.getUint16(o, true);
     o += 2;
+    const frozenLeft = v.getUint16(o, true);
+    o += 2;
     players.push({
       id,
       x,
@@ -556,6 +629,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
       dashCharges,
       dashRechargeAt: dashRechargeLeft > 0 ? serverTime + dashRechargeLeft : 0,
       dashUntil: dashUntilLeft > 0 ? serverTime + dashUntilLeft : 0,
+      frozenUntil: frozenLeft > 0 ? serverTime + frozenLeft : 0,
     });
   }
   const bullets: BulletState[] = [];
@@ -609,7 +683,11 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 2;
     const angle = v.getFloat32(o, true);
     o += 4;
-    events.push({ kind, a, b, x, y, weaponId, angle });
+    const x2 = v.getFloat32(o, true);
+    o += 4;
+    const y2 = v.getFloat32(o, true);
+    o += 4;
+    events.push({ kind, a, b, x, y, weaponId, angle, x2, y2 });
   }
   const enemies: EnemySnap[] = [];
   let mode = 0;
@@ -627,13 +705,34 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
       const ey = v.getFloat32(o, true);
       o += 4;
       const hp = v.getUint8(o++);
-      enemies.push({ id, type, x: ex, y: ey, hp, state });
+      let frozenUntil = 0;
+      if (o + 2 <= buf.byteLength) {
+        const freezeLeft = v.getUint16(o, true);
+        o += 2;
+        frozenUntil = freezeLeft > 0 ? serverTime + freezeLeft : 0;
+      }
+      enemies.push({ id, type, x: ex, y: ey, hp, state, frozenUntil });
     }
     if (o + 4 <= buf.byteLength) {
       mode = v.getUint8(o++);
       wave = v.getUint8(o++);
       waveLeft = v.getUint16(o, true);
       o += 2;
+    }
+  }
+  const spikeTotems: SpikeTotemSnap[] = [];
+  if (o < buf.byteLength) {
+    const nTot = v.getUint8(o++);
+    for (let i = 0; i < nTot && o + TOTEM_BYTES <= buf.byteLength; i++) {
+      const id = v.getUint8(o++);
+      const ownerId = v.getUint8(o++);
+      const tx = v.getFloat32(o, true);
+      o += 4;
+      const ty = v.getFloat32(o, true);
+      o += 4;
+      const angle = v.getFloat32(o, true);
+      o += 4;
+      spikeTotems.push({ id, ownerId, x: tx, y: ty, angle });
     }
   }
   return {
@@ -647,6 +746,7 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     events,
     doorsBits,
     enemies,
+    spikeTotems,
     mode,
     wave,
     waveLeft,

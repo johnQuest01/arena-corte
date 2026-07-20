@@ -42,6 +42,9 @@ export function causeLabel(cause: number): string {
   const c = cause | 0;
   if (c === 100) return "granada";
   if (c === 101) return "fogo";
+  if (c === 102) return "fenda";
+  if (c === 103) return "bomba";
+  if (c === 104) return "totem";
   if (c === 200) return "zumbi";
   if (c === 201) return "gigante";
   if (c >= 0 && c <= 6) {

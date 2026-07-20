@@ -73,7 +73,11 @@ export function reconcile(
       throw: wantThrow,
     };
     t += TICK_MS;
-    applyInput(replayed, merged, tickDt, { doorBits: buffer.doorBits, serverTime: t });
+    applyInput(replayed, merged, tickDt, {
+      doorBits: buffer.doorBits,
+      serverTime: t,
+      spikeTotems: buffer.spikeTotems,
+    });
   }
 
   // se ainda há tecla segurada e não ficou pendente, garante 1 passo na direção atual

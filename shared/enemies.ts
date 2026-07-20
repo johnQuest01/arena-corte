@@ -2,6 +2,15 @@
  * enemies.ts — zumbis + Brutamontes + WaveManager (autoritativo no host).
  * Cap: vários zumbis vivos; Brutamontes à parte a partir da onda 4.
  */
+import {
+  avoidRiftHolesDir,
+  avoidSpikeTotemsDir,
+  blockedByTotem,
+  hitsTotemBody,
+  pointInActiveRiftHole,
+  resolveTotemBody,
+  type SpikeTotemSense,
+} from "./abilities";
 import { ARENA_H, ARENA_W, PLAYER_HIT_R } from "./constants";
 import {
   BUILDINGS,
@@ -131,6 +140,8 @@ export interface Enemy {
   stuck: number;
   lastX: number;
   lastY: number;
+  /** serverTime até quando está congelado; 0 = livre */
+  frozenUntil: number;
 }
 
 export interface EnemyState {
@@ -140,6 +151,7 @@ export interface EnemyState {
   y: number;
   hp: number;
   state: EnemyStateId;
+  frozenUntil: number;
 }
 
 export interface WaveManager {
@@ -311,6 +323,16 @@ export interface EnemySimCtx {
   serverTime: number;
   doorBits: number;
   players: { id: number; x: number; y: number; alive: boolean; hp: number }[];
+  /** Buracos abertos da Fenda — IA desvia */
+  riftHoles?: {
+    x: number;
+    y: number;
+    r: number;
+    activeAt: number;
+    openUntil: number;
+  }[];
+  /** Totens de espinhos — IA contorna (margem > raio de dano) */
+  spikeTotems?: SpikeTotemSense[];
   damagePlayer: (playerId: number, amount: number, fromEnemyId: number, knockX?: number, knockY?: number) => void;
   emit: (ev: {
     kind: EnemyEmitKind;
@@ -428,6 +450,7 @@ export function stepWaves(
       stuck: 0,
       lastX: resolved.x,
       lastY: resolved.y,
+      frozenUntil: 0,
     };
     enemies.push(e);
     if (next.type === 1) wm.bruteAlive = true;
@@ -486,13 +509,21 @@ export function damageEnemy(
   enemyId: number,
   amount: number,
   ctx: EnemySimCtx,
+  opts?: {
+    /** causa no death/expire (ex.: 102 = fenda); ignora armadura se true */
+    riftKill?: boolean;
+    /** weaponId no evento de morte (ex.: 104 = espinhos) */
+    causeWeaponId?: number;
+  },
 ): boolean {
   const e = enemies.find((x) => x.id === enemyId);
   if (!e || e.state === 3) return false;
 
   // Brutamontes: armadura brutal — sem saber o HP, luta longa
   let dmg = amount;
-  if (e.type === 1) {
+  if (opts?.riftKill) {
+    dmg = Math.max(amount, (e.hp || 0) + 1);
+  } else if (e.type === 1) {
     const armor =
       e.state === 5 ? 0.15 : // quase imune no dash
       e.state === 4 ? 0.28 : // tanka no windup
@@ -525,7 +556,7 @@ export function damageEnemy(
       b: e.type === 2 ? e.ownerId : e.type,
       x: e.x,
       y: e.y,
-      weaponId: e.type,
+      weaponId: opts?.causeWeaponId ?? (opts?.riftKill ? 102 : e.type),
     });
     return true;
   }
@@ -586,6 +617,7 @@ export function spawnGiant(
     stuck: 0,
     lastX: resolved.x,
     lastY: resolved.y,
+    frozenUntil: 0,
   };
   enemies.push(e);
   ctx.emit({
@@ -670,6 +702,13 @@ function applyRivalPriority(e: Enemy, ctx: EnemySimCtx): void {
 
 function stepGiant(e: Enemy, dt: number, dtMs: number, ctx: EnemySimCtx): boolean {
   const def = ENEMY_DEFS[2]!;
+
+  // Congelado — Gigante vira estátua (janela de escape)
+  if (e.frozenUntil > 0 && ctx.serverTime < e.frozenUntil) {
+    e.vx = 0;
+    e.vy = 0;
+    return true;
+  }
 
   // só corrige expiresAt inválido (0/NaN) — NÃO renovar vida se já expirou
   if (!(e.expiresAt > 0)) {
@@ -847,17 +886,47 @@ function chaseGiant(
     }
   } else if (!clearPath(e.x, e.y, tx, ty, def.radius * 0.75, ctx.doorBits)) {
     // sem LOS: waypoint lateral em volta do obstáculo (vê o bloqueio à frente)
-    const detour = giantDetourWaypoint(e.x, e.y, tx, ty, def.radius, ctx.doorBits);
+    const detour = giantDetourWaypoint(
+      e.x,
+      e.y,
+      tx,
+      ty,
+      def.radius,
+      ctx.doorBits,
+      ctx.riftHoles,
+      ctx.serverTime,
+      ctx.spikeTotems,
+    );
     if (detour) {
       goalX = detour.x;
       goalY = detour.y;
     }
   }
 
+  // Gigante também evita buraco da Fenda + Totem
+  {
+    const gDist0 = Math.max(40, Math.hypot(goalX - e.x, goalY - e.y));
+    let av = avoidRiftHolesDir(
+      e.x,
+      e.y,
+      goalX - e.x,
+      goalY - e.y,
+      ctx.riftHoles,
+      ctx.serverTime,
+      48,
+    );
+    av = avoidSpikeTotemsDir(e.x, e.y, av.dx, av.dy, ctx.spikeTotems);
+    goalX = e.x + av.dx * gDist0;
+    goalY = e.y + av.dy * gDist0;
+  }
+
   const nearDoor = DOOR_DEFS.some(
     (d) => Math.hypot(e.x - (d.tx * 32 + 16), e.y - (d.ty * 32 + 16)) < 48,
   );
   const navR = nearDoor ? 8 : def.radius;
+  const holes = ctx.riftHoles;
+  const totems = ctx.spikeTotems;
+  const nowH = ctx.serverTime;
 
   const gx = goalX - e.x;
   const gy = goalY - e.y;
@@ -877,7 +946,7 @@ function chaseGiant(
     e.stuck < 8 &&
     ctx.serverTime < e.slideUntil &&
     Math.hypot(e.slideX, e.slideY) > 0.2 &&
-    canStepEnemy(e.x, e.y, e.slideX, e.slideY, navR, ctx.doorBits)
+    canStepEnemy(e.x, e.y, e.slideX, e.slideY, navR, ctx.doorBits, holes, nowH, totems)
   ) {
     const spd = def.speed;
     const slid = moveAndSlide(
@@ -904,7 +973,7 @@ function chaseGiant(
     if (mag < 0.05) return;
     const ux = dx / mag;
     const uy = dy / mag;
-    if (!canStepEnemy(e.x, e.y, ux, uy, navR, ctx.doorBits)) return;
+    if (!canStepEnemy(e.x, e.y, ux, uy, navR, ctx.doorBits, holes, nowH, totems)) return;
     // progresso: quanto essa direção aproxima do goal
     const step = 28;
     const nx = e.x + ux * step;
@@ -914,7 +983,7 @@ function chaseGiant(
     const progress = before - after;
     const align = ux * gUx + uy * gUy;
     // bônus se daqui enxerga melhor o alvo final
-    const losBonus = clearPath(nx, ny, tx, ty, navR * 0.7, ctx.doorBits) ? 40 : 0;
+    const losBonus = clearPath(nx, ny, tx, ty, navR * 0.7, ctx.doorBits, totems) ? 40 : 0;
     cands.push({
       ux,
       uy,
@@ -996,6 +1065,9 @@ function giantDetourWaypoint(
   ty: number,
   r: number,
   doorBits: number,
+  holes?: EnemySimCtx["riftHoles"],
+  now = 0,
+  totems?: EnemySimCtx["spikeTotems"],
 ): { x: number; y: number } | null {
   const dx = tx - x;
   const dy = ty - y;
@@ -1015,13 +1087,15 @@ function giantDetourWaypoint(
       const px = x + sx * reach + ux * 20;
       const py = y + sy * reach + uy * 20;
       if (hitsSolid(px, py, r * 0.8, doorBits)) continue;
+      if (pointInActiveRiftHole(px, py, holes, now, 14)) continue;
+      if (blockedByTotem(px, py, totems)) continue;
       // precisa conseguir dar o primeiro passo nessa direção
       const toDx = px - x;
       const toDy = py - y;
       const tm = Math.hypot(toDx, toDy) || 1;
-      if (!canStepEnemy(x, y, toDx / tm, toDy / tm, r, doorBits)) continue;
+      if (!canStepEnemy(x, y, toDx / tm, toDy / tm, r, doorBits, holes, now, totems)) continue;
       // e de lá idealmente enxergar o alvo (ou chegar mais perto)
-      const los = clearPath(px, py, tx, ty, r * 0.7, doorBits);
+      const los = clearPath(px, py, tx, ty, r * 0.7, doorBits, totems);
       const closer = Math.hypot(tx - px, ty - py);
       const score = (los ? 500 : 0) - closer;
       if (!best || score > best.score) best = { x: px, y: py, score };
@@ -1044,6 +1118,14 @@ export function stepEnemies(enemies: Enemy[], dt: number, ctx: EnemySimCtx) {
     if (e.state === 3) {
       e.timer -= dtMs;
       if (e.timer > 0) keep.push(e);
+      continue;
+    }
+
+    // Congelado — estátua (sem AI / ataque / movimento)
+    if (e.frozenUntil > 0 && ctx.serverTime < e.frozenUntil) {
+      e.vx = 0;
+      e.vy = 0;
+      keep.push(e);
       continue;
     }
 
@@ -1087,8 +1169,9 @@ export function stepEnemies(enemies: Enemy[], dt: number, ctx: EnemySimCtx) {
     );
     const r = nearDoor ? 8 : def.radius;
     const pos = resolveWalls(e.x, e.y, r, ctx.doorBits);
-    e.x = pos.x;
-    e.y = pos.y;
+    const solid = resolveTotemBody(pos.x, pos.y, r, ctx.spikeTotems);
+    e.x = solid.x;
+    e.y = solid.y;
   }
 }
 
@@ -1099,12 +1182,28 @@ function canStepEnemy(
   uy: number,
   r: number,
   doorBits: number,
+  holes?: EnemySimCtx["riftHoles"],
+  now = 0,
+  totems?: EnemySimCtx["spikeTotems"],
 ): boolean {
   const look = r + 10;
-  return (
-    !hitsSolid(x + ux * look, y + uy * look, r * 0.85, doorBits) &&
-    !hitsSolid(x + ux * (look * 0.5), y + uy * (look * 0.5), r * 0.85, doorBits)
-  );
+  const x1 = x + ux * look;
+  const y1 = y + uy * look;
+  const x2 = x + ux * (look * 0.5);
+  const y2 = y + uy * (look * 0.5);
+  if (hitsSolid(x1, y1, r * 0.85, doorBits) || hitsSolid(x2, y2, r * 0.85, doorBits)) {
+    return false;
+  }
+  // corpo sólido do C — não atravessa
+  if (hitsTotemBody(x1, y1, r * 0.85, totems) || hitsTotemBody(x2, y2, r * 0.85, totems)) {
+    return false;
+  }
+  // não caminha para dentro do buraco da Fenda
+  if (pointInActiveRiftHole(x1, y1, holes, now, 14)) return false;
+  if (pointInActiveRiftHole(x2, y2, holes, now, 14)) return false;
+  // não caminha pra dentro da aura de evitação do totem
+  if (blockedByTotem(x1, y1, totems) || blockedByTotem(x2, y2, totems)) return false;
+  return true;
 }
 
 function freeNormalEnemy(
@@ -1193,11 +1292,15 @@ function clearPath(
   by: number,
   r: number,
   doorBits: number,
+  totems?: EnemySimCtx["spikeTotems"],
 ): boolean {
   const steps = 10;
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
-    if (hitsSolid(ax + (bx - ax) * t, ay + (by - ay) * t, r * 0.9, doorBits)) return false;
+    const x = ax + (bx - ax) * t;
+    const y = ay + (by - ay) * t;
+    if (hitsSolid(x, y, r * 0.9, doorBits)) return false;
+    if (blockedByTotem(x, y, totems)) return false;
   }
   return true;
 }
@@ -1528,6 +1631,21 @@ function moveToward(
     e.stuck = 0;
   }
 
+  // desvia buracos da Fenda + Totem (IA “vê” o perigo)
+  const goalDist = Math.max(40, Math.hypot(goalX - e.x, goalY - e.y));
+  let avoidGoal = avoidRiftHolesDir(
+    e.x,
+    e.y,
+    goalX - e.x,
+    goalY - e.y,
+    ctx.riftHoles,
+    ctx.serverTime,
+    def.hitRadius * 0.35 + 28,
+  );
+  avoidGoal = avoidSpikeTotemsDir(e.x, e.y, avoidGoal.dx, avoidGoal.dy, ctx.spikeTotems);
+  goalX = e.x + avoidGoal.dx * goalDist;
+  goalY = e.y + avoidGoal.dy * goalDist;
+
   const gx = goalX - e.x;
   const gy = goalY - e.y;
   const gDist = Math.hypot(gx, gy) || 1;
@@ -1538,12 +1656,15 @@ function moveToward(
     (d) => Math.hypot(e.x - (d.tx * 32 + 16), e.y - (d.ty * 32 + 16)) < 48,
   );
   const navR = nearDoor ? 8 : def.radius;
+  const holes = ctx.riftHoles;
+  const totems = ctx.spikeTotems;
+  const now = ctx.serverTime;
 
   if (
     e.stuck < 6 &&
     ctx.serverTime < e.slideUntil &&
     Math.hypot(e.slideX, e.slideY) > 0.2 &&
-    canStepEnemy(e.x, e.y, e.slideX, e.slideY, navR, ctx.doorBits)
+    canStepEnemy(e.x, e.y, e.slideX, e.slideY, navR, ctx.doorBits, holes, now, totems)
   ) {
     const spd = def.speed * speedMult;
     const slid = moveAndSlide(
@@ -1567,11 +1688,31 @@ function moveToward(
     if (mag < 0.05) return;
     const ux = dx / mag;
     const uy = dy / mag;
-    if (!canStepEnemy(e.x, e.y, ux, uy, navR, ctx.doorBits)) return;
+    if (!canStepEnemy(e.x, e.y, ux, uy, navR, ctx.doorBits, holes, now, totems)) return;
     const align = ux * gUx + uy * gUy;
     const n = freeNormalEnemy(e.x, e.y, navR, ctx.doorBits);
     const away = n ? ux * n.nx + uy * n.ny : 0;
-    cands.push({ ux, uy, score: align * 55 + away * 30 + bonus });
+    // bônus extra por se afastar do buraco / totem
+    let awayHole = 0;
+    if (holes?.length) {
+      for (const h of holes) {
+        if (now < h.activeAt || now > h.openUntil) continue;
+        const d = Math.hypot(e.x - h.x, e.y - h.y) || 1;
+        awayHole += ((e.x - h.x) / d) * ux + ((e.y - h.y) / d) * uy;
+      }
+    }
+    let awayTotem = 0;
+    if (totems?.length) {
+      for (const t of totems) {
+        const d = Math.hypot(e.x - t.x, e.y - t.y) || 1;
+        awayTotem += ((e.x - t.x) / d) * ux + ((e.y - t.y) / d) * uy;
+      }
+    }
+    cands.push({
+      ux,
+      uy,
+      score: align * 55 + away * 30 + awayHole * 40 + awayTotem * 42 + bonus,
+    });
   };
 
   push(gUx, gUy, 12);
@@ -1731,6 +1872,7 @@ export function toEnemyStates(enemies: Enemy[]): EnemyState[] {
         y: e.y,
         hp: hpByte,
         state: e.state,
+        frozenUntil: e.frozenUntil ?? 0,
       };
     });
 }

@@ -1,5 +1,11 @@
 /** WASD/setas, sprint, armas 1-7, throwables G/F/C/V, E porta, Q habilidade, mira/tiro. */
-import { ABILITY_CYCLE_IDS } from "../../../shared/abilities";
+import {
+  ABILITY_CYCLE_IDS,
+  encodeTotemDist,
+  TOTEM_MIN_DIST,
+  TOTEM_RANGE,
+} from "../../../shared/abilities";
+import { hitsSolid } from "../../../shared/map";
 
 export interface RawInput {
   dx: number;
@@ -12,7 +18,7 @@ export interface RawInput {
   cast: boolean;
   weapon: number;
   throw: number;
-  /** id da habilidade (0 jato, 1 gigante, 2 botas, 3 capa recuo, 4 capa escudo) */
+  /** id da habilidade (0 jato, 1 gigante, 2 botas, 3 capa recuo, 4 capa escudo, 5 fenda) */
   ability: number;
 }
 
@@ -79,6 +85,10 @@ export class InputController {
   private usePulse = false;
   private reloadPulse = false;
   private castPulse = false;
+  /** Totem: segurando Q / botão de poder para mirar */
+  totemHolding = false;
+  /** Distância mirada atual (px mundo) — atualizada no sample */
+  totemAimDist = TOTEM_RANGE * 0.65;
   touchMove = { x: 0, y: 0, active: false };
   touchAim = { x: 0, y: 0, active: false, firing: false };
   /** HUD touch ativo — canvas não compete com os sticks */
@@ -118,7 +128,30 @@ export class InputController {
   }
 
   pulseCast() {
+    // Totem: hold/release; demais poderes: pulse
+    if (this.ability === 7) {
+      this.beginTotemAim();
+      return;
+    }
     this.castPulse = true;
+  }
+
+  beginTotemAim() {
+    if (this.ability !== 7) {
+      this.castPulse = true;
+      return;
+    }
+    this.totemHolding = true;
+  }
+
+  endTotemAim() {
+    if (!this.totemHolding) return;
+    this.totemHolding = false;
+    this.castPulse = true;
+  }
+
+  isTotemAiming(): boolean {
+    return this.totemHolding && this.ability === 7;
   }
 
   pulseReload() {
@@ -234,7 +267,10 @@ export class InputController {
     if (code === "Digit7") this.weapon = 6;
     if (code === "KeyE") this.usePulse = true;
     if (code === "KeyR") this.reloadPulse = true;
-    if (code === "KeyQ") this.castPulse = true;
+    if (code === "KeyQ") {
+      if (this.ability === 7) this.beginTotemAim();
+      else this.castPulse = true;
+    }
     if (code === "KeyT") this.toggleAbility();
     if (code === "KeyG") this.throwPulse = 1;
     if (code === "KeyF") this.throwPulse = 2;
@@ -273,6 +309,9 @@ export class InputController {
       return;
     }
 
+    if (code === "KeyQ" && this.totemHolding) {
+      this.endTotemAim();
+    }
     this.down.delete(code);
     e.preventDefault();
   };
@@ -531,6 +570,18 @@ export class InputController {
       aim = Math.atan2(w.y - py, w.x - px);
     }
 
+    // Totem: distância = mouse (desktop) ou magnitude do stick de mira (mobile)
+    if (this.totemHolding && this.ability === 7) {
+      if (this.touchAim.active) {
+        const mag = Math.hypot(this.touchAim.x, this.touchAim.y);
+        this.totemAimDist = TOTEM_MIN_DIST + mag * (TOTEM_RANGE - TOTEM_MIN_DIST);
+      } else {
+        const w = worldFromScreen(this.mouseX, this.mouseY);
+        const d = Math.hypot(w.x - px, w.y - py);
+        this.totemAimDist = Math.max(TOTEM_MIN_DIST, Math.min(TOTEM_RANGE, d));
+      }
+    }
+
     let thr = this.throwPulse;
     let use = this.usePulse;
     let reload = this.reloadPulse;
@@ -545,6 +596,11 @@ export class InputController {
       use = false;
       reload = false;
       cast = false;
+    }
+
+    // no frame do cast do totem, throw carrega a dist quantizada
+    if (cast && this.ability === 7) {
+      thr = encodeTotemDist(this.totemAimDist);
     }
 
     return {
@@ -565,4 +621,29 @@ export class InputController {
       ability: this.ability,
     };
   }
+}
+
+/** Ponto de plantio previsto (client) — clamp simples em sólido. */
+export function previewTotemPlant(
+  px: number,
+  py: number,
+  aim: number,
+  dist: number,
+  doorBits: number,
+): { x: number; y: number } {
+  const d = Math.max(TOTEM_MIN_DIST, Math.min(TOTEM_RANGE, dist));
+  const tx = px + Math.cos(aim) * d;
+  const ty = py + Math.sin(aim) * d;
+  const steps = Math.max(4, Math.ceil(d / 6));
+  let lx = px;
+  let ly = py;
+  for (let i = 1; i <= steps; i++) {
+    const u = i / steps;
+    const x = px + (tx - px) * u;
+    const y = py + (ty - py) * u;
+    if (hitsSolid(x, y, 14, doorBits)) break;
+    lx = x;
+    ly = y;
+  }
+  return { x: lx, y: ly };
 }

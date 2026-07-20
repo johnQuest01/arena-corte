@@ -31,30 +31,61 @@ let unlocked = false;
 let master = 0.85;
 let muted = false;
 let footIdx = 0;
+let sfxReady = false;
+let sfxLoading: Promise<void> | null = null;
 
 function ensureCtx() {
   if (!ctx) ctx = new AudioContext();
   return ctx;
 }
 
-export async function preloadSfx(): Promise<void> {
-  const ac = ensureCtx();
-  await Promise.all(
-    NAMES.map(async (name) => {
-      for (const ext of ["ogg", "wav"] as const) {
+export type SfxProgress = (loaded: number, total: number) => void;
+
+export async function preloadSfx(onProgress?: SfxProgress): Promise<void> {
+  const total = NAMES.length;
+  if (sfxReady) {
+    onProgress?.(total, total);
+    return;
+  }
+  if (sfxLoading) {
+    await sfxLoading;
+    onProgress?.(total, total);
+    return;
+  }
+
+  sfxLoading = (async () => {
+    const ac = ensureCtx();
+    let loaded = 0;
+    const tick = () => {
+      loaded++;
+      onProgress?.(loaded, total);
+    };
+    onProgress?.(0, total);
+
+    await Promise.all(
+      NAMES.map(async (name) => {
         try {
-          const res = await fetch(`/assets/sfx/${name}.${ext}`);
-          if (!res.ok) continue;
-          const ab = await res.arrayBuffer();
-          const buf = await ac.decodeAudioData(ab.slice(0));
-          buffers.set(name, buf);
-          return;
-        } catch {
-          /* try next ext */
+          for (const ext of ["ogg", "wav"] as const) {
+            try {
+              const res = await fetch(`/assets/sfx/${name}.${ext}`);
+              if (!res.ok) continue;
+              const ab = await res.arrayBuffer();
+              const buf = await ac.decodeAudioData(ab.slice(0));
+              buffers.set(name, buf);
+              return;
+            } catch {
+              /* try next ext */
+            }
+          }
+        } finally {
+          tick();
         }
-      }
-    }),
-  );
+      }),
+    );
+    sfxReady = true;
+  })();
+
+  await sfxLoading;
 }
 
 export function unlockAudio() {
@@ -141,6 +172,61 @@ function synthSplash() {
   src.start();
 }
 
+/** Cristais se formando — agudo + shimmer. */
+function synthFreeze() {
+  const ac = ensureCtx();
+  const len = Math.floor(ac.sampleRate * 0.38);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    const env = Math.min(1, t * 18) * Math.exp(-t * 5.5);
+    const shimmer =
+      Math.sin(2 * Math.PI * (1800 + t * 900) * t) * 0.35 +
+      Math.sin(2 * Math.PI * (3200 + Math.sin(t * 40) * 400) * t) * 0.22;
+    const crackle = (Math.random() * 2 - 1) * Math.exp(-t * 10) * 0.28;
+    data[i] = Math.max(-1, Math.min(1, (shimmer + crackle) * env));
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = "highpass";
+  filter.frequency.value = 600;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : 0.55 * master;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
+/** Bloco rachando — cacos agudos caindo. */
+function synthIceShatter() {
+  const ac = ensureCtx();
+  const len = Math.floor(ac.sampleRate * 0.32);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    const env = Math.exp(-t * 9) * (0.5 + 0.5 * Math.random());
+    const ting = Math.sin(2 * Math.PI * (2400 + t * 1600) * t) * Math.exp(-t * 14);
+    const glass = (Math.random() * 2 - 1) * env * 0.55;
+    data[i] = Math.max(-1, Math.min(1, ting * 0.45 + glass));
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = "bandpass";
+  filter.frequency.value = 2800;
+  filter.Q.value = 0.8;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : 0.58 * master;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
 /** Fallback grave se giant_*.wav/ogg faltar — ainda posicional via vol externo. */
 function synthGiant(kind: "step" | "roar" | "roar_short" | "hit", volScale: number) {
   const ac = ensureCtx();
@@ -177,6 +263,7 @@ export function playSfx(
   x?: number,
   y?: number,
   listener?: { x: number; y: number },
+  opts?: { volumeMul?: number; rate?: number },
 ) {
   if (!unlocked) return;
   if (muted || master <= 0) return;
@@ -187,11 +274,20 @@ export function playSfx(
   else if (!buf && (name === "giant_roar" || name === "giant_roar_short")) {
     buf = buffers.get("explosion");
   } else if (!buf && name === "giant_hit") buf = buffers.get("hit_flesh");
+  else if (!buf && (name === "earth_slam" || name === "collapse")) {
+    buf = buffers.get("explosion");
+  } else if (!buf && name === "big_explosion") {
+    buf = buffers.get("explosion");
+  }
   if (!buf) {
     if (name === "empty_click" || name === "pickup" || name === "reload") synthClick();
-    if (name === "water_whoosh" || name === "boost") synthWhoosh();
+    if (name === "water_whoosh" || name === "boost" || name === "earth_crack") synthWhoosh();
+    if (name === "earth_slam" || name === "collapse") synthGiant("hit", 1.1);
+    if (name === "big_explosion") synthGiant("hit", 1.35);
     if (name === "block") synthClick();
     if (name === "splash") synthSplash();
+    if (name === "freeze") synthFreeze();
+    if (name === "ice_shatter") synthIceShatter();
     if (name === "giant_step") synthGiant("step", 0.9);
     if (name === "giant_roar") synthGiant("roar", 1);
     if (name === "giant_roar_short") synthGiant("roar_short", 0.95);
@@ -208,12 +304,13 @@ export function playSfx(
     vol = master * Math.max(0.05, 1 - dist / AUDIBLE);
     pan = Math.max(-0.85, Math.min(0.85, dx / AUDIBLE));
   }
+  vol *= opts?.volumeMul ?? 1;
 
   const src = ac.createBufferSource();
   src.buffer = buf;
-  src.playbackRate.value = 0.94 + Math.random() * 0.12;
+  src.playbackRate.value = opts?.rate ?? 0.94 + Math.random() * 0.12;
   const gain = ac.createGain();
-  gain.gain.value = vol;
+  gain.gain.value = Math.min(1.4, vol);
   const panner = ac.createStereoPanner();
   panner.pan.value = pan;
   src.connect(gain);

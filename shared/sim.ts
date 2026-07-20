@@ -21,16 +21,39 @@ import {
 import {
   ABILITY_DROP_IDS,
   abilityOf,
+  BOMB_CAUSE_CODE,
+  BOMB_FUSE_MS,
+  BOMB_RADIUS,
+  BOMB_THROW_KIND,
   DASH_BURST_DT,
   DASH_MAX_CHARGES,
+  decodeTotemDist,
   isFrontalShieldHit,
+  RIFT_CAUSE_CODE,
+  RIFT_ESCAPE_RADIUS,
+  RIFT_HOLE_HAZARD_MS,
+  RIFT_HOLE_RADIUS,
+  RIFT_TRAVEL_SPEED,
+  SEISMIC_RIFT,
   selectAbilityTargets,
   SHIELD_SPEED_MUL,
   SPRINT_BOOTS_SPEED_MUL,
   tickDashCharges,
+  TOTEM_CAUSE_CODE,
+  TOTEM_MS,
+  TOTEM_RADIUS,
+  TOTEM_TICK_DPS,
+  FROST_MS,
+  hitsTotemBody,
+  inTotemSpikeField,
+  ownerProtectedByTotem,
+  resolveTotemBody,
+  ricochetOffTotemBody,
+  segmentHitsTotemBody,
   tryAutoRecoilCape,
   type AbilityCtx,
   type AbilityTargetRef,
+  type SpikeTotemSense,
 } from "./abilities";
 import {
   createWaveManager,
@@ -161,6 +184,50 @@ export interface AbilityDrop {
   abilityId: number;
   spawnAt: number;
 }
+/** Windup do pisão da Fenda (antes de disparar a rachadura). */
+export interface PendingRiftStomp {
+  fireAt: number;
+  casterId: number;
+  angle: number;
+}
+
+/** Dano/kill da Fenda após a rachadura chegar ao ponto travado. */
+export interface PendingRift {
+  resolveAt: number;
+  casterId: number;
+  targetId: number;
+  targetKind: 0 | 1 | 2;
+  lockX: number;
+  lockY: number;
+  escapeR: number;
+}
+
+/** Buraco aberto no chão — engole quem passar enquanto ativo. */
+export interface RiftHole {
+  x: number;
+  y: number;
+  r: number;
+  /** serverTime em que o buraco abre (fim da rachadura) */
+  activeAt: number;
+  /** serverTime em que deixa de engolir */
+  openUntil: number;
+  casterId: number;
+}
+
+/** Totem de Espinhos — escudo em C + campo de espinhos. */
+export interface SpikeTotem {
+  id: number;
+  x: number;
+  y: number;
+  ownerId: number;
+  expiresAt: number;
+  radius: number;
+  /** abertura do C aponta pro dono */
+  angle: number;
+  /** lastHitAt por target key ("p:id" / "e:id") — rate-limit eventos */
+  lastHitAt: Map<string, number>;
+}
+
 export interface GameSim {
   tick: number;
   serverTime: number;
@@ -182,9 +249,14 @@ export interface GameSim {
   nextBulletId: number;
   nextThrowId: number;
   nextDropId: number;
+  nextTotemId: number;
   nextDropAt: number;
   nextAbilityDropAt: number;
   events: TickEvent[];
+  pendingRiftStomps: PendingRiftStomp[];
+  pendingRifts: PendingRift[];
+  riftHoles: RiftHole[];
+  spikeTotems: SpikeTotem[];
 }
 function clamp(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));
@@ -192,6 +264,22 @@ function clamp(v: number, a: number, b: number) {
 export function doorBitsOf(sim: GameSim): number {
   return doorsBitfield(sim.doors);
 }
+
+function totemSenses(sim: GameSim): SpikeTotemSense[] {
+  return (sim.spikeTotems ?? []).map((t) => ({
+    x: t.x,
+    y: t.y,
+    r: t.radius,
+    ownerId: t.ownerId,
+    angle: t.angle,
+  }));
+}
+
+/** Corpo do C é sólido — empurra entidade para fora. */
+function applyTotemSolid(x: number, y: number, r: number, sim: GameSim): { x: number; y: number } {
+  return resolveTotemBody(x, y, r, totemSenses(sim));
+}
+
 export function createSim(): GameSim {
   return {
     tick: 0,
@@ -213,9 +301,14 @@ export function createSim(): GameSim {
     nextBulletId: 1,
     nextThrowId: 1,
     nextDropId: 1,
+    nextTotemId: 1,
     nextDropAt: 0,
     nextAbilityDropAt: 0,
     events: [],
+    pendingRiftStomps: [],
+    pendingRifts: [],
+    riftHoles: [],
+    spikeTotems: [],
   };
 }
 export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
@@ -245,6 +338,7 @@ export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
     ability: 0,
     abilityCdUntil: 0,
     stunnedUntil: 0,
+    frozenUntil: 0,
     speedBoostUntil: 0,
     shieldUntil: 0,
     dashCharges: DASH_MAX_CHARGES,
@@ -277,12 +371,14 @@ function tickAutoRecoilCapes(sim: GameSim, doorBits: number) {
   for (const p of sim.players) {
     if (!p.alive || (p.ability ?? 0) !== 3) continue;
     if (p.stunnedUntil > 0 && now < p.stunnedUntil) continue;
+    if (p.frozenUntil > 0 && now < p.frozenUntil) continue;
     const did = tryAutoRecoilCape(p, now, sim.bullets, sim.enemies);
     if (!did) continue;
     // deslocamento imediato pra sair da trajetória neste tick
     const slid = moveAndSlide(p.x, p.y, p.vx, p.vy, DASH_BURST_DT, PLAYER_R, doorBits);
-    p.x = slid.x;
-    p.y = slid.y;
+    const solid = applyTotemSolid(slid.x, slid.y, PLAYER_R, sim);
+    p.x = solid.x;
+    p.y = solid.y;
     sim.events.push({
       kind: "ability",
       a: p.id,
@@ -295,11 +391,19 @@ function tickAutoRecoilCapes(sim: GameSim, doorBits: number) {
   }
 }
 
-function tryCastAbility(sim: GameSim, p: SimPlayer) {
+function tryCastAbility(sim: GameSim, p: SimPlayer, castInput?: PlayerInput) {
   const now = sim.serverTime;
   if (!p.alive) return;
   if (p.stunnedUntil > 0 && now < p.stunnedUntil) return;
+  if ((p.frozenUntil ?? 0) > 0 && now < p.frozenUntil) return;
+  // mira/ability do pacote do Q (não do último input do tick)
+  if (castInput) {
+    if (castInput.ability != null) p.ability = castInput.ability;
+    p.angle = castInput.aim;
+  }
   const ab = abilityOf(p.ability ?? 0);
+  const totemDistFromWire =
+    ab.id === 7 && castInput ? decodeTotemDist(castInput.throw & 0xff) : undefined;
   // Capa de Recuo (id 3): CD via cargas — ignora abilityCdUntil
   if (ab.id !== 3 && p.abilityCdUntil > 0 && now < p.abilityCdUntil) return;
   const bits = doorBitsOf(sim);
@@ -316,11 +420,80 @@ function tryCastAbility(sim: GameSim, p: SimPlayer) {
     });
   };
 
-  // Self-buffs (Botas / Capa Recuo / Capa-Escudo) — sem alvos / jato
-  if (ab.id === 2 || ab.id === 3 || ab.id === 4) {
+  // Fenda Sísmica — pisão (windup) + CD; a rachadura dispara depois
+  if (ab.id === 5) {
+    p.abilityCdUntil = now + ab.cooldownMs;
+    emitAbility(5);
+    sim.pendingRiftStomps.push({
+      fireAt: now + Math.max(0, ab.castMs),
+      casterId: p.id,
+      angle: p.angle,
+    });
+    return;
+  }
+
+  // Self-buffs + Bomba + Totem — sem alvos / jato
+  if (ab.id === 2 || ab.id === 3 || ab.id === 4 || ab.id === 6 || ab.id === 7) {
     const ctx: AbilityCtx = {
       didCast: false,
       mode: sim.mode,
+      totemDist: totemDistFromWire,
+      doorBits: bits,
+      hitsSolid,
+      spawnBomb:
+        ab.id === 6
+          ? (x, y, ownerId) => {
+              sim.throwables.push({
+                id: sim.nextThrowId++,
+                kind: BOMB_THROW_KIND,
+                owner: ownerId,
+                x,
+                y,
+                vx: 0,
+                vy: 0,
+                fuse: BOMB_FUSE_MS,
+              });
+            }
+          : undefined,
+      spawnTotem:
+        ab.id === 7
+          ? (x, y, ownerId) => {
+              if (!sim.spikeTotems) sim.spikeTotems = [];
+              // cap: no máximo 3 totens no mapa
+              while (sim.spikeTotems.length >= 3) {
+                const old = sim.spikeTotems.shift()!;
+                sim.events.push({
+                  kind: "totemExpire",
+                  a: old.id,
+                  b: 0,
+                  x: old.x,
+                  y: old.y,
+                  weaponId: 7,
+                });
+              }
+              const openAng = Math.atan2(p.y - y, p.x - x);
+              const t: SpikeTotem = {
+                id: sim.nextTotemId++ & 0xff,
+                x,
+                y,
+                ownerId,
+                expiresAt: now + TOTEM_MS,
+                radius: TOTEM_RADIUS,
+                angle: openAng,
+                lastHitAt: new Map(),
+              };
+              sim.spikeTotems.push(t);
+              sim.events.push({
+                kind: "totemSpawn",
+                a: t.id,
+                b: ownerId,
+                x: t.x,
+                y: t.y,
+                angle: openAng,
+                weaponId: 7,
+              });
+            }
+          : undefined,
       emit: (ev) => {
         sim.events.push({
           kind: "ability",
@@ -396,11 +569,12 @@ function tryCastAbility(sim: GameSim, p: SimPlayer) {
     return;
   }
 
+  const senses = totemSenses(sim);
   const targets = selectAbilityTargets(
     p,
     sim.players.filter((o) => o.id !== p.id),
     ab,
-  );
+  ).filter((t) => !segmentHitsTotemBody(p.x, p.y, t.x, t.y, senses, 4));
   const ctx: AbilityCtx = {
     didCast: false,
     mode: sim.mode,
@@ -417,50 +591,33 @@ function tryCastAbility(sim: GameSim, p: SimPlayer) {
     },
   };
   ab.apply(p, targets, now, ctx);
-  // burst imediato de knockback (autoritativo — bots, peers e host)
-  for (const t of targets) {
-    for (let i = 0; i < 3; i++) {
-      if (Math.hypot(t.vx, t.vy) < 60) break;
-      const slid = moveAndSlide(t.x, t.y, t.vx, t.vy, 1 / 30, PLAYER_R, bits);
-      t.x = slid.x;
-      t.y = slid.y;
-      const damp = Math.exp(-1.55 / 30);
-      t.vx = slid.vx * damp;
-      t.vy = slid.vy * damp;
+  if (ab.id === 8) {
+    // Congelamento — eventos de hit + freeza inimigos (inclui Gigante)
+    for (const t of targets) {
+      sim.events.push({
+        kind: "ability",
+        a: p.id,
+        b: ab.id,
+        x: t.x,
+        y: t.y,
+        angle: p.angle,
+        weaponId: 1000 + (t.id & 0xff),
+      });
     }
-    const pos = resolveWalls(t.x, t.y, PLAYER_R, bits);
-    t.x = pos.x;
-    t.y = pos.y;
-    sim.events.push({
-      kind: "ability",
-      a: p.id,
-      b: ab.id,
-      x: t.x,
-      y: t.y,
-      angle: p.angle,
-      weaponId: 1000 + (t.id & 0xff),
-    });
-  }
-  // COOP: jato acerta zumbis/brutamontes (não Gigantes)
-  if (sim.mode === 1) {
     const aimX = Math.cos(p.angle);
     const aimY = Math.sin(p.angle);
     const minDot = Math.cos(Math.max(0.35, ab.coneRad));
     for (const en of sim.enemies) {
-      if (en.state === 3 || en.type === 2) continue;
+      if (en.state === 3) continue;
       const dx = en.x - p.x;
       const dy = en.y - p.y;
       const dist = Math.hypot(dx, dy);
       if (dist > ab.range || dist < 0.5) continue;
       if ((dx / dist) * aimX + (dy / dist) * aimY < minDot) continue;
-      const jetDmg = en.type === 1 ? 4 : 35;
-      const died = damageEnemy(sim.enemies, sim.waves, en.id, jetDmg, makeEnemyCtx(sim));
-      if (died) p.kills++;
-      else {
-        const shove = en.type === 1 ? 120 : 900;
-        en.vx += aimX * shove;
-        en.vy += aimY * shove;
-      }
+      if (segmentHitsTotemBody(p.x, p.y, en.x, en.y, totemSenses(sim), 4)) continue;
+      en.frozenUntil = Math.max(en.frozenUntil ?? 0, now + FROST_MS);
+      en.vx = 0;
+      en.vy = 0;
       sim.events.push({
         kind: "ability",
         a: p.id,
@@ -470,6 +627,65 @@ function tryCastAbility(sim: GameSim, p: SimPlayer) {
         angle: p.angle,
         weaponId: 1000 + (en.id & 0xff),
       });
+    }
+  } else {
+    // burst imediato de knockback (autoritativo — bots, peers e host)
+    for (const t of targets) {
+      for (let i = 0; i < 3; i++) {
+        if (Math.hypot(t.vx, t.vy) < 60) break;
+        const slid = moveAndSlide(t.x, t.y, t.vx, t.vy, 1 / 30, PLAYER_R, bits);
+        const solid = applyTotemSolid(slid.x, slid.y, PLAYER_R, sim);
+        t.x = solid.x;
+        t.y = solid.y;
+        const damp = Math.exp(-1.55 / 30);
+        t.vx = slid.vx * damp;
+        t.vy = slid.vy * damp;
+      }
+      const pos = resolveWalls(t.x, t.y, PLAYER_R, bits);
+      const solid2 = applyTotemSolid(pos.x, pos.y, PLAYER_R, sim);
+      t.x = solid2.x;
+      t.y = solid2.y;
+      sim.events.push({
+        kind: "ability",
+        a: p.id,
+        b: ab.id,
+        x: t.x,
+        y: t.y,
+        angle: p.angle,
+        weaponId: 1000 + (t.id & 0xff),
+      });
+    }
+    // COOP: jato acerta zumbis/brutamontes (não Gigantes)
+    if (sim.mode === 1) {
+      const aimX = Math.cos(p.angle);
+      const aimY = Math.sin(p.angle);
+      const minDot = Math.cos(Math.max(0.35, ab.coneRad));
+      for (const en of sim.enemies) {
+        if (en.state === 3 || en.type === 2) continue;
+        const dx = en.x - p.x;
+        const dy = en.y - p.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist > ab.range || dist < 0.5) continue;
+        if ((dx / dist) * aimX + (dy / dist) * aimY < minDot) continue;
+        if (segmentHitsTotemBody(p.x, p.y, en.x, en.y, totemSenses(sim), 4)) continue;
+        const jetDmg = en.type === 1 ? 4 : 35;
+        const died = damageEnemy(sim.enemies, sim.waves, en.id, jetDmg, makeEnemyCtx(sim));
+        if (died) p.kills++;
+        else {
+          const shove = en.type === 1 ? 120 : 900;
+          en.vx += aimX * shove;
+          en.vy += aimY * shove;
+        }
+        sim.events.push({
+          kind: "ability",
+          a: p.id,
+          b: ab.id,
+          x: en.x,
+          y: en.y,
+          angle: p.angle,
+          weaponId: 1000 + (en.id & 0xff),
+        });
+      }
     }
   }
   p.abilityCdUntil = now + ab.cooldownMs;
@@ -481,6 +697,242 @@ function tryCastAbility(sim: GameSim, p: SimPlayer) {
     angle: p.angle,
     casterId: p.id,
   });
+}
+
+/** Coleta alvos válidos pra Fenda (mesmo critério do Gigante + zumbis no Survival). */
+function riftCandidates(sim: GameSim, caster: SimPlayer): AbilityTargetRef[] {
+  const candidates: AbilityTargetRef[] = [];
+  for (const o of sim.players) {
+    if (!o.alive || o.id === caster.id) continue;
+    candidates.push({ id: o.id, kind: 0, x: o.x, y: o.y });
+  }
+  for (const en of sim.enemies) {
+    if (en.state === 3) continue;
+    if (en.type === 2) {
+      if (en.ownerId === caster.id) continue;
+      candidates.push({ id: en.id, kind: 2, x: en.x, y: en.y });
+    } else if (sim.mode === 1) {
+      candidates.push({ id: en.id, kind: 1, x: en.x, y: en.y });
+    }
+  }
+  return candidates;
+}
+
+/** Encurta a linha da fissura se cruzar parede sólida ou corpo do C. */
+function clampRiftEndpoint(
+  x0: number,
+  y0: number,
+  x1: number,
+  y1: number,
+  doorBits: number,
+  totems?: SpikeTotemSense[],
+  ignoreOwnerId?: number,
+): { x: number; y: number } {
+  const dx = x1 - x0;
+  const dy = y1 - y0;
+  const dist = Math.hypot(dx, dy);
+  if (dist < 8) return { x: x1, y: y1 };
+  const steps = Math.max(4, Math.ceil(dist / 14));
+  let lastX = x0;
+  let lastY = y0;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    const x = x0 + dx * t;
+    const y = y0 + dy * t;
+    if (hitsSolid(x, y, 4, doorBits) || hitsTotemBody(x, y, 4, totems, ignoreOwnerId)) {
+      return { x: lastX, y: lastY };
+    }
+    lastX = x;
+    lastY = y;
+  }
+  return { x: x1, y: y1 };
+}
+
+function fireSeismicRift(sim: GameSim, caster: SimPlayer, angle: number) {
+  const now = sim.serverTime;
+  const bits = doorBitsOf(sim);
+  caster.angle = angle;
+  const ab = SEISMIC_RIFT;
+  const ctx: AbilityCtx = {
+    didCast: false,
+    mode: sim.mode,
+    candidates: riftCandidates(sim, caster),
+    riftStrike: (c, target) => {
+      const aimX = Math.cos(c.angle);
+      const aimY = Math.sin(c.angle);
+      let x1 = c.x + aimX * ab.range;
+      let y1 = c.y + aimY * ab.range;
+      let lockX = x1;
+      let lockY = y1;
+      let targetId = -1;
+      let targetKind: 0 | 1 | 2 = 0;
+      if (target) {
+        x1 = target.x;
+        y1 = target.y;
+        lockX = target.x;
+        lockY = target.y;
+        targetId = target.id;
+        targetKind = target.kind;
+      }
+      const end = clampRiftEndpoint(c.x, c.y, x1, y1, bits, totemSenses(sim));
+      x1 = end.x;
+      y1 = end.y;
+      // parede entre caster e alvo → buraco onde parou, sem lock
+      if (targetId >= 0 && Math.hypot(lockX - x1, lockY - y1) > 48) {
+        targetId = -1;
+      } else if (targetId >= 0) {
+        lockX = x1;
+        lockY = y1;
+      }
+      const dist = Math.hypot(x1 - c.x, y1 - c.y);
+      const travelMs = Math.max(
+        160,
+        Math.min(620, Math.round((dist / RIFT_TRAVEL_SPEED) * 1000)),
+      );
+      const locked = targetId >= 0 ? 1 : 0;
+      sim.events.push({
+        kind: "rift",
+        a: c.id,
+        b: locked,
+        x: c.x,
+        y: c.y,
+        x2: x1,
+        y2: y1,
+        weaponId: travelMs,
+        angle: c.angle,
+      });
+      // buraco hazard: abre quando a rachadura chega e fica engolindo por um tempo
+      if (!sim.riftHoles) sim.riftHoles = [];
+      sim.riftHoles.push({
+        x: x1,
+        y: y1,
+        r: RIFT_HOLE_RADIUS,
+        activeAt: now + travelMs,
+        openUntil: now + travelMs + RIFT_HOLE_HAZARD_MS,
+        casterId: c.id,
+      });
+      if (targetId >= 0) {
+        sim.pendingRifts.push({
+          resolveAt: now + travelMs,
+          casterId: c.id,
+          targetId,
+          targetKind,
+          lockX,
+          lockY,
+          escapeR: RIFT_ESCAPE_RADIUS,
+        });
+      }
+    },
+    emit: () => {},
+  };
+  ab.apply(caster, [], now, ctx);
+}
+
+function resolvePendingRift(sim: GameSim, rift: PendingRift) {
+  const caster = sim.players.find((p) => p.id === rift.casterId);
+  if (!caster) return;
+
+  if (rift.targetKind === 0) {
+    const t = sim.players.find((p) => p.id === rift.targetId);
+    if (!t || !t.alive) return;
+    if (Math.hypot(t.x - rift.lockX, t.y - rift.lockY) > rift.escapeR) return;
+    damagePlayer(
+      sim,
+      t,
+      Math.max(9999, (t.hp || 0) + 1),
+      caster.id,
+      RIFT_CAUSE_CODE,
+      "weapon",
+    );
+    return;
+  }
+
+  const en = sim.enemies.find((e) => e.id === rift.targetId);
+  if (!en || en.state === 3) return;
+  if (Math.hypot(en.x - rift.lockX, en.y - rift.lockY) > rift.escapeR) return;
+  const died = damageEnemy(
+    sim.enemies,
+    sim.waves,
+    en.id,
+    99999,
+    makeEnemyCtx(sim),
+    { riftKill: true },
+  );
+  if (died) caster.kills++;
+}
+
+/** Quem pisar no buraco aberto cai: bots/players, zumbis, chefe e Gigantes. */
+function tickRiftHoleHazards(sim: GameSim) {
+  const now = sim.serverTime;
+  if (!sim.riftHoles?.length) return;
+  const keep: RiftHole[] = [];
+  for (const hole of sim.riftHoles) {
+    if (now > hole.openUntil) continue;
+    keep.push(hole);
+    if (now < hole.activeAt) continue;
+    const caster = sim.players.find((p) => p.id === hole.casterId);
+
+    for (const p of sim.players) {
+      if (!p.alive) continue;
+      if (Math.hypot(p.x - hole.x, p.y - hole.y) > hole.r) continue;
+      const killerId = caster?.id ?? hole.casterId;
+      damagePlayer(
+        sim,
+        p,
+        Math.max(9999, (p.hp || 0) + 1),
+        killerId,
+        RIFT_CAUSE_CODE,
+        "weapon",
+      );
+    }
+
+    // zumbis / brutamontes / Gigante (FFA + Survival)
+    for (const en of sim.enemies) {
+      if (en.state === 3) continue;
+      const def = enemyOf(en);
+      // corpo grande (chefe/gigante) usa hitRadius pra “pisar” no buraco
+      const reach = hole.r + Math.max(10, def.hitRadius * 0.4);
+      if (Math.hypot(en.x - hole.x, en.y - hole.y) > reach) continue;
+      const died = damageEnemy(
+        sim.enemies,
+        sim.waves,
+        en.id,
+        99999,
+        makeEnemyCtx(sim),
+        { riftKill: true },
+      );
+      if (died && caster) caster.kills++;
+    }
+  }
+  sim.riftHoles = keep;
+}
+
+function tickPendingRifts(sim: GameSim) {
+  const now = sim.serverTime;
+  if (sim.pendingRiftStomps?.length) {
+    const keep: PendingRiftStomp[] = [];
+    for (const stomp of sim.pendingRiftStomps) {
+      if (now < stomp.fireAt) {
+        keep.push(stomp);
+        continue;
+      }
+      const caster = sim.players.find((p) => p.id === stomp.casterId);
+      if (caster?.alive) fireSeismicRift(sim, caster, stomp.angle);
+    }
+    sim.pendingRiftStomps = keep;
+  }
+  if (sim.pendingRifts?.length) {
+    const keep: PendingRift[] = [];
+    for (const rift of sim.pendingRifts) {
+      if (now < rift.resolveAt) {
+        keep.push(rift);
+        continue;
+      }
+      resolvePendingRift(sim, rift);
+    }
+    sim.pendingRifts = keep;
+  }
+  tickRiftHoleHazards(sim);
 }
 
 function tryUseDoor(sim: GameSim, p: SimPlayer) {
@@ -522,6 +974,7 @@ export function applyInput(
     onCast?: () => void;
     doorBits?: number;
     serverTime?: number;
+    spikeTotems?: SpikeTotemSense[];
   },
 ) {
   if (!p.alive) {
@@ -532,6 +985,7 @@ export function applyInput(
   if (p.reloadingUntil == null) p.reloadingUntil = 0;
   if (p.abilityCdUntil == null) p.abilityCdUntil = 0;
   if (p.stunnedUntil == null) p.stunnedUntil = 0;
+  if (p.frozenUntil == null) p.frozenUntil = 0;
   if (p.speedBoostUntil == null) p.speedBoostUntil = 0;
   if (p.shieldUntil == null) p.shieldUntil = 0;
   if (p.dashCharges == null) p.dashCharges = DASH_MAX_CHARGES;
@@ -543,6 +997,7 @@ export function applyInput(
     p.ability = input.ability & 0xff;
   }
   const stunned = p.stunnedUntil > 0 && now < p.stunnedUntil;
+  const frozen = p.frozenUntil > 0 && now < p.frozenUntil;
   const flashed = (p.flashUntil ?? 0) > now;
   const bank = ensureAmmoBank(p);
   const prevWeapon = p.weapon;
@@ -569,6 +1024,13 @@ export function applyInput(
 
   let mx = clamp(input.dx, -1, 1);
   let my = clamp(input.dy, -1, 1);
+  // Congelado: estátua — zero input de movimento e zera impulso
+  if (frozen) {
+    mx = 0;
+    my = 0;
+    p.vx = 0;
+    p.vy = 0;
+  }
   const moveMag = Math.hypot(mx, my);
   if (moveMag > 1) {
     mx /= moveMag;
@@ -601,8 +1063,9 @@ export function applyInput(
   const totalVx = moveVx * moveScale + p.vx;
   const totalVy = moveVy * moveScale + p.vy;
   const slid = moveAndSlide(p.x, p.y, totalVx, totalVy, dt, PLAYER_R, bits);
-  p.x = slid.x;
-  p.y = slid.y;
+  const solid = resolveTotemBody(slid.x, slid.y, PLAYER_R, opts?.spikeTotems);
+  p.x = solid.x;
+  p.y = solid.y;
   // damp mais leve enquanto voa no knockback → viaja mais longe
   const damp = Math.exp(-(kb > 500 ? 1.55 : 2.8) * dt);
   if (Math.abs(totalVx) > 1 && Math.abs(slid.vx) < 1e-6) p.vx = 0;
@@ -624,15 +1087,15 @@ export function applyInput(
   const reloading = p.reloadingUntil > 0 && now < p.reloadingUntil;
 
   const startReload = () => {
-    if (stunned || reloading || p.reserve <= 0 || p.mag >= wpn.magSize) return;
+    if (stunned || frozen || reloading || p.reserve <= 0 || p.mag >= wpn.magSize) return;
     p.reloadingUntil = now + wpn.reloadMs;
     opts?.onReloadStart?.();
   };
 
-  if (input.reload && !stunned) startReload();
+  if (input.reload && !stunned && !frozen) startReload();
 
   // Atirar cancela reload se ainda tem bala no pente (não trava o hold-fire)
-  if (input.fire && reloading && p.mag > 0) {
+  if (input.fire && reloading && p.mag > 0 && !frozen) {
     p.reloadingUntil = 0;
   }
   // mag já encheu (reload terminou neste tick) — libera tiro imediato
@@ -642,8 +1105,8 @@ export function applyInput(
 
   const stillReloading = p.reloadingUntil > 0 && now < p.reloadingUntil;
 
-  // flashbang bloqueia tiro preciso (igual stun de habilidade)
-  if (input.fire && p.fireCd <= 0 && !stunned && !flashed) {
+  // flashbang / stun / gelo bloqueiam tiro
+  if (input.fire && p.fireCd <= 0 && !stunned && !frozen && !flashed) {
     if (stillReloading && p.mag <= 0) {
       // espera reload do pente vazio
     } else if (p.mag <= 0) {
@@ -657,12 +1120,22 @@ export function applyInput(
       opts?.spawnBullet?.(p.angle, m.x, m.y, p.weapon);
     }
   }
-  if (input.throw >= 1 && input.throw <= 4 && (p.throwCd ?? 0) <= 0 && !stunned && !flashed) {
+  // cast de totem reusa o byte `throw` como distância — não solta granada
+  const castingTotem = input.cast && (input.ability ?? p.ability ?? 0) === 7;
+  if (
+    !castingTotem &&
+    input.throw >= 1 &&
+    input.throw <= 4 &&
+    (p.throwCd ?? 0) <= 0 &&
+    !stunned &&
+    !frozen &&
+    !flashed
+  ) {
     p.throwCd = 2200;
     const m = muzzlePoint(p.x, p.y, p.angle, wpn);
     opts?.spawnThrow?.(input.throw, p.angle, m.x, m.y);
   }
-  if (input.cast && !stunned && !flashed) {
+  if (input.cast && !stunned && !frozen && !flashed) {
     opts?.onCast?.();
   }
   syncAmmoToBank(p);
@@ -679,6 +1152,10 @@ export function startMatch(sim: GameSim) {
   sim.fires = [];
   sim.smokes = [];
   sim.events = [];
+  sim.pendingRiftStomps = [];
+  sim.pendingRifts = [];
+  sim.riftHoles = [];
+  sim.spikeTotems = [];
   sim.enemies = [];
   sim.waves = createWaveManager();
   resetEnemyIds();
@@ -702,6 +1179,7 @@ export function startMatch(sim: GameSim) {
     p.ability = 0;
     p.abilityCdUntil = 0;
     p.stunnedUntil = 0;
+    p.frozenUntil = 0;
     p.speedBoostUntil = 0;
     p.shieldUntil = 0;
     p.dashCharges = DASH_MAX_CHARGES;
@@ -734,11 +1212,46 @@ function damagePlayer(
   amount: number,
   killerId: number,
   weaponId = 0,
-  cause: "weapon" | "explosion" | "fire" | "enemy" = "weapon",
+  cause: "weapon" | "explosion" | "fire" | "enemy" | "bomb" = "weapon",
 ) {
   if (!target.alive) return;
+  // Escudo em C do próprio totem — protege o conjurador no bolso
+  if (
+    cause !== "bomb" &&
+    ownerProtectedByTotem(
+      target.x,
+      target.y,
+      target.id,
+      (sim.spikeTotems ?? []).map((t) => ({
+        x: t.x,
+        y: t.y,
+        r: t.radius,
+        ownerId: t.ownerId,
+        angle: t.angle,
+      })),
+    )
+  ) {
+    sim.events.push({
+      kind: "hit",
+      a: killerId,
+      b: 253,
+      x: target.x,
+      y: target.y,
+      weaponId: weaponId || 7,
+    });
+    return;
+  }
   target.hp -= amount;
-  const causeCode = cause === "explosion" ? 100 : cause === "fire" ? 101 : cause === "enemy" ? 200 : weaponId;
+  const causeCode =
+    cause === "explosion"
+      ? 100
+      : cause === "bomb"
+        ? BOMB_CAUSE_CODE
+        : cause === "fire"
+          ? 101
+          : cause === "enemy"
+            ? 200
+            : weaponId;
   if (target.hp <= 0) {
     target.hp = 0;
     target.alive = false;
@@ -757,6 +1270,116 @@ function damagePlayer(
     spawnWeaponDropsFromPlayer(sim, target);
   }
 }
+/** Dano periódico + expire dos Totens de Espinhos. */
+function tickSpikeTotems(sim: GameSim, dt: number) {
+  if (!sim.spikeTotems) sim.spikeTotems = [];
+  const now = sim.serverTime;
+  const keep: SpikeTotem[] = [];
+  for (const t of sim.spikeTotems) {
+    if (now >= t.expiresAt) {
+      sim.events.push({
+        kind: "totemExpire",
+        a: t.id,
+        b: 0,
+        x: t.x,
+        y: t.y,
+        weaponId: 7,
+      });
+      continue;
+    }
+    const r = t.radius;
+    // players oponentes — só nas COSTAS do C (campo de espinhos)
+    for (const p of sim.players) {
+      if (!p.alive || p.id === t.ownerId) continue;
+      if (!inTotemSpikeField(p.x, p.y, { x: t.x, y: t.y, r, angle: t.angle })) continue;
+      const d = Math.hypot(p.x - t.x, p.y - t.y);
+      const dmg = TOTEM_TICK_DPS * dt;
+      damagePlayer(sim, p, dmg, t.ownerId, TOTEM_CAUSE_CODE, "weapon");
+      // knockback pra fora — quem passa por cima sente
+      if (d > 0.5) {
+        const ux = (p.x - t.x) / d;
+        const uy = (p.y - t.y) / d;
+        p.vx += ux * 200 * dt;
+        p.vy += uy * 200 * dt;
+      }
+      const key = `p:${p.id}`;
+      const last = t.lastHitAt.get(key) ?? 0;
+      if (now - last > 120) {
+        t.lastHitAt.set(key, now);
+        sim.events.push({
+          kind: "totemHit",
+          a: t.id,
+          b: p.id,
+          x: p.x,
+          y: p.y,
+          weaponId: TOTEM_CAUSE_CODE,
+        });
+      }
+    }
+    // inimigos / Gigante — só nas costas (passar por cima = dano / Gigante morre)
+    for (const en of sim.enemies) {
+      if (en.state === 3 || en.hp <= 0) continue;
+      const def = enemyOf(en);
+      // Gigante: hitbox visual maior — conta corpo inteiro no campo
+      const hitPad = en.type === 2 ? def.hitRadius + 12 : def.radius;
+      if (
+        !inTotemSpikeField(en.x, en.y, {
+          x: t.x,
+          y: t.y,
+          r: r + hitPad,
+          angle: t.angle,
+        })
+      )
+        continue;
+      const d = Math.hypot(en.x - t.x, en.y - t.y);
+      // Gigante: morte no contato com espinhos (sem animação de afundar da fenda)
+      const amount = en.type === 2 ? Math.max(99999, (en.hp || 0) + 1) : TOTEM_TICK_DPS * dt;
+      const died = damageEnemy(
+        sim.enemies,
+        sim.waves,
+        en.id,
+        amount,
+        makeEnemyCtx(sim),
+        en.type === 2 ? { causeWeaponId: TOTEM_CAUSE_CODE } : undefined,
+      );
+      if (died) {
+        const owner = sim.players.find((x) => x.id === t.ownerId);
+        if (owner) owner.kills++;
+        if (en.type === 2) {
+          sim.events.push({
+            kind: "totemHit",
+            a: t.id,
+            b: en.id,
+            x: en.x,
+            y: en.y,
+            weaponId: TOTEM_CAUSE_CODE,
+          });
+        }
+      } else if (d > 0.5) {
+        const ux = (en.x - t.x) / d;
+        const uy = (en.y - t.y) / d;
+        en.vx += ux * (en.type === 2 ? 220 : 160) * dt;
+        en.vy += uy * (en.type === 2 ? 220 : 160) * dt;
+      }
+      const key = `e:${en.id}`;
+      const last = t.lastHitAt.get(key) ?? 0;
+      if (now - last > 120) {
+        t.lastHitAt.set(key, now);
+        sim.events.push({
+          kind: "totemHit",
+          a: t.id,
+          b: en.id,
+          x: en.x,
+          y: en.y,
+          weaponId: TOTEM_CAUSE_CODE,
+        });
+      }
+    }
+    keep.push(t);
+  }
+  sim.spikeTotems = keep;
+}
+
 function detonate(sim: GameSim, t: ThrowableState) {
   const def = THROWS[t.kind as Exclude<ThrowId, 0>];
   if (!def) return;
@@ -776,6 +1399,38 @@ function detonate(sim: GameSim, t: ThrowableState) {
           y: p.y,
           weaponId: 100,
         });
+      }
+    }
+  } else if (t.kind === BOMB_THROW_KIND) {
+    // Bomba Devastadora — explosão massiva (b=1 = FX big no cliente)
+    const radius = BOMB_RADIUS;
+    sim.events.push({ kind: "explode", a: t.owner, b: 1, x: t.x, y: t.y });
+    for (const p of sim.players) {
+      if (!p.alive) continue;
+      // dono imune (não é suicídio)
+      if (p.id === t.owner) continue;
+      const d = Math.hypot(p.x - t.x, p.y - t.y);
+      if (d < radius) {
+        damagePlayer(sim, p, 99999, t.owner, BOMB_CAUSE_CODE, "bomb");
+        sim.events.push({
+          kind: "hit",
+          a: t.owner,
+          b: p.id,
+          x: p.x,
+          y: p.y,
+          weaponId: BOMB_CAUSE_CODE,
+        });
+      }
+    }
+    // zumbis / chefe / Gigantes no raio
+    for (const en of sim.enemies) {
+      if (en.state === 3 || en.hp <= 0) continue;
+      const d = Math.hypot(en.x - t.x, en.y - t.y);
+      if (d >= radius) continue;
+      const died = damageEnemy(sim.enemies, sim.waves, en.id, 99999, makeEnemyCtx(sim));
+      if (died) {
+        const owner = sim.players.find((x) => x.id === t.owner);
+        if (owner) owner.kills++;
       }
     }
   } else if (t.kind === 2) {
@@ -851,6 +1506,40 @@ function spawnPellets(
         }
       }
     }
+    // se o cano já está colado/dentro do C, nasce ricocheteando (não atravessa)
+    {
+      const senses = totemSenses(sim);
+      const spd = wpn.bulletSpeed;
+      const bvx = Math.cos(a) * spd;
+      const bvy = Math.sin(a) * spd;
+      const probeX = ox + Math.cos(a) * 12;
+      const probeY = oy + Math.sin(a) * 12;
+      const bounce = ricochetOffTotemBody(ox, oy, probeX, probeY, bvx, bvy, senses, BULLET_R);
+      if (bounce) {
+        sim.events.push({
+          kind: "hit",
+          a: p.id,
+          b: 253,
+          x: bounce.x,
+          y: bounce.y,
+          weaponId: weapon,
+        });
+        sim.bullets.push({
+          id: sim.nextBulletId++,
+          owner: p.id,
+          x: bounce.x,
+          y: bounce.y,
+          px: bounce.x,
+          py: bounce.y,
+          vx: bounce.vx,
+          vy: bounce.vy,
+          weapon,
+          life: wpn.bulletLifeMs,
+          totemBounces: 1,
+        });
+        continue;
+      }
+    }
     sim.bullets.push({
       id: sim.nextBulletId++,
       owner: p.id,
@@ -874,6 +1563,12 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
   sim.tick++;
   sim.serverTime += dt * 1000;
   sim.matchLeftMs = Math.max(0, sim.matchLeftMs - dt * 1000);
+  if (!sim.pendingRiftStomps) sim.pendingRiftStomps = [];
+  if (!sim.pendingRifts) sim.pendingRifts = [];
+  if (!sim.riftHoles) sim.riftHoles = [];
+  if (!sim.spikeTotems) sim.spikeTotems = [];
+  // Fenda: resolve pisão / kill / buracos abertos no tempo do host
+  tickPendingRifts(sim);
   const bits = doorBitsOf(sim);
   const now = sim.serverTime;
 
@@ -907,6 +1602,7 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
       p.reloadingUntil = 0;
       p.abilityCdUntil = 0;
       p.stunnedUntil = 0;
+      p.frozenUntil = 0;
       p.speedBoostUntil = 0;
       p.shieldUntil = 0;
       p.dashCharges = DASH_MAX_CHARGES;
@@ -939,14 +1635,21 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
         castPacket = latest;
       }
     }
+    const castingTotem =
+      !!castPacket && (castPacket.ability ?? latest.ability ?? 0) === 7;
     const merged = {
       ...latest,
       // se Q veio no tick, trava habilidade + mira do momento do cast
       ...(castPacket
-        ? { aim: castPacket.aim, ability: castPacket.ability ?? latest.ability }
+        ? {
+            aim: castPacket.aim,
+            ability: castPacket.ability ?? latest.ability,
+            // totem: throw = dist quantizada
+            ...(castingTotem ? { throw: castPacket.throw } : {}),
+          }
         : {}),
       fire: wantFire,
-      throw: wantThrow,
+      throw: castingTotem ? castPacket!.throw : wantThrow,
       use: wantUse,
       reload: wantReload,
       cast: wantCast,
@@ -954,8 +1657,9 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     applyInput(p, merged, dt, {
       doorBits: bits,
       serverTime: sim.serverTime,
+      spikeTotems: totemSenses(sim),
       onUse: () => tryUseDoor(sim, p),
-      onCast: () => tryCastAbility(sim, p),
+      onCast: () => tryCastAbility(sim, p, castPacket ?? merged),
       onReloadStart: () => {
         sim.events.push({
           kind: "reloadStart",
@@ -994,13 +1698,22 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     if (Math.hypot(p.vx, p.vy) < 1) continue;
     const kb = Math.hypot(p.vx, p.vy);
     const slid = moveAndSlide(p.x, p.y, p.vx, p.vy, dt, PLAYER_R, bits);
-    p.x = slid.x;
-    p.y = slid.y;
+    const solid = applyTotemSolid(slid.x, slid.y, PLAYER_R, sim);
+    p.x = solid.x;
+    p.y = solid.y;
     const damp = Math.exp(-(kb > 500 ? 1.55 : 2.8) * dt);
     p.vx = slid.vx * damp;
     p.vy = slid.vy * damp;
     if (Math.abs(p.vx) < 3) p.vx = 0;
     if (Math.abs(p.vy) < 3) p.vy = 0;
+  }
+
+  // corpo do C sólido — garante que ninguém ficou embutido após o tick de movimento
+  for (const p of sim.players) {
+    if (!p.alive) continue;
+    const solid = applyTotemSolid(p.x, p.y, PLAYER_R, sim);
+    p.x = solid.x;
+    p.y = solid.y;
   }
 
   // drops de munição / armas / habilidades (survival)
@@ -1088,6 +1801,33 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
       });
       continue;
     }
+    // Escudo em C sólido — ricochete pelos dois lados (dono NÃO atravessa)
+    {
+      const senses = totemSenses(sim);
+      const bounce = ricochetOffTotemBody(b.px, b.py, b.x, b.y, b.vx, b.vy, senses, BULLET_R);
+      if (bounce) {
+        const nBounce = (b.totemBounces ?? 0) + 1;
+        sim.events.push({
+          kind: "hit",
+          a: b.owner,
+          b: 253,
+          x: bounce.x,
+          y: bounce.y,
+          weaponId: b.weapon,
+        });
+        // após vários ricochetes, a bala se desfaz
+        if (nBounce > 4) continue;
+        b.x = bounce.x;
+        b.y = bounce.y;
+        b.vx = bounce.vx;
+        b.vy = bounce.vy;
+        b.totemBounces = nBounce;
+        // corta um pouco a vida se tiver TTL
+        if (b.life > 0) b.life = Math.max(40, b.life * 0.85);
+        keepB.push(b);
+        continue;
+      }
+    }
     let consumed = false;
     const dmg = weaponOf(b.weapon).damage;
     // COOP: balas acertam inimigos
@@ -1164,10 +1904,11 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     t.x += t.vx * dt;
     t.y += t.vy * dt;
     const pos = resolveWalls(t.x, t.y, 4, bitsAfter);
-    if (pos.x !== t.x) t.vx *= -0.4;
-    if (pos.y !== t.y) t.vy *= -0.4;
-    t.x = pos.x;
-    t.y = pos.y;
+    const solid = applyTotemSolid(pos.x, pos.y, 4, sim);
+    if (solid.x !== t.x) t.vx *= -0.4;
+    if (solid.y !== t.y) t.vy *= -0.4;
+    t.x = solid.x;
+    t.y = solid.y;
     t.fuse -= dt * 1000;
     if (t.fuse <= 0) detonate(sim, t);
     else keepT.push(t);
@@ -1188,6 +1929,8 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     s.life -= dt * 1000;
     return s.life > 0;
   });
+
+  tickSpikeTotems(sim, dt);
 
   // Capa de Recuo: auto-fuga de Gigante/chefe antes do passo de ataque
   tickAutoRecoilCapes(sim, doorBitsOf(sim));
@@ -1222,9 +1965,39 @@ function makeEnemyCtx(sim: GameSim) {
       alive: p.alive,
       hp: p.hp,
     })),
+    riftHoles: (sim.riftHoles ?? []).map((h) => ({
+      x: h.x,
+      y: h.y,
+      r: h.r,
+      activeAt: h.activeAt,
+      openUntil: h.openUntil,
+    })),
+    spikeTotems: (sim.spikeTotems ?? []).map((t) => ({
+      x: t.x,
+      y: t.y,
+      r: t.radius,
+      ownerId: t.ownerId,
+      angle: t.angle,
+    })),
     damagePlayer: (playerId: number, amount: number, fromEnemyId: number, knockX = 0, knockY = 0) => {
       const p = sim.players.find((x) => x.id === playerId);
       if (!p) return;
+      const en = sim.enemies.find((x) => x.id === fromEnemyId);
+      // ataque bloqueado pelo corpo sólido do C
+      if (
+        en &&
+        segmentHitsTotemBody(en.x, en.y, p.x, p.y, totemSenses(sim), 6)
+      ) {
+        sim.events.push({
+          kind: "hit",
+          a: fromEnemyId,
+          b: 253,
+          x: p.x,
+          y: p.y,
+          weaponId: 7,
+        });
+        return;
+      }
       damagePlayer(sim, p, amount, fromEnemyId, 0, "enemy");
       if (knockX || knockY) {
         p.vx += knockX;
@@ -1367,16 +2140,18 @@ function makeEnemyCtx(sim: GameSim) {
           const spd = Math.hypot(t.vx, t.vy);
           if (spd < 80) break;
           const slid = moveAndSlide(t.x, t.y, t.vx, t.vy, 1 / 30, PLAYER_R, bits);
-          t.x = slid.x;
-          t.y = slid.y;
+          const solid = applyTotemSolid(slid.x, slid.y, PLAYER_R, sim);
+          t.x = solid.x;
+          t.y = solid.y;
           // se bateu na parede, preserva componente paralela à direção do throw
           if (Math.hypot(slid.vx, slid.vy) < spd * 0.35) {
             // desliza ao longo da parede na direção do arremesso
             const alongX = kx * spd * 0.85;
             const alongY = ky * spd * 0.85;
             const slid2 = moveAndSlide(t.x, t.y, alongX, alongY, 1 / 30, PLAYER_R, bits);
-            t.x = slid2.x;
-            t.y = slid2.y;
+            const solid2 = applyTotemSolid(slid2.x, slid2.y, PLAYER_R, sim);
+            t.x = solid2.x;
+            t.y = solid2.y;
             t.vx = slid2.vx * 0.9;
             t.vy = slid2.vy * 0.9;
           } else {
@@ -1562,6 +2337,7 @@ export function toSnapshot(sim: GameSim): Snapshot {
       ability: p.ability ?? 0,
       abilityCdUntil: p.abilityCdUntil ?? 0,
       stunnedUntil: p.stunnedUntil ?? 0,
+      frozenUntil: p.frozenUntil ?? 0,
       speedBoostUntil: p.speedBoostUntil ?? 0,
       shieldUntil: p.shieldUntil ?? 0,
       dashCharges: p.dashCharges ?? DASH_MAX_CHARGES,
@@ -1573,6 +2349,13 @@ export function toSnapshot(sim: GameSim): Snapshot {
     events: [...sim.events],
     doorsBits: doorBitsOf(sim),
     enemies: toEnemyStates(sim.enemies),
+    spikeTotems: (sim.spikeTotems ?? []).map((t) => ({
+      id: t.id,
+      x: t.x,
+      y: t.y,
+      ownerId: t.ownerId,
+      angle: t.angle,
+    })),
     mode: sim.mode,
     wave: sim.waves?.wave ?? 0,
     waveLeft: sim.waves?.remaining ?? 0,
@@ -1683,8 +2466,15 @@ function tickAbilityDrops(sim: GameSim, _dt: number) {
   if (sim.serverTime >= sim.nextAbilityDropAt && sim.abilityDrops.length < 3) {
     const pos = pickDropTile();
     if (pos) {
-      const pool = ABILITY_DROP_IDS;
-      const abilityId = pool[Math.floor(Math.random() * pool.length)]!;
+      // Bomba (id 6) é rara (~12%); demais uniformes
+      const pool = ABILITY_DROP_IDS as unknown as number[];
+      let abilityId: number;
+      if (pool.includes(6) && Math.random() < 0.12) {
+        abilityId = 6;
+      } else {
+        const common = pool.filter((id) => id !== 6);
+        abilityId = common[Math.floor(Math.random() * common.length)]!;
+      }
       const drop: AbilityDrop = {
         id: sim.nextDropId++ & 0xff,
         x: pos.x,

@@ -34,6 +34,14 @@ import type {
 } from "../../../shared/protocol";
 import { ENEMY_DEFS } from "../../../shared/enemies";
 import {
+  drawFrostBlock,
+  FX_MOBILE,
+  isRiftSinking,
+  listEnemyRiftSinks,
+  riftSinkHidden,
+  riftSinkPose,
+} from "./abilities_fx";
+import {
   aimToDir8,
   drawDirFrame,
   drawSheetFrame,
@@ -119,6 +127,7 @@ export interface RenderView {
     /** 0..1 enquanto recarrega; 0 = idle */
     reloadProgress: number;
     stunnedUntil: number;
+    frozenUntil?: number;
     speedBoostUntil?: number;
     shieldUntil?: number;
     dashUntil?: number;
@@ -145,6 +154,23 @@ export interface RenderView {
   ammoDrops: { id: number; x: number; y: number; amount: number }[];
   weaponDrops: { id: number; x: number; y: number; weaponId: number; mag: number; reserve: number }[];
   abilityDrops: { id: number; x: number; y: number; abilityId: number }[];
+  spikeTotems?: { id: number; x: number; y: number; ownerId: number; angle: number }[];
+  /** Mira do totem (segurar Q) */
+  totemAim?: { fromX: number; fromY: number; toX: number; toY: number } | null;
+  drawSpikeTotems?: (
+    ctx: CanvasRenderingContext2D,
+    totems: { id: number; x: number; y: number; ownerId: number; angle: number }[],
+    tMs: number,
+  ) => void;
+  drawTotemAimBeam?: (
+    ctx: CanvasRenderingContext2D,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+    tMs: number,
+  ) => void;
+  drawTotemHoloDissolves?: (ctx: CanvasRenderingContext2D, tMs: number) => void;
   camZoom: number;
   /** canto superior-esquerdo da câmera no mundo */
   camX: number;
@@ -157,7 +183,13 @@ export interface RenderView {
   hitMarker?: number;
   /** performance.now() do frame */
   nowMs?: number;
-  drawDecals: (ctx: CanvasRenderingContext2D) => void;
+  drawDecals: (
+    ctx: CanvasRenderingContext2D,
+    camX: number,
+    camY: number,
+    viewW: number,
+    viewH: number,
+  ) => void;
   drawGore: (ctx: CanvasRenderingContext2D) => void;
   drawAbilityGround: (ctx: CanvasRenderingContext2D) => void;
   drawAbilityWater: (ctx: CanvasRenderingContext2D) => void;
@@ -188,6 +220,8 @@ const LIGHT_DIR = { x: 0.35, y: 0.55 };
 
 /** Chão estático pré-renderizado (não redesenha tile a tile por frame). */
 let groundCache: HTMLCanvasElement | null = null;
+/** Escala do cache (0.5 no mobile = bem menos VRAM/RAM). */
+let groundCacheScale = 1;
 
 export function invalidateGroundCache() {
   groundCache = null;
@@ -195,11 +229,15 @@ export function invalidateGroundCache() {
 
 function ensureGroundCache() {
   if (groundCache) return groundCache;
+  // Só o perfil "Leve" (FX_MOBILE) usa meia resolução — Full = nítido
+  const scale = FX_MOBILE ? 0.5 : 1;
+  groundCacheScale = scale;
   const c = document.createElement("canvas");
-  c.width = ARENA_W;
-  c.height = ARENA_H;
+  c.width = Math.max(1, Math.floor(ARENA_W * scale));
+  c.height = Math.max(1, Math.floor(ARENA_H * scale));
   const g = c.getContext("2d")!;
   g.imageSmoothingEnabled = false;
+  if (scale !== 1) g.scale(scale, scale);
   paintGround(g);
   groundCache = c;
   return c;
@@ -219,7 +257,8 @@ export function cameraScreenLayout(
 }
 
 export function resizeCanvas(canvas: HTMLCanvasElement) {
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  // Perfil Leve: DPR 1. Full (mesmo no celular): até 2× como no desktop
+  const dpr = FX_MOBILE ? 1 : Math.min(2, window.devicePixelRatio || 1);
   const fill = canvas.dataset.fill === "1";
   const parent = canvas.parentElement;
   let w: number;
@@ -356,8 +395,29 @@ function paintGround(ctx: CanvasRenderingContext2D) {
   }
 }
 
-function drawGround(ctx: CanvasRenderingContext2D) {
-  ctx.drawImage(ensureGroundCache(), 0, 0);
+function drawGround(
+  ctx: CanvasRenderingContext2D,
+  camX: number,
+  camY: number,
+  viewW: number,
+  viewH: number,
+) {
+  const cache = ensureGroundCache();
+  const s = groundCacheScale;
+  // Só a janela da câmera — evita blit de 5120×3840 no mobile
+  const pad = 2;
+  const wx = Math.max(0, camX - pad);
+  const wy = Math.max(0, camY - pad);
+  const ww = Math.min(ARENA_W - wx, viewW + pad * 2);
+  const wh = Math.min(ARENA_H - wy, viewH + pad * 2);
+  if (ww <= 0 || wh <= 0) return;
+  const sx = wx * s;
+  const sy = wy * s;
+  const sw = ww * s;
+  const sh = wh * s;
+  ctx.imageSmoothingEnabled = s < 1;
+  ctx.drawImage(cache, sx, sy, sw, sh, wx, wy, ww, wh);
+  ctx.imageSmoothingEnabled = false;
 }
 
 function drawSolids(
@@ -755,11 +815,12 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
         ? ENEMY_DEFS[1]!
         : ENEMY_DEFS[0]!;
   const scale = def.visualScale;
-  const bob = Math.sin(tMs * 0.01 + en.id) * (en.state === 5 ? 0 : 2.5);
-  const windup = en.state === 2 || en.state === 4;
+  const frozen = (en.frozenUntil ?? 0) > (view.serverTime ?? 0);
+  const bob = frozen ? 0 : Math.sin(tMs * 0.01 + en.id) * (en.state === 5 ? 0 : 2.5);
+  const windup = !frozen && (en.state === 2 || en.state === 4);
   const stun = en.state === 6;
-  const charge = en.state === 5;
-  const chase = en.state === 1;
+  const charge = !frozen && en.state === 5;
+  const chase = !frozen && en.state === 1;
   const gVis = en.type === 2 ? view.giantVis?.get(en.id) : undefined;
   const skew = gVis?.skew ?? 0;
   const facing = gVis?.facing ?? 0;
@@ -1049,6 +1110,16 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
   }
 
   ctx.restore();
+
+  // Congelamento — bloco sobre inimigo/Gigante
+  if (frozen) {
+    const iceScale = en.type === 2 ? 2.35 : en.type === 1 ? 1.65 : 1.05;
+    ctx.fillStyle = "rgba(100,180,230,0.28)";
+    ctx.beginPath();
+    ctx.ellipse(en.x, en.y + bob - 8 * scale, 22 * iceScale, 30 * iceScale, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawFrostBlock(ctx, en.x, en.y + bob, tMs, iceScale, en.id * 0.91);
+  }
 }
 
 function drawBossEdgeMarker(
@@ -1219,6 +1290,62 @@ function drawBoostTrail(
   }
 }
 
+/** Desenha o boneco — se estiver caindo na Fenda, anima giro/encolhe no buraco. */
+function drawPersonMaybeSink(
+  ctx: CanvasRenderingContext2D,
+  p: {
+    id: number;
+    x: number;
+    y: number;
+    angle: number;
+    alive: boolean;
+    weapon: number;
+    stamina?: number;
+    reloadProgress?: number;
+    stunnedUntil?: number;
+    frozenUntil?: number;
+    speedBoostUntil?: number;
+    shieldUntil?: number;
+    dashUntil?: number;
+    ability?: number;
+    flashUntil?: number;
+    vx?: number;
+    vy?: number;
+  },
+  tMs: number,
+  isSelf: boolean,
+  muzzle: boolean,
+  feel: FeelState,
+  serverTime = 0,
+) {
+  if (riftSinkHidden(p.id)) return;
+  const sink = riftSinkPose(p.id);
+  if (!sink) {
+    drawPersonSide(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
+    return;
+  }
+  ctx.save();
+  if (sink.clip) {
+    ctx.beginPath();
+    ctx.ellipse(sink.hx, sink.hy, sink.holeRx, sink.holeRy, 0, 0, Math.PI * 2);
+    ctx.clip();
+  }
+  ctx.translate(sink.x, sink.y);
+  ctx.rotate(sink.rot);
+  ctx.scale(sink.scale, sink.scale * sink.squashY);
+  ctx.globalAlpha = sink.alpha;
+  drawPersonSide(
+    ctx,
+    { ...p, x: 0, y: 0, alive: true, vx: 0, vy: 0 },
+    tMs,
+    isSelf,
+    false,
+    feel,
+    serverTime,
+  );
+  ctx.restore();
+}
+
 function drawPersonSide(
   ctx: CanvasRenderingContext2D,
   p: {
@@ -1231,6 +1358,7 @@ function drawPersonSide(
     stamina?: number;
     reloadProgress?: number;
     stunnedUntil?: number;
+    frozenUntil?: number;
     speedBoostUntil?: number;
     shieldUntil?: number;
     dashUntil?: number;
@@ -1246,13 +1374,15 @@ function drawPersonSide(
   serverTime = 0,
 ) {
   const look = LOADOUTS[p.id % LOADOUTS.length]!;
-  const speed = Math.hypot(p.vx ?? 0, p.vy ?? 0);
+  const frozen = p.alive && (p.frozenUntil ?? 0) > serverTime;
+  const speed = frozen ? 0 : Math.hypot(p.vx ?? 0, p.vy ?? 0);
   const facingLeft = Math.cos(p.angle) < 0;
   const gunBehind = Math.sin(p.angle) < -0.3;
   const dirs = getCharDirs(p.id);
 
-  const bob = speed > 20 ? Math.sin(tMs * 0.02 + p.id) * 1.4 : 0;
-  const idleScale = speed < 25 ? 1 + Math.sin(tMs * 0.004 + p.id) * 0.012 : 1;
+  // congelado = estátua (sem bob / corrida / idle breathe)
+  const bob = frozen ? 0 : speed > 20 ? Math.sin(tMs * 0.02 + p.id) * 1.4 : 0;
+  const idleScale = frozen ? 1 : speed < 25 ? 1 + Math.sin(tMs * 0.004 + p.id) * 0.012 : 1;
   const runPhase = speed > 25 ? (tMs * 0.012 * (speed / 180)) % (Math.PI * 2) : 0;
   const legSwing = speed > 25 ? Math.sin(runPhase) * Math.min(4.5, speed / 55) : 0;
   const bodyKick = isSelf ? feel.bodyKick * 1.5 : 0;
@@ -1592,6 +1722,15 @@ function drawPersonSide(
     drawSilenceIcon(ctx, p.x + kickX, p.y + bob + kickY - CHAR_PX * 0.82);
   }
 
+  // Congelamento — tint frio + bloco de gelo (por cima do corpo)
+  if (frozen) {
+    ctx.fillStyle = "rgba(100,180,230,0.32)";
+    ctx.beginPath();
+    ctx.ellipse(p.x + kickX, p.y + bob + kickY - 10, 28, 40, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawFrostBlock(ctx, p.x + kickX, p.y + bob + kickY, tMs, 1, p.id * 1.37);
+  }
+
   // flashbang: halo branco (bots / outros jogadores)
   if (p.alive && !isSelf && (p.flashUntil ?? 0) > serverTime) {
     const left = (p.flashUntil! - serverTime) / 2800;
@@ -1613,16 +1752,29 @@ function drawPersonSide(
 function drawRoofs(
   ctx: CanvasRenderingContext2D,
   roofAlpha: Map<number, number>,
+  camX = 0,
+  camY = 0,
+  viewW = ARENA_W,
+  viewH = ARENA_H,
 ) {
   const roofTile = getTileImg("roof");
+  const vx1 = camX + viewW;
+  const vy1 = camY + viewH;
   for (const b of BUILDINGS) {
     const a = roofAlpha.get(b.id) ?? 1;
     if (a <= 0.02) continue;
     const r = roofRect(b);
+    // cull fora da câmera
+    if (r.x + r.w < camX || r.x > vx1 || r.y + r.h < camY || r.y > vy1) continue;
     ctx.globalAlpha = a;
     if (roofTile) {
-      for (let y = r.y; y < r.y + r.h; y += TILE) {
-        for (let x = r.x; x < r.x + r.w; x += TILE) {
+      const x0 = Math.max(r.x, Math.floor(camX / TILE) * TILE);
+      const y0 = Math.max(r.y, Math.floor(camY / TILE) * TILE);
+      const x1 = Math.min(r.x + r.w, vx1 + TILE);
+      const y1 = Math.min(r.y + r.h, vy1 + TILE);
+      for (let y = y0; y < y1; y += TILE) {
+        for (let x = x0; x < x1; x += TILE) {
+          if (x < r.x || y < r.y || x >= r.x + r.w || y >= r.y + r.h) continue;
           const dw = Math.min(TILE, r.x + r.w - x);
           const dh = Math.min(TILE, r.y + r.h - y);
           ctx.drawImage(roofTile, 0, 0, dw, dh, x, y, dw, dh);
@@ -1707,7 +1859,10 @@ export function pushFlashesFromEvents(flashes: MuzzleFlash[], events: TickEvent[
 
 export function pushFxFromEvents(fx: FxPool[], events: TickEvent[]) {
   for (const e of events) {
-    if (e.kind === "explode") fx.push({ x: e.x, y: e.y, r: 40, t: 400, kind: "explode" });
+    // explode.b=1 = Bomba Devastadora — FX massivo em abilities_fx (spawnBigBoomFx)
+    if (e.kind === "explode" && e.b !== 1) {
+      fx.push({ x: e.x, y: e.y, r: 40, t: 400, kind: "explode" });
+    }
     if (e.kind === "smoke") fx.push({ x: e.x, y: e.y, r: 50, t: 2000, kind: "smoke" });
     if (e.kind === "fire") fx.push({ x: e.x, y: e.y, r: 35, t: 1500, kind: "fire" });
     if (e.kind === "hit" && e.b === 255) fx.push({ x: e.x, y: e.y, r: 8, t: 120, kind: "dust" });
@@ -1784,17 +1939,16 @@ export function tickDoorAnim(
   bits: number,
   dtMs: number,
 ): Map<number, number> {
-  const next = new Map(anim);
+  const step = dtMs / 150;
   for (const d of DOOR_DEFS) {
     const target = bits & (1 << d.id) ? 1 : 0;
-    const cur = next.get(d.id) ?? target;
-    const step = dtMs / 150;
+    const cur = anim.get(d.id) ?? target;
     let v = cur;
     if (v < target) v = Math.min(target, v + step);
     else if (v > target) v = Math.max(target, v - step);
-    next.set(d.id, v);
+    anim.set(d.id, v);
   }
-  return next;
+  return anim;
 }
 
 export function tickRoofAlpha(
@@ -1804,17 +1958,16 @@ export function tickRoofAlpha(
   dtMs: number,
 ): Map<number, number> {
   const inside = buildingAt(selfX, selfY);
-  const next = new Map(alphas);
   const step = dtMs / 200;
   for (const b of BUILDINGS) {
     const target = inside === b.id ? 0.15 : 1;
-    const cur = next.get(b.id) ?? 1;
+    const cur = alphas.get(b.id) ?? 1;
     let v = cur;
     if (v < target) v = Math.min(target, v + step);
     else if (v > target) v = Math.max(target, v - step);
-    next.set(b.id, v);
+    alphas.set(b.id, v);
   }
-  return next;
+  return alphas;
 }
 
 export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: number) {
@@ -1852,9 +2005,25 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   ctx.rect(camX, camY, viewW, viewH);
   ctx.clip();
 
-  drawGround(ctx);
-  view.drawDecals(ctx);
+  drawGround(ctx, camX, camY, viewW, viewH);
+  view.drawDecals(ctx, camX, camY, viewW, viewH);
   view.drawAbilityGround(ctx);
+  if (view.spikeTotems?.length && view.drawSpikeTotems) {
+    view.drawSpikeTotems(ctx, view.spikeTotems, tMs);
+  }
+  if (view.drawTotemHoloDissolves) {
+    view.drawTotemHoloDissolves(ctx, tMs);
+  }
+  if (view.totemAim && view.drawTotemAimBeam) {
+    view.drawTotemAimBeam(
+      ctx,
+      view.totemAim.fromX,
+      view.totemAim.fromY,
+      view.totemAim.toX,
+      view.totemAim.toY,
+      tMs,
+    );
+  }
   drawSolids(ctx, camX, camY, viewW, viewH);
   drawDoors(ctx, view.doorsBits, view.doorAnim);
 
@@ -1936,6 +2105,108 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       ctx.fill();
       ctx.fillStyle = "#c04070";
       ctx.fillRect(d.x - 5, d.y - 4 + bob, 10, 6);
+    } else if (d.abilityId === 5) {
+      // Fenda Sísmica — rachadura + magma
+      ctx.fillStyle = `rgba(220,90,40,${0.3 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#2a1810";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(d.x - 10, d.y - 6 + bob);
+      ctx.lineTo(d.x - 4, d.y + 2 + bob);
+      ctx.lineTo(d.x + 2, d.y - 2 + bob);
+      ctx.lineTo(d.x + 10, d.y + 8 + bob);
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255,140,40,${0.7 * pulse})`;
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(d.x - 8, d.y - 4 + bob);
+      ctx.lineTo(d.x - 2, d.y + 2 + bob);
+      ctx.lineTo(d.x + 4, d.y - 1 + bob);
+      ctx.lineTo(d.x + 8, d.y + 6 + bob);
+      ctx.stroke();
+      ctx.fillStyle = "#1a1008";
+      ctx.beginPath();
+      ctx.ellipse(d.x + 2, d.y + 6 + bob, 5, 3, 0, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (d.abilityId === 6) {
+      // Bomba Devastadora — casco escuro + pavio
+      ctx.fillStyle = `rgba(220,80,30,${0.32 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1a1210";
+      ctx.beginPath();
+      ctx.ellipse(d.x, d.y + 2 + bob, 8, 7, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#3a2820";
+      ctx.fillRect(d.x - 3, d.y - 8 + bob, 6, 5);
+      ctx.strokeStyle = `rgba(255,160,40,${0.75 * pulse})`;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(d.x, d.y - 8 + bob);
+      ctx.quadraticCurveTo(d.x + 5, d.y - 14 + bob, d.x + 3, d.y - 18 + bob);
+      ctx.stroke();
+      ctx.fillStyle = `rgba(255,200,80,${0.85 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x + 3, d.y - 18 + bob, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (d.abilityId === 7) {
+      // Escudo em C + espinhos
+      const by = d.y + bob;
+      ctx.fillStyle = `rgba(60,255,120,${0.22 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, by, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(d.x, by, 11, 0.7, Math.PI * 2 - 0.7, false);
+      ctx.arc(d.x, by, 6, Math.PI * 2 - 0.7, 0.7, true);
+      ctx.closePath();
+      ctx.fillStyle = "#1a8a48";
+      ctx.fill();
+      ctx.strokeStyle = `rgba(180,255,210,${0.85 * pulse})`;
+      ctx.lineWidth = 1.4;
+      ctx.stroke();
+      // espinhos mini
+      for (let i = 0; i < 5; i++) {
+        const a = 0.9 + i * 0.85;
+        const bx = d.x + Math.cos(a) * 12;
+        const by2 = by + Math.sin(a) * 12;
+        ctx.fillStyle = "#3dff8a";
+        ctx.beginPath();
+        ctx.moveTo(bx + Math.cos(a) * 4, by2 + Math.sin(a) * 4);
+        ctx.lineTo(bx + Math.cos(a + 1.2) * 2, by2 + Math.sin(a + 1.2) * 2);
+        ctx.lineTo(bx + Math.cos(a - 1.2) * 2, by2 + Math.sin(a - 1.2) * 2);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else if (d.abilityId === 8) {
+      // Congelamento — cristal de gelo
+      const by = d.y + bob;
+      ctx.fillStyle = `rgba(140,210,255,${0.3 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, by, 15, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(d.x, by - 14);
+      ctx.lineTo(d.x + 10, by - 2);
+      ctx.lineTo(d.x + 7, by + 10);
+      ctx.lineTo(d.x - 7, by + 10);
+      ctx.lineTo(d.x - 10, by - 2);
+      ctx.closePath();
+      ctx.fillStyle = `rgba(168,216,240,${0.75 * pulse})`;
+      ctx.fill();
+      ctx.strokeStyle = `rgba(240,251,255,${0.9 * pulse})`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.strokeStyle = `rgba(255,255,255,${0.65 * pulse})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.moveTo(d.x - 4, by - 8);
+      ctx.lineTo(d.x + 2, by + 4);
+      ctx.stroke();
     } else {
       ctx.fillStyle = `rgba(240,160,60,${0.25 * pulse})`;
       ctx.beginPath();
@@ -1953,6 +2224,63 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   // throwables
   for (const t of view.throwables) {
+    if (t.kind === 5) {
+      // Bomba Devastadora — pavio pisca mais rápido perto do fim
+      const fuseLeft = Math.max(0, t.fuse);
+      const urgency = 1 - Math.min(1, fuseLeft / 1200);
+      const blinkHz = 3 + urgency * 14;
+      const lit = Math.sin(tMs * 0.001 * blinkHz * Math.PI * 2) > (urgency > 0.7 ? -0.2 : 0);
+      ctx.fillStyle = "rgba(0,0,0,0.35)";
+      ctx.beginPath();
+      ctx.ellipse(t.x, t.y + 7, 9, 3.5, 0, 0, Math.PI * 2);
+      ctx.fill();
+      // casco
+      const body = ctx.createRadialGradient(t.x - 3, t.y - 2, 1, t.x, t.y, 11);
+      body.addColorStop(0, "#3a2a22");
+      body.addColorStop(0.55, "#1a1210");
+      body.addColorStop(1, "#0c0806");
+      ctx.fillStyle = body;
+      ctx.beginPath();
+      ctx.ellipse(t.x, t.y + 1, 9, 8, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = "#5a4030";
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      // faixa
+      ctx.strokeStyle = "#8a6040";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(t.x, t.y + 1, 9, 8, 0, -0.4, 0.4);
+      ctx.stroke();
+      // pavio
+      ctx.strokeStyle = "#c8a060";
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(t.x, t.y - 7);
+      ctx.quadraticCurveTo(t.x + 5, t.y - 14, t.x + 4, t.y - 18 - urgency * 2);
+      ctx.stroke();
+      if (lit) {
+        const spark = 2.2 + urgency * 2.5;
+        ctx.fillStyle = `rgba(255,${220 - urgency * 80 | 0},40,${0.85 + urgency * 0.15})`;
+        ctx.beginPath();
+        ctx.arc(t.x + 4, t.y - 18 - urgency * 2, spark, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = `rgba(255,255,220,${0.7 + urgency * 0.3})`;
+        ctx.beginPath();
+        ctx.arc(t.x + 4, t.y - 18 - urgency * 2, spark * 0.4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // anel de perigo perto do fim
+      if (urgency > 0.55) {
+        const a = (urgency - 0.55) / 0.45;
+        ctx.strokeStyle = `rgba(255,80,30,${0.35 * a * (lit ? 1 : 0.4)})`;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(t.x, t.y, 14 + a * 6, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      continue;
+    }
     const timg = getThrowImg(t.kind);
     if (timg) {
       ctx.drawImage(timg, t.x - 8, t.y - 8, 16, 16);
@@ -1966,9 +2294,38 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   view.drawGore(ctx);
 
-  // inimigos + Gigante
+  // inimigos + Gigante — sinks de fenda em pass separado (zumbi some do snap ao morrer)
   for (const en of view.enemies ?? []) {
+    if (isRiftSinking(en.id, "enemy")) continue;
     drawEnemy(ctx, en, tMs, view);
+  }
+  for (const sink of listEnemyRiftSinks()) {
+    const pose = sink.pose;
+    ctx.save();
+    if (pose.clip) {
+      ctx.beginPath();
+      ctx.ellipse(pose.hx, pose.hy, pose.holeRx, pose.holeRy, 0, 0, Math.PI * 2);
+      ctx.clip();
+    }
+    ctx.translate(pose.x, pose.y);
+    ctx.rotate(pose.rot);
+    ctx.scale(pose.scale, pose.scale * pose.squashY);
+    ctx.globalAlpha = pose.alpha;
+    drawEnemy(
+      ctx,
+      {
+        id: sink.id,
+        type: sink.enemyType,
+        x: 0,
+        y: 0,
+        hp: 0,
+        state: 1,
+        frozenUntil: 0,
+      },
+      tMs,
+      view,
+    );
+    ctx.restore();
   }
   for (const en of view.enemies ?? []) {
     drawBossEdgeMarker(ctx, en, camX, camY, viewW, viewH, tMs, view);
@@ -1980,7 +2337,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   );
 
   if (view.local) {
-    drawPersonSide(
+    drawPersonMaybeSink(
       ctx,
       { ...view.local, id: view.selfId },
       tMs,
@@ -1992,7 +2349,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   }
   for (const r of view.remotes) {
     const muzzle = view.events.some((e) => e.kind === "shot" && e.a === r.id);
-    drawPersonSide(
+    drawPersonMaybeSink(
       ctx,
       { ...r, weapon: r.weapon ?? 0 },
       tMs,
@@ -2070,7 +2427,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   }
 
   // telhados por cima
-  drawRoofs(ctx, view.roofAlpha);
+  drawRoofs(ctx, view.roofAlpha, camX, camY, viewW, viewH);
 
   if (view.local) {
     drawVisionMask(ctx, view.local.x, view.local.y, view.doorsBits);

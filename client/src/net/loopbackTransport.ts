@@ -160,6 +160,13 @@ export class LoopbackTransport implements Transport {
         this.sim.tick * 10 + p.id,
         this.sim.serverTime,
         this.mode === 1 ? enemies : undefined,
+        this.sim.riftHoles,
+        (this.sim.spikeTotems ?? []).map((t) => ({
+          x: t.x,
+          y: t.y,
+          r: t.radius,
+          ownerId: t.ownerId,
+        })),
       );
       queueInput(this.sim, p.id, input);
     }

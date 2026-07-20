@@ -12,6 +12,10 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    fs: {
+      // shared/ fica um nível acima do client — precisa estar na allow list
+      allow: [path.resolve(__dirname, "..")],
+    },
   },
   build: {
     outDir: "dist",

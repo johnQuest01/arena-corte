@@ -2,6 +2,7 @@
  * laghistory.ts â€” ring buffer de posiÃ§Ãµes + portas para lag compensation.
  */
 import { INTERP_DELAY_MS, PLAYER_HIT_R, PLAYER_HIT_Y } from "./constants";
+import { hitsTotemBody } from "./abilities";
 import { hitsSolid } from "./map";
 import type { GameSim } from "./sim";
 import { doorBitsOf } from "./sim";
@@ -85,12 +86,20 @@ export class LagHistory {
     const range = 900;
     const dx = Math.cos(angle);
     const dy = Math.sin(angle);
-    // bloqueio por parede/porta no tick do disparo
-    const step = 8;
+    // bloqueio por parede/porta/escudo-C no tick do disparo
+    const step = 4;
+    const totems = (sim.spikeTotems ?? []).map((t) => ({
+      x: t.x,
+      y: t.y,
+      r: t.radius,
+      ownerId: t.ownerId,
+      angle: t.angle,
+    }));
     for (let dist = 0; dist < range; dist += step) {
       const x = ox + dx * dist;
       const y = oy + dy * dist;
       if (hitsSolid(x, y, 2, bits)) break;
+      if (hitsTotemBody(x, y, 3, totems)) break;
     }
     let best: { hitId: number; x: number; y: number; dist: number } | null = null;
     for (const p of sim.players) {
@@ -101,10 +110,12 @@ export class LagHistory {
       const fy = pos.y - oy;
       const proj = fx * dx + fy * dy;
       if (proj < 0 || proj > range) continue;
-      // se hÃ¡ parede entre origem e alvo no rewind, ignore
+      // se há parede/escudo entre origem e alvo no rewind, ignore
       let blocked = false;
       for (let d = 0; d < proj; d += step) {
-        if (hitsSolid(ox + dx * d, oy + dy * d, 2, bits)) {
+        const sx = ox + dx * d;
+        const sy = oy + dy * d;
+        if (hitsSolid(sx, sy, 2, bits) || hitsTotemBody(sx, sy, 3, totems)) {
           blocked = true;
           break;
         }

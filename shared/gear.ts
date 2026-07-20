@@ -1,7 +1,7 @@
-﻿/** Armas, throwables, loadouts visuais e stamina. */
+/** Armas, throwables, loadouts visuais e stamina. */
 
 export type WeaponId = 0 | 1 | 2 | 3 | 4 | 5 | 6;
-export type ThrowId = 0 | 1 | 2 | 3 | 4;
+export type ThrowId = 0 | 1 | 2 | 3 | 4 | 5;
 
 export interface WeaponDef {
   id: WeaponId;
@@ -183,6 +183,8 @@ export const THROWS: Record<Exclude<ThrowId, 0>, ThrowDef> = {
   2: { id: 2, name: "Flash", fuseMs: 1400, throwSpeed: 300, radius: 110, color: "#e8e0a0" },
   3: { id: 3, name: "Fumaça", fuseMs: 1200, throwSpeed: 260, radius: 90, color: "#888880" },
   4: { id: 4, name: "Molotov", fuseMs: 900, throwSpeed: 240, radius: 55, color: "#c45c20" },
+  /** Bomba Devastadora (habilidade) — não vem do inventário de throws */
+  5: { id: 5, name: "Bomba Devastadora", fuseMs: 1200, throwSpeed: 0, radius: 260, color: "#1a1210" },
 };
 
 export const MAX_STAMINA = 100;

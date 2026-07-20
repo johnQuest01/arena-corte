@@ -12,6 +12,7 @@ interface Props {
   abilityName?: string;
   abilityCd?: number;
   stunned?: boolean;
+  frozen?: boolean;
   weaponId?: number;
 }
 
@@ -31,6 +32,7 @@ export function TouchControls({
   abilityName,
   abilityCd = 1,
   stunned,
+  frozen,
   weaponId = 0,
 }: Props) {
   const moveBase = useRef<HTMLDivElement>(null);
@@ -157,15 +159,23 @@ export function TouchControls({
     setActiveWeapon(id);
   };
 
-  const glyph = (abilityName ?? "").includes("Recuo")
-    ? "R"
-    : (abilityName ?? "").includes("Capa")
-      ? "C"
-      : (abilityName ?? "").includes("Botas")
-        ? "B"
-        : (abilityName ?? "").includes("Gigante")
-          ? "G"
-          : "W";
+  const glyph = (abilityName ?? "").includes("Congelamento")
+    ? "❄"
+    : (abilityName ?? "").includes("Espinhos")
+    ? "E"
+    : (abilityName ?? "").includes("Bomba")
+      ? "D"
+      : (abilityName ?? "").includes("Fenda")
+        ? "F"
+        : (abilityName ?? "").includes("Recuo")
+          ? "R"
+          : (abilityName ?? "").includes("Capa")
+            ? "C"
+            : (abilityName ?? "").includes("Botas")
+              ? "B"
+              : (abilityName ?? "").includes("Gigante")
+                ? "G"
+                : "W";
   const cooling = (abilityCd ?? 1) < 1;
 
   return (
@@ -203,13 +213,20 @@ export function TouchControls({
           <div className="touch-side-btns">
             <button
               type="button"
-              className={`touch-btn touch-btn-cast${cooling ? " cooling" : ""}${stunned ? " stunned" : ""}`}
+              className={`touch-btn touch-btn-cast${cooling ? " cooling" : ""}${stunned || frozen ? " stunned" : ""}`}
               style={{ ["--cd" as string]: String(1 - (abilityCd ?? 1)) }}
               onPointerDown={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                client?.controls.cast();
+                (e.currentTarget as HTMLButtonElement).setPointerCapture(e.pointerId);
+                client?.controls.castHoldStart();
               }}
+              onPointerUp={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                client?.controls.castHoldEnd();
+              }}
+              onPointerCancel={() => client?.controls.castHoldEnd()}
             >
               <span className="touch-btn-glyph">{glyph}</span>
               <span className="touch-btn-sub">poder</span>

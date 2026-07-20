@@ -168,7 +168,8 @@ function lookOf(id: number) {
 
 export function processGoreEvents(events: TickEvent[], now: number, selfId = -1) {
   for (const e of events) {
-    if (e.kind === "hit" && e.b !== 255) {
+    // 255 = parede; 253 = bloqueio/ricochete de escudo — sem sangue
+    if (e.kind === "hit" && e.b !== 255 && e.b !== 253) {
       const ang = Math.random() * Math.PI * 2;
       const n = 4 + Math.floor(Math.random() * 5);
       for (let i = 0; i < n; i++) {
@@ -202,11 +203,16 @@ export function processGoreEvents(events: TickEvent[], now: number, selfId = -1)
       }
       const cause = e.weaponId ?? 0;
       const look = lookOf(e.b);
-      if (cause === 100) {
-        // explosão — despedaça
-        for (let i = 0; i < 8; i++) {
-          const a = (i / 8) * Math.PI * 2 + Math.random() * 0.4;
-          const sp = 80 + Math.random() * 180;
+      // Fenda: o boneco cai no buraco (abilities_fx) — sem cadáver no chão
+      if (cause === 102) {
+        continue;
+      }
+      if (cause === 100 || cause === 103) {
+        // explosão / bomba — despedaça (bomba: mais gibs)
+        const n = cause === 103 ? 14 : 8;
+        for (let i = 0; i < n; i++) {
+          const a = (i / n) * Math.PI * 2 + Math.random() * 0.4;
+          const sp = (cause === 103 ? 120 : 80) + Math.random() * (cause === 103 ? 240 : 180);
           const colors = [look.shirt, look.pants, look.skin, look.hair];
           gibs.push({
             x: e.x,
@@ -357,8 +363,24 @@ export function hitFlashActive(id: number, now: number) {
   return (flashHit.get(id) ?? 0) > now;
 }
 
-export function drawDecalLayer(ctx: CanvasRenderingContext2D) {
-  if (decal) ctx.drawImage(decal, 0, 0);
+export function drawDecalLayer(
+  ctx: CanvasRenderingContext2D,
+  camX = 0,
+  camY = 0,
+  viewW = 0,
+  viewH = 0,
+) {
+  if (!decal) return;
+  if (viewW > 0 && viewH > 0) {
+    const pad = 2;
+    const sx = Math.max(0, Math.floor(camX - pad));
+    const sy = Math.max(0, Math.floor(camY - pad));
+    const sw = Math.min(decal.width - sx, Math.ceil(viewW + pad * 2));
+    const sh = Math.min(decal.height - sy, Math.ceil(viewH + pad * 2));
+    if (sw > 0 && sh > 0) ctx.drawImage(decal, sx, sy, sw, sh, sx, sy, sw, sh);
+  } else {
+    ctx.drawImage(decal, 0, 0);
+  }
 }
 
 export function drawGoreActors(ctx: CanvasRenderingContext2D) {

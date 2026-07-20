@@ -1,4 +1,4 @@
-﻿/** Constantes compartilhadas â€” cliente e servidor. */
+/** Constantes compartilhadas â€” cliente e servidor. */
 import { MAP_SPAWNS } from "./map";
 export const TICK_HZ = 30;
 export const TICK_MS = 1000 / TICK_HZ;

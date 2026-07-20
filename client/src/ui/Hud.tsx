@@ -1,5 +1,7 @@
 import { KILL_FEED_MS, playerTag, type KillFeedEntry } from "../game/feedback";
+import type { GraphicsQuality } from "../game/graphics";
 import type { GameHud } from "../game/loop";
+import { GraphicsToggle } from "./GraphicsToggle";
 
 function pingClass(ms: number) {
   if (ms < 60) return "ok";
@@ -29,6 +31,8 @@ interface Props {
   onMuteToggle?: () => void;
   onVolume?: (v: number) => void;
   mobile?: boolean;
+  graphicsQuality?: GraphicsQuality;
+  onGraphicsQuality?: (q: GraphicsQuality) => void;
 }
 
 export function Hud({
@@ -41,6 +45,8 @@ export function Hud({
   onMuteToggle,
   onVolume,
   mobile = false,
+  graphicsQuality,
+  onGraphicsQuality,
 }: Props) {
   const players = hud.lobby?.players ?? hud.snapshot?.players.map((p) => ({
     id: p.id,
@@ -96,6 +102,14 @@ export function Hud({
               {muted ? "som off" : "som"}
             </button>
           )}
+          {graphicsQuality && onGraphicsQuality && (mobile || hud.phase === "lobby") && (
+            <GraphicsToggle
+              quality={graphicsQuality}
+              onChange={onGraphicsQuality}
+              hint={false}
+              compact
+            />
+          )}
           {!mobile && onVolume && (
             <input
               type="range"
@@ -144,6 +158,9 @@ export function Hud({
               {players.length === 0 && <li>Conectando…</li>}
             </ul>
             <p className="hint">{players.length}/3 na sala</p>
+            {graphicsQuality && onGraphicsQuality && (
+              <GraphicsToggle quality={graphicsQuality} onChange={onGraphicsQuality} />
+            )}
             <button type="button" disabled={!canStart} onClick={onStart}>
               {canStart ? "Iniciar" : "Aguardando 2+ jogadores"}
             </button>
@@ -272,19 +289,27 @@ export function Hud({
                 <>
                   <div className="ability-hud" title={hud.abilityName ?? "Jato de Água"}>
                     <div
-                      className={`ability-icon${(hud.abilityCd ?? 1) < 1 ? " cooling" : ""}${hud.stunned ? " stunned" : ""}`}
+                      className={`ability-icon${(hud.abilityCd ?? 1) < 1 ? " cooling" : ""}${hud.stunned || hud.frozen ? " stunned" : ""}`}
                       style={{ ["--cd" as string]: String(1 - (hud.abilityCd ?? 1)) }}
                     >
                       <span className="ability-glyph">
-                        {(hud.abilityName ?? "").includes("Recuo")
-                          ? "R"
-                          : (hud.abilityName ?? "").includes("Capa")
-                            ? "C"
-                            : (hud.abilityName ?? "").includes("Botas")
-                              ? "B"
-                              : (hud.abilityName ?? "").includes("Gigante")
-                                ? "G"
-                                : "W"}
+                        {(hud.abilityName ?? "").includes("Congelamento")
+                          ? "❄"
+                          : (hud.abilityName ?? "").includes("Espinhos")
+                          ? "E"
+                          : (hud.abilityName ?? "").includes("Bomba")
+                            ? "D"
+                            : (hud.abilityName ?? "").includes("Fenda")
+                              ? "F"
+                              : (hud.abilityName ?? "").includes("Recuo")
+                                ? "R"
+                                : (hud.abilityName ?? "").includes("Capa")
+                                  ? "C"
+                                  : (hud.abilityName ?? "").includes("Botas")
+                                    ? "B"
+                                    : (hud.abilityName ?? "").includes("Gigante")
+                                      ? "G"
+                                      : "W"}
                       </span>
                       <span className="ability-key">Q</span>
                     </div>

@@ -3,11 +3,14 @@
  */
 import {
   DASH_MAX_CHARGES,
+  ricochetOffTotemBody,
   SHIELD_SPEED_MUL,
   SPRINT_BOOTS_SPEED_MUL,
+  resolveTotemBody,
   tickDashCharges,
+  type SpikeTotemSense,
 } from "../../../shared/abilities";
-import { ARENA_H, ARENA_W, MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
+import { ARENA_H, ARENA_W, BULLET_R, MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
 import {
   MAX_STAMINA,
   SPRINT_MULT,
@@ -33,6 +36,8 @@ export class PredictionBuffer {
   inputs: PlayerInput[] = [];
   predicted: PlayerState | null = null;
   doorBits = 0;
+  /** totens ativos (corpo do C sólido na predição) */
+  spikeTotems: SpikeTotemSense[] = [];
   /** tempo do último snapshot (para replay de reload) */
   serverTime = 0;
   /** inventário de munição por arma (preservado na reconciliação) */
@@ -79,10 +84,17 @@ export class PredictionBuffer {
     if (p.dashCharges == null) p.dashCharges = DASH_MAX_CHARGES;
     if (p.dashRechargeAt == null) p.dashRechargeAt = 0;
     if (p.dashUntil == null) p.dashUntil = 0;
+    if (p.frozenUntil == null) p.frozenUntil = 0;
     if (now > 0) tickDashCharges(p, now);
 
-    let mx = clamp(dx, -1, 1);
-    let my = clamp(dy, -1, 1);
+    // Congelado: estátua — trava movimento local (igual applyInput no host)
+    const frozen = p.frozenUntil > 0 && now > 0 && now < p.frozenUntil;
+    let mx = frozen ? 0 : clamp(dx, -1, 1);
+    let my = frozen ? 0 : clamp(dy, -1, 1);
+    if (frozen) {
+      p.vx = 0;
+      p.vy = 0;
+    }
     const mag = Math.hypot(mx, my);
     if (mag > 1) {
       mx /= mag;
@@ -90,7 +102,7 @@ export class PredictionBuffer {
     }
 
     const moving = mag > 0.1;
-    const canSprint = sprint && moving && p.stamina > TIRED_THRESHOLD;
+    const canSprint = !frozen && sprint && moving && p.stamina > TIRED_THRESHOLD;
     let speedMult = 1;
     if (canSprint) {
       speedMult = SPRINT_MULT;
@@ -114,8 +126,9 @@ export class PredictionBuffer {
     const totalVx = moveVx * moveScale + p.vx;
     const totalVy = moveVy * moveScale + p.vy;
     const slid = moveAndSlide(p.x, p.y, totalVx, totalVy, dt, PLAYER_R, this.doorBits);
-    p.x = slid.x;
-    p.y = slid.y;
+    const solid = resolveTotemBody(slid.x, slid.y, PLAYER_R, this.spikeTotems);
+    p.x = solid.x;
+    p.y = solid.y;
     const damp = Math.exp(-(kb > 500 ? 1.55 : 2.8) * dt);
     if (Math.abs(totalVx) > 1 && Math.abs(slid.vx) < 1e-6) p.vx = 0;
     else p.vx *= damp;
@@ -135,13 +148,36 @@ export class PredictionBuffer {
           life -= dt * 1000;
           if (life <= 0) life = -1;
         }
+        const nx = b.x + b.vx * dt;
+        const ny = b.y + b.vy * dt;
+        let vx = b.vx;
+        let vy = b.vy;
+        let x = nx;
+        let y = ny;
+        let bounces = b.totemBounces ?? 0;
+        // mesma colisão do host — balas locais não atravessam o C
+        if (this.spikeTotems.length) {
+          const bounce = ricochetOffTotemBody(b.x, b.y, nx, ny, vx, vy, this.spikeTotems, BULLET_R);
+          if (bounce) {
+            bounces += 1;
+            if (bounces > 4) life = -1;
+            x = bounce.x;
+            y = bounce.y;
+            vx = bounce.vx;
+            vy = bounce.vy;
+            if (life > 0) life = Math.max(40, life * 0.85);
+          }
+        }
         return {
           ...b,
           px: b.x,
           py: b.y,
-          x: b.x + b.vx * dt,
-          y: b.y + b.vy * dt,
+          x,
+          y,
+          vx,
+          vy,
           life,
+          totemBounces: bounces,
         };
       })
       .filter(
@@ -203,6 +239,7 @@ export class PredictionBuffer {
     applyInput(this.predicted, input, dt, {
       doorBits: this.doorBits,
       serverTime: this.serverTime,
+      spikeTotems: this.spikeTotems,
     });
     this.serverTime += dt * 1000;
   }

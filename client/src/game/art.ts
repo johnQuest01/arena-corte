@@ -68,79 +68,136 @@ function loadImage(file: string): Promise<HTMLImageElement | null> {
   });
 }
 
-async function loadAnim(def?: AnimDef): Promise<AnimDef | undefined> {
-  if (!def?.file) return undefined;
-  const img = await loadImage(def.file);
-  if (!img) return undefined;
-  return { ...def, img };
-}
+export type PreloadProgress = (loaded: number, total: number) => void;
 
-export async function preloadArt(): Promise<void> {
-  if (ready) return;
-  if (loading) return loading;
+export async function preloadArt(onProgress?: PreloadProgress): Promise<void> {
+  if (ready) {
+    onProgress?.(1, 1);
+    return;
+  }
+  if (loading) {
+    await loading;
+    onProgress?.(1, 1);
+    return;
+  }
 
   loading = (async () => {
+    const tick = (() => {
+      let loaded = 0;
+      let total = 0;
+      return {
+        setTotal(n: number) {
+          total = Math.max(1, n);
+          onProgress?.(loaded, total);
+        },
+        done() {
+          loaded++;
+          onProgress?.(Math.min(loaded, total || 1), total || 1);
+        },
+      };
+    })();
+
     try {
       const res = await fetch(`${BASE}/manifest.json`);
       if (!res.ok) {
+        onProgress?.(1, 1);
         ready = true;
         return;
       }
       const raw = (await res.json()) as ArtManifest;
+
+      // Conta ANTES do loop — progresso real por asset
+      let total = 0;
+      for (const c of raw.chars ?? []) {
+        if (c.dirs?.file) total++;
+        if (c.idle?.file) total++;
+        if (c.walk?.file) total++;
+        if (c.death?.file) total++;
+      }
+      total += Object.keys(raw.guns ?? {}).length;
+      total += Object.keys(raw.throws ?? {}).length;
+      total += Object.keys(raw.items ?? {}).length;
+      if (raw.tiles?.sand) total += raw.tiles.sand.length;
+      for (const key of ["floorWood", "floorConcrete", "wall", "roof"] as const) {
+        if (raw.tiles?.[key]) total++;
+      }
+      total += Object.keys(raw.props ?? {}).length;
+      if (raw.door) total++;
+      tick.setTotal(total);
+
+      const loadOne = async (file: string | undefined) => {
+        if (!file) return null;
+        const img = await loadImage(file);
+        tick.done();
+        return img;
+      };
+
       const chars: CharDef[] = [];
       for (const c of raw.chars ?? []) {
         let dirs = c.dirs;
         if (dirs?.file) {
-          const dimg = await loadImage(dirs.file);
+          const dimg = await loadOne(dirs.file);
           if (!dimg) dirs = undefined;
           else dirs = { ...dirs };
         } else {
           dirs = undefined;
         }
-        chars.push({
-          id: c.id,
-          idle: await loadAnim(c.idle),
-          walk: await loadAnim(c.walk),
-          death: await loadAnim(c.death),
-          dirs,
-        });
+        const idle = c.idle?.file
+          ? await (async () => {
+              const img = await loadOne(c.idle!.file);
+              return img ? { ...c.idle!, img } : undefined;
+            })()
+          : undefined;
+        const walk = c.walk?.file
+          ? await (async () => {
+              const img = await loadOne(c.walk!.file);
+              return img ? { ...c.walk!, img } : undefined;
+            })()
+          : undefined;
+        const death = c.death?.file
+          ? await (async () => {
+              const img = await loadOne(c.death!.file);
+              return img ? { ...c.death!, img } : undefined;
+            })()
+          : undefined;
+        chars.push({ id: c.id, idle, walk, death, dirs });
       }
 
       const guns: Record<string, string> = {};
       for (const [k, file] of Object.entries(raw.guns ?? {})) {
-        if (await loadImage(file)) guns[k] = file;
+        if (await loadOne(file)) guns[k] = file;
       }
 
       const throws: Record<string, string> = {};
       for (const [k, file] of Object.entries(raw.throws ?? {})) {
-        if (await loadImage(file)) throws[k] = file;
+        if (await loadOne(file)) throws[k] = file;
       }
 
       const items: Record<string, string> = {};
       for (const [k, file] of Object.entries(raw.items ?? {})) {
-        if (await loadImage(file)) items[k] = file;
+        if (await loadOne(file)) items[k] = file;
       }
 
       const tiles = { ...raw.tiles };
       if (tiles.sand) {
         const ok: string[] = [];
         for (const f of tiles.sand) {
-          if (await loadImage(f)) ok.push(f);
+          if (await loadOne(f)) ok.push(f);
         }
         tiles.sand = ok.length ? ok : undefined;
       }
       for (const key of ["floorWood", "floorConcrete", "wall", "roof"] as const) {
         const f = tiles[key];
-        if (f && !(await loadImage(f))) delete tiles[key];
+        if (f && !(await loadOne(f))) delete tiles[key];
       }
 
       const props: Record<string, string> = {};
       for (const [k, file] of Object.entries(raw.props ?? {})) {
-        if (await loadImage(file)) props[k] = file;
+        if (await loadOne(file)) props[k] = file;
       }
 
       let door = raw.door;
-      if (door && !(await loadImage(door))) door = undefined;
+      if (door && !(await loadOne(door))) door = undefined;
 
       manifest = {
         frameSize: raw.frameSize || 32,
@@ -154,6 +211,7 @@ export async function preloadArt(): Promise<void> {
       };
     } catch {
       manifest = null;
+      onProgress?.(1, 1);
     } finally {
       ready = true;
     }

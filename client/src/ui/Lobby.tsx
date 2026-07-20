@@ -1,6 +1,8 @@
 import { useMemo, useState } from "react";
 import type { ModeOverride } from "../net/modeSelector";
 import { describeMode, type GameMode } from "../net/modeSelector";
+import type { GraphicsQuality } from "../game/graphics";
+import { GraphicsToggle } from "./GraphicsToggle";
 
 export type LobbyAction =
   | { type: "online_create"; name: string; override: ModeOverride; region?: string }
@@ -17,6 +19,8 @@ interface Props {
   onMeasure: () => void;
   warning: string | null;
   hostInfoUrl?: string | null;
+  graphicsQuality?: GraphicsQuality;
+  onGraphicsQuality?: (q: GraphicsQuality) => void;
 }
 
 export function Lobby({
@@ -26,6 +30,8 @@ export function Lobby({
   onMeasure,
   warning,
   hostInfoUrl,
+  graphicsQuality,
+  onGraphicsQuality,
 }: Props) {
   const [name, setName] = useState(() => `p${Math.floor(Math.random() * 90 + 10)}`);
   const [code, setCode] = useState("");
@@ -109,6 +115,10 @@ export function Lobby({
               <span className="hint">Seu nome</span>
               <input value={name} maxLength={16} onChange={(e) => setName(e.target.value)} />
             </label>
+
+            {graphicsQuality && onGraphicsQuality && (
+              <GraphicsToggle quality={graphicsQuality} onChange={onGraphicsQuality} />
+            )}
 
             <div className="row">
               <button type="button" onClick={() => setPath("online")}>

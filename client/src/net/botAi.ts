@@ -8,6 +8,15 @@ import {
   CAM_VIEW_W,
   PLAYER_R,
 } from "../../../shared/constants";
+import {
+  avoidRiftHolesDir,
+  avoidSpikeTotemsDir,
+  blockedByTotem,
+  hitsTotemBody,
+  pointInActiveRiftHole,
+  type RiftHoleSense,
+  type SpikeTotemSense,
+} from "../../../shared/abilities";
 import { WEAPONS, weaponOf } from "../../../shared/gear";
 import { DOOR_DEFS, hitsSolid, resolveWalls } from "../../../shared/map";
 import type { PlayerInput } from "../../../shared/protocol";
@@ -95,6 +104,7 @@ function pickDuelTarget(
   doorBits: number,
   m: BotMemory,
   serverTime: number,
+  totems?: readonly SpikeTotemSense[],
 ): SimPlayer | undefined {
   const alive = opponents.filter((p) => p.alive && p.id !== bot.id);
   if (alive.length === 0) return undefined;
@@ -114,7 +124,7 @@ function pickDuelTarget(
   let bestScore = Infinity;
   for (const p of pool) {
     const d = Math.hypot(p.x - bot.x, p.y - bot.y);
-    const los = hasLineOfSight(bot.x, bot.y, p.x, p.y, doorBits);
+    const los = hasLineOfSight(bot.x, bot.y, p.x, p.y, doorBits, totems, bot.id);
     // favorece quem está perto, com LOS, e ferido (finish)
     let score = d;
     if (los) score *= 0.62;
@@ -150,22 +160,47 @@ function hasLineOfSight(
   bx: number,
   by: number,
   doorBits: number,
+  totems?: readonly SpikeTotemSense[],
+  ignoreOwnerId?: number,
 ): boolean {
   const dist = Math.hypot(bx - ax, by - ay);
   const steps = Math.max(4, Math.floor(dist / 18));
   for (let i = 1; i < steps; i++) {
     const t = i / steps;
-    if (hitsSolid(ax + (bx - ax) * t, ay + (by - ay) * t, 2, doorBits)) return false;
+    const x = ax + (bx - ax) * t;
+    const y = ay + (by - ay) * t;
+    if (hitsSolid(x, y, 2, doorBits)) return false;
+    if (hitsTotemBody(x, y, 2, totems, ignoreOwnerId)) return false;
   }
   return true;
 }
 
 /** Direção livre? look curto pra não “ver” parede falsa. */
-function canStep(x: number, y: number, ux: number, uy: number, doorBits: number, look = 20): boolean {
-  return (
-    !hitsSolid(x + ux * look, y + uy * look, PLAYER_R * 0.7, doorBits) &&
-    !hitsSolid(x + ux * (look * 0.5), y + uy * (look * 0.5), PLAYER_R * 0.7, doorBits)
-  );
+function canStep(
+  x: number,
+  y: number,
+  ux: number,
+  uy: number,
+  doorBits: number,
+  look = 20,
+  holes?: readonly RiftHoleSense[],
+  now = 0,
+  totems?: readonly SpikeTotemSense[],
+): boolean {
+  const x1 = x + ux * look;
+  const y1 = y + uy * look;
+  const x2 = x + ux * (look * 0.5);
+  const y2 = y + uy * (look * 0.5);
+  if (hitsSolid(x1, y1, PLAYER_R * 0.7, doorBits) || hitsSolid(x2, y2, PLAYER_R * 0.7, doorBits)) {
+    return false;
+  }
+  if (hitsTotemBody(x1, y1, PLAYER_R * 0.7, totems) || hitsTotemBody(x2, y2, PLAYER_R * 0.7, totems)) {
+    return false;
+  }
+  if (pointInActiveRiftHole(x1, y1, holes, now, 14)) return false;
+  if (pointInActiveRiftHole(x2, y2, holes, now, 14)) return false;
+  if (blockedByTotem(x1, y1, totems) || blockedByTotem(x2, y2, totems)) return false;
+  return true;
 }
 
 function freeNormal(x: number, y: number, doorBits: number): { nx: number; ny: number } | null {
@@ -208,6 +243,8 @@ function steerAlways(
   m: BotMemory,
   now: number,
   botId: number,
+  holes?: readonly RiftHoleSense[],
+  totems?: readonly SpikeTotemSense[],
 ): { dx: number; dy: number } {
   const wantM = Math.hypot(wantDx, wantDy);
   const wx = wantM > 0.01 ? wantDx / wantM : 0;
@@ -226,15 +263,22 @@ function steerAlways(
     if (mag < 0.05) return;
     const ux = dx / mag;
     const uy = dy / mag;
-    if (!canStep(x, y, ux, uy, doorBits)) return;
+    if (!canStep(x, y, ux, uy, doorBits, 20, holes, now, totems)) return;
     const alignWant = ux * wx + uy * wy;
     const alignGoal = ux * gx + uy * gy;
     const n = freeNormal(x, y, doorBits);
     const awayWall = n ? ux * n.nx + uy * n.ny : 0;
+    let awayTotem = 0;
+    if (totems?.length) {
+      for (const t of totems) {
+        const d = Math.hypot(x - t.x, y - t.y) || 1;
+        awayTotem += ((x - t.x) / d) * ux + ((y - t.y) / d) * uy;
+      }
+    }
     cands.push({
       dx: ux,
       dy: uy,
-      score: alignWant * 50 + alignGoal * 35 + awayWall * 25 + bonus,
+      score: alignWant * 50 + alignGoal * 35 + awayWall * 25 + awayTotem * 38 + bonus,
     });
   };
 
@@ -245,7 +289,7 @@ function steerAlways(
     n &&
     now < m.slideUntil &&
     Math.hypot(m.slideDx, m.slideDy) > 0.2 &&
-    canStep(x, y, m.slideDx, m.slideDy, doorBits)
+    canStep(x, y, m.slideDx, m.slideDy, doorBits, 20, holes, now, totems)
   ) {
     return { dx: m.slideDx, dy: m.slideDy };
   }
@@ -289,7 +333,7 @@ function steerAlways(
     m.slideDx = best.dx;
     m.slideDy = best.dy;
     m.slideUntil = now + (n ? 520 : 380);
-  } else if (canStep(x, y, m.slideDx, m.slideDy, doorBits)) {
+  } else if (canStep(x, y, m.slideDx, m.slideDy, doorBits, 20, holes, now, totems)) {
     return { dx: m.slideDx, dy: m.slideDy };
   }
   return { dx: best.dx, dy: best.dy };
@@ -454,9 +498,13 @@ export function botInput(
   seq: number,
   serverTime: number,
   enemies?: Enemy[],
+  riftHoles?: readonly RiftHoleSense[],
+  spikeTotems?: readonly SpikeTotemSense[],
 ): PlayerInput {
   const m = memory(bot.id, serverTime);
-  const duel = pickDuelTarget(bot, opponents, doorBits, m, serverTime);
+  const holes = riftHoles;
+  const totems = spikeTotems;
+  const duel = pickDuelTarget(bot, opponents, doorBits, m, serverTime, totems);
 
   // Survival: zumbi próximo OU duelo FFA (bot×bot / bot×humano)
   let coopFocus: { x: number; y: number; id: number } | null = null;
@@ -521,6 +569,7 @@ export function botInput(
         ability: 0,
         abilityCdUntil: 0,
         stunnedUntil: 0,
+        frozenUntil: 0,
         speedBoostUntil: 0,
         shieldUntil: 0,
         dashCharges: 2,
@@ -536,9 +585,29 @@ export function botInput(
     : duel;
 
   const stunned = (bot.stunnedUntil ?? 0) > serverTime;
+  const frozen = (bot.frozenUntil ?? 0) > serverTime;
   const reloading = (bot.reloadingUntil ?? 0) > serverTime;
   const abilityReady = (bot.abilityCdUntil ?? 0) <= serverTime;
   const canThrow = (bot.throwCd ?? 0) <= 0;
+
+  // Congelado: estátua — zero input (movimento/ações bloqueados no applyInput também)
+  if (frozen) {
+    return {
+      seq,
+      dx: 0,
+      dy: 0,
+      aim: bot.angle,
+      fire: false,
+      sprint: false,
+      use: false,
+      reload: false,
+      cast: false,
+      weapon: bot.weapon,
+      throw: 0,
+      ability: bot.ability ?? 0,
+      clientTime: performance.now(),
+    };
+  }
 
   if (hitsSolid(bot.x, bot.y, PLAYER_R * 0.9, doorBits)) {
     const free = resolveWalls(bot.x, bot.y, PLAYER_R, doorBits);
@@ -581,7 +650,20 @@ export function botInput(
       dx = Math.cos(serverTime * 0.01 + bot.id);
       dy = Math.sin(serverTime * 0.01 + bot.id);
     }
-    const slid = steerAlways(bot.x, bot.y, dx, dy, goalX, goalY, doorBits, m, serverTime, bot.id);
+    const slid = steerAlways(
+      bot.x,
+      bot.y,
+      dx,
+      dy,
+      goalX,
+      goalY,
+      doorBits,
+      m,
+      serverTime,
+      bot.id,
+      holes,
+      totems,
+    );
     return {
       seq,
       dx: slid.dx,
@@ -602,7 +684,7 @@ export function botInput(
   if (fightTarget?.alive) {
     const target = fightTarget;
     const dist = Math.hypot(target.x - bot.x, target.y - bot.y);
-    const los = hasLineOfSight(bot.x, bot.y, target.x, target.y, doorBits);
+    const los = hasLineOfSight(bot.x, bot.y, target.x, target.y, doorBits, totems, bot.id);
     weapon = pickWeapon(bot, dist, m.style, m, serverTime);
     const wpn = weaponOf(weapon);
     const switching = weapon !== bot.weapon;
@@ -698,17 +780,30 @@ export function botInput(
           m.nextCastAt = serverTime + 700;
         }
       }
-      if (!cast && los && dist < 240 && dist > 35) {
-        ability = 0;
-        if (
-          m.style === "aggressive" ||
-          dist < 170 ||
-          target.hp < 60 ||
-          !!coopFocus ||
-          Math.random() < 0.45
-        ) {
+      if (!cast && los && dist < 340 && dist > 35) {
+        // ocasionalmente Congelamento (id 8); senão jato
+        const wantFrost =
+          m.style === "trickster"
+            ? Math.random() < 0.4
+            : m.style === "tactical"
+              ? Math.random() < 0.28
+              : Math.random() < 0.18;
+        if (wantFrost && dist < 360) {
+          ability = 8;
           cast = true;
-          m.nextCastAt = serverTime + 5500;
+          m.nextCastAt = serverTime + 12000;
+        } else {
+          ability = 0;
+          if (
+            m.style === "aggressive" ||
+            dist < 170 ||
+            target.hp < 60 ||
+            !!coopFocus ||
+            Math.random() < 0.45
+          ) {
+            cast = true;
+            m.nextCastAt = serverTime + 5500;
+          }
         }
       }
     }
@@ -775,7 +870,41 @@ export function botInput(
     goalY = bot.y + dy * 80;
   }
 
-  const slid = steerAlways(bot.x, bot.y, dx, dy, goalX, goalY, doorBits, m, serverTime, bot.id);
+  // bots “sabem” do buraco da Fenda + Totem: desviam meta + direção
+  {
+    let avoid = avoidRiftHolesDir(bot.x, bot.y, dx, dy, holes, serverTime, 36);
+    avoid = avoidSpikeTotemsDir(bot.x, bot.y, avoid.dx, avoid.dy, totems);
+    dx = avoid.dx;
+    dy = avoid.dy;
+    const gDist = Math.max(40, Math.hypot(goalX - bot.x, goalY - bot.y));
+    let avoidGoal = avoidRiftHolesDir(
+      bot.x,
+      bot.y,
+      goalX - bot.x,
+      goalY - bot.y,
+      holes,
+      serverTime,
+      36,
+    );
+    avoidGoal = avoidSpikeTotemsDir(bot.x, bot.y, avoidGoal.dx, avoidGoal.dy, totems);
+    goalX = bot.x + avoidGoal.dx * gDist;
+    goalY = bot.y + avoidGoal.dy * gDist;
+  }
+
+  const slid = steerAlways(
+    bot.x,
+    bot.y,
+    dx,
+    dy,
+    goalX,
+    goalY,
+    doorBits,
+    m,
+    serverTime,
+    bot.id,
+    holes,
+    totems,
+  );
   dx = slid.dx;
   dy = slid.dy;
   sprint = sprint || Math.hypot(dx, dy) > 0.3;
@@ -809,6 +938,8 @@ export function botInput(
       m,
       serverTime,
       bot.id,
+      holes,
+      totems,
     );
     dx = escape.dx;
     dy = escape.dy;

@@ -18,7 +18,15 @@ import {
 import type { Transport } from "../net/transport";
 import { Hud } from "./Hud";
 import { Lobby, type LobbyAction } from "./Lobby";
+import { LoadingScreen } from "./LoadingScreen";
 import { TouchControls } from "./TouchControls";
+import {
+  getGraphicsQuality,
+  setGraphicsQuality,
+  type GraphicsQuality,
+} from "../game/graphics";
+import { preloadArt } from "../game/art";
+import { preloadSfx, unlockAudio } from "../game/audio";
 
 /** Host do Party: env, senão o mesmo IP da página (celular na LAN), senão localhost. */
 function resolvePartyHost(): string {
@@ -63,6 +71,56 @@ export function App() {
   const [muted, setMuted] = useState(false);
   const [masterVol, setMasterVol] = useState(0.85);
   const [mobileUi, setMobileUi] = useState(() => isMobileViewport());
+  const [graphicsQuality, setGraphicsQualityState] = useState<GraphicsQuality>(() =>
+    getGraphicsQuality(),
+  );
+  const [loadProgress, setLoadProgress] = useState(0);
+  const [assetsReady, setAssetsReady] = useState(false);
+  const [entered, setEntered] = useState(false);
+
+  // Preload real (art 70% + sfx 30%) antes do menu — elimina hitch de estreia
+  useEffect(() => {
+    let alive = true;
+    const started = performance.now();
+    const MIN_MS = 400;
+    (async () => {
+      let a = 0;
+      let s = 0;
+      const bump = () => {
+        if (!alive) return;
+        setLoadProgress(0.7 * a + 0.3 * s);
+      };
+      try {
+        await Promise.all([
+          preloadArt((l, t) => {
+            a = t ? l / t : 1;
+            bump();
+          }),
+          preloadSfx((l, t) => {
+            s = t ? l / t : 1;
+            bump();
+          }),
+        ]);
+      } catch {
+        /* fallback procedural / synth — segue */
+      }
+      const left = MIN_MS - (performance.now() - started);
+      if (left > 0) await new Promise((r) => setTimeout(r, left));
+      if (alive) {
+        setLoadProgress(1);
+        setAssetsReady(true);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const changeGraphics = useCallback((q: GraphicsQuality) => {
+    setGraphicsQuality(q);
+    setGraphicsQualityState(q);
+    clientRef.current?.setGraphicsQuality(q);
+  }, []);
 
   useEffect(() => {
     const onViewport = () => setMobileUi(isMobileViewport());
@@ -259,7 +317,18 @@ export function App() {
 
   return (
     <div className="screen">
-      {screen === "lobby" && (
+      {!entered && (
+        <LoadingScreen
+          progress={loadProgress}
+          ready={assetsReady}
+          onEnter={() => {
+            unlockAudio();
+            setEntered(true);
+          }}
+        />
+      )}
+
+      {entered && screen === "lobby" && (
         <Lobby
           onAction={onAction}
           recommendation={recommendation}
@@ -267,13 +336,15 @@ export function App() {
           onMeasure={onMeasure}
           warning={warning}
           hostInfoUrl={hostInfoUrl}
+          graphicsQuality={graphicsQuality}
+          onGraphicsQuality={changeGraphics}
         />
       )}
 
       <div
         ref={shellRef}
         className={`game-shell${mobileUi ? " mobile" : ""}${mobileUi && hud?.phase === "playing" ? " is-playing" : ""}`}
-        style={{ display: screen === "game" ? "flex" : "none" }}
+        style={{ display: entered && screen === "game" ? "flex" : "none" }}
       >
         {hud && (
           <Hud
@@ -306,6 +377,8 @@ export function App() {
               setMasterVol(v);
               clientRef.current?.setVolume(v);
             }}
+            graphicsQuality={graphicsQuality}
+            onGraphicsQuality={changeGraphics}
           />
         )}
         <div className="arena-wrap">
@@ -320,6 +393,7 @@ export function App() {
               abilityName={hud.abilityName}
               abilityCd={hud.abilityCd}
               stunned={hud.stunned}
+              frozen={hud.frozen}
               weaponId={hud.snapshot?.players.find((p) => p.id === hud.welcome?.selfId)?.weapon ?? 0}
             />
           )}
