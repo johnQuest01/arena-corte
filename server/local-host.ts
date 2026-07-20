@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import os from "node:os";
-import { TICK_MS, MAX_PLAYERS } from "../shared/constants";
+import { TICK_MS, ONLINE_ROOM_CAP } from "../shared/constants";
 import { LagHistory } from "../shared/laghistory";
 import {
   MSG,
@@ -89,7 +89,7 @@ function broadcastLobby() {
       encodeLobby({
         players,
         hostId,
-        canStart: players.length >= 2 && players.length <= MAX_PLAYERS,
+        canStart: players.length >= 2 && players.length <= ONLINE_ROOM_CAP,
       }),
     ),
   );
@@ -163,7 +163,7 @@ Host LAN ativo em porta ${PORT}.</p>
 const wss = new WebSocketServer({ server });
 
 wss.on("connection", (ws) => {
-  if (peers.size >= MAX_PLAYERS) {
+  if (peers.size >= ONLINE_ROOM_CAP) {
     ws.send(Buffer.from(encodeCtrl(MSG.ROOM_FULL)));
     ws.close(4000, "sala cheia");
     return;
@@ -182,7 +182,7 @@ wss.on("connection", (ws) => {
 
     if (type === MSG.HELLO) {
       if (peers.has(ws)) return;
-      if (peers.size >= MAX_PLAYERS) {
+      if (peers.size >= ONLINE_ROOM_CAP) {
         ws.send(Buffer.from(encodeCtrl(MSG.ROOM_FULL)));
         ws.close(4000, "sala cheia");
         return;

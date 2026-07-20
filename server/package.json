@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "party": "wrangler dev -c wrangler.toml --port 1999",
+    "party": "wrangler dev -c wrangler.toml --port 1999 --ip 0.0.0.0",
     "deploy": "wrangler deploy",
     "host": "tsx local-host.ts"
   },

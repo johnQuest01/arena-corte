@@ -1,7 +1,13 @@
 /**
  * botAi.ts — bots que NÃO congelam na parede: sempre deslizam / flanqueiam / atiram.
  */
-import { ARENA_H, ARENA_W, PLAYER_R } from "../../../shared/constants";
+import {
+  ARENA_H,
+  ARENA_W,
+  CAM_VIEW_H,
+  CAM_VIEW_W,
+  PLAYER_R,
+} from "../../../shared/constants";
 import { WEAPONS, weaponOf } from "../../../shared/gear";
 import { DOOR_DEFS, hitsSolid, resolveWalls } from "../../../shared/map";
 import type { PlayerInput } from "../../../shared/protocol";
@@ -9,6 +15,12 @@ import type { SimPlayer } from "../../../shared/sim";
 import type { Enemy } from "../../../shared/enemies";
 
 type Style = "aggressive" | "tactical" | "trickster";
+
+/**
+ * Campo de visão do bot = mesma janela da câmera do jogador
+ * (meia-diagonal da viewport mundo).
+ */
+const BOT_VISION = Math.hypot(CAM_VIEW_W * 0.5, CAM_VIEW_H * 0.5);
 
 export interface BotMemory {
   style: Style;
@@ -29,6 +41,9 @@ export interface BotMemory {
   slideUntil: number;
   lastTargetHp: number;
   preferredWeapon: number;
+  /** FFA: trava num adversário (bot ou humano) por um tempo */
+  lockTargetId: number;
+  lockUntil: number;
 }
 
 const mem = new Map<number, BotMemory>();
@@ -62,10 +77,61 @@ function memory(id: number, now: number): BotMemory {
       slideUntil: 0,
       lastTargetHp: 100,
       preferredWeapon: id % WEAPONS.length,
+      lockTargetId: -1,
+      lockUntil: 0,
     };
     mem.set(id, m);
   }
   return m;
+}
+
+/**
+ * Escolhe adversário FFA entre humanos e bots vivos.
+ * Mantém o alvo por ~0.9–2.2s pra duelar de verdade (não trocar a cada tick).
+ */
+function pickDuelTarget(
+  bot: SimPlayer,
+  opponents: SimPlayer[],
+  doorBits: number,
+  m: BotMemory,
+  serverTime: number,
+): SimPlayer | undefined {
+  const alive = opponents.filter((p) => p.alive && p.id !== bot.id);
+  if (alive.length === 0) return undefined;
+
+  if (m.lockTargetId >= 0 && m.lockUntil > serverTime) {
+    const locked = alive.find((p) => p.id === m.lockTargetId);
+    if (locked) return locked;
+  }
+
+  // prioriza quem está no mesmo FOV da câmera do jogador
+  const inView = alive.filter(
+    (p) => Math.hypot(p.x - bot.x, p.y - bot.y) <= BOT_VISION,
+  );
+  const pool = inView.length > 0 ? inView : alive;
+
+  let best: SimPlayer | undefined;
+  let bestScore = Infinity;
+  for (const p of pool) {
+    const d = Math.hypot(p.x - bot.x, p.y - bot.y);
+    const los = hasLineOfSight(bot.x, bot.y, p.x, p.y, doorBits);
+    // favorece quem está perto, com LOS, e ferido (finish)
+    let score = d;
+    if (los) score *= 0.62;
+    if (p.hp < 45) score *= 0.78;
+    // ligeiro viés por estilo: agressivo caça longe; tático pega LOS
+    if (m.style === "aggressive" && d < BOT_VISION * 0.55) score *= 0.9;
+    if (m.style === "tactical" && los) score *= 0.85;
+    if (score < bestScore) {
+      bestScore = score;
+      best = p;
+    }
+  }
+  if (best) {
+    m.lockTargetId = best.id;
+    m.lockUntil = serverTime + 900 + Math.random() * 1300;
+  }
+  return best;
 }
 
 function clamp(v: number, a: number, b: number) {
@@ -247,30 +313,105 @@ function nearestDoor(
   return best;
 }
 
-function pickWeapon(bot: SimPlayer, dist: number, style: Style, m: BotMemory, now: number): number {
-  if (now < m.nextWeaponAt) return m.preferredWeapon;
+/** Munição total (pente + reserva) de uma arma no inventário do bot. */
+function ammoTotal(bot: SimPlayer, id: number): number {
+  if (bot.weapon === id) return (bot.mag | 0) + (bot.reserve | 0);
+  const slot = bot.ammoBank?.[id];
+  return slot ? (slot.mag | 0) + (slot.reserve | 0) : 0;
+}
 
-  const has = (id: number) => {
-    if (bot.weapon === id) return bot.mag + bot.reserve > 0;
-    const slot = bot.ammoBank?.[id];
-    return slot ? slot.mag + slot.reserve > 0 : true;
+/** Pente carregado — pronto pra atirar no mesmo tick após a troca. */
+function magReady(bot: SimPlayer, id: number): number {
+  if (bot.weapon === id) return bot.mag | 0;
+  return bot.ammoBank?.[id]?.mag ?? 0;
+}
+
+/**
+ * Escolhe arma: troca NA HORA se a atual secou; senão pode trocar por
+ * distância/estilo quando o timer liberar (não fica travado no empty click).
+ */
+function pickWeapon(bot: SimPlayer, dist: number, style: Style, m: BotMemory, now: number): number {
+  const cur = bot.weapon;
+  const curTotal = ammoTotal(bot, cur);
+  const curDry = curTotal <= 0;
+  const curMagEmpty = (bot.mag | 0) <= 0;
+
+  // qualquer outra com munição (prioriza pente cheio)
+  const findAnyLoaded = (preferMag: boolean): number | null => {
+    let fallback: number | null = null;
+    for (let id = 0; id < WEAPONS.length; id++) {
+      if (ammoTotal(bot, id) <= 0) continue;
+      if (preferMag && magReady(bot, id) > 0) return id;
+      if (fallback == null) fallback = id;
+    }
+    return fallback;
   };
 
+  // SECOU: troca imediata — ignora nextWeaponAt (era o travamento)
+  if (curDry || (curMagEmpty && (bot.reserve | 0) <= 0)) {
+    const next = findAnyLoaded(true);
+    if (next != null && next !== cur) {
+      m.preferredWeapon = next;
+      m.nextWeaponAt = now + 350 + Math.random() * 400;
+      return next;
+    }
+    // tudo seco — mantém a atual; retry cedo
+    m.nextWeaponAt = now + 250;
+    return cur;
+  }
+
+  // pente vazio mas tem reserva: sob pressão troca pra arma com pente; senão deixa reload
+  if (curMagEmpty && (bot.reserve | 0) > 0) {
+    const pressured = bot.hp < 55 || dist < 180;
+    if (pressured) {
+      for (let id = 0; id < WEAPONS.length; id++) {
+        if (id === cur) continue;
+        if (magReady(bot, id) > 0) {
+          m.preferredWeapon = id;
+          m.nextWeaponAt = now + 500;
+          return id;
+        }
+      }
+    }
+    // reload da atual
+    m.preferredWeapon = cur;
+    return cur;
+  }
+
+  // livre arbítrio: timer ou whim do estilo
+  const whim =
+    style === "trickster"
+      ? Math.random() < 0.04
+      : style === "aggressive"
+        ? Math.random() < 0.015
+        : Math.random() < 0.01;
+  const wantSwitch = now >= m.nextWeaponAt || whim;
+  if (!wantSwitch) {
+    // segura a preferida se ainda tem munição
+    if (ammoTotal(bot, m.preferredWeapon) > 0) return m.preferredWeapon;
+    if (ammoTotal(bot, cur) > 0) return cur;
+  }
+
   let prefer: number[];
-  if (dist < 140) prefer = [4, 5, 0, 3];
-  else if (dist < 320) prefer = style === "aggressive" ? [3, 1, 5, 2] : [1, 2, 3, 5];
-  else prefer = [2, 1, 6, 3];
+  if (dist < 140) prefer = [4, 5, 0, 3, 1];
+  else if (dist < 320) prefer = style === "aggressive" ? [3, 1, 5, 2, 0] : [1, 2, 3, 5, 0];
+  else prefer = [2, 1, 6, 3, 5];
 
   for (const id of prefer) {
-    if (id < WEAPONS.length && has(id)) {
-      if (id !== m.preferredWeapon) {
-        m.preferredWeapon = id;
-        m.nextWeaponAt = now + 1800;
-      }
-      return id;
-    }
+    if (id >= WEAPONS.length) continue;
+    if (ammoTotal(bot, id) <= 0) continue;
+    m.preferredWeapon = id;
+    m.nextWeaponAt = now + 1400 + Math.random() * 1600;
+    return id;
   }
-  return bot.weapon;
+
+  const any = findAnyLoaded(false);
+  if (any != null) {
+    m.preferredWeapon = any;
+    m.nextWeaponAt = now + 800;
+    return any;
+  }
+  return cur;
 }
 
 function pickFlank(
@@ -307,13 +448,17 @@ function pickFlank(
 
 export function botInput(
   bot: SimPlayer,
-  target: SimPlayer | undefined,
+  /** Todos os outros players (humanos + bots) — FFA: duelam entre si */
+  opponents: SimPlayer[],
   doorBits: number,
   seq: number,
   serverTime: number,
   enemies?: Enemy[],
 ): PlayerInput {
-  // Survival FFA: mira no mais perto — zumbi OU player (equipe é escolha de vocês)
+  const m = memory(bot.id, serverTime);
+  const duel = pickDuelTarget(bot, opponents, doorBits, m, serverTime);
+
+  // Survival: zumbi próximo OU duelo FFA (bot×bot / bot×humano)
   let coopFocus: { x: number; y: number; id: number } | null = null;
   let bestD = Infinity;
   if (enemies && enemies.length > 0) {
@@ -326,17 +471,20 @@ export function botInput(
       }
     }
   }
-  if (target?.alive) {
-    const d = Math.hypot(target.x - bot.x, target.y - bot.y);
-    // às vezes prioriza player (traição / FFA); senão só se mais perto que zumbi
-    const preferPlayer = d < bestD * 0.85 || (d < 220 && Math.random() < 0.35);
-    if (preferPlayer || !coopFocus) {
+  if (duel?.alive) {
+    const d = Math.hypot(duel.x - bot.x, duel.y - bot.y);
+    // FFA: prioriza duelo se mais perto, ou às vezes mesmo com zumbi perto
+    const preferDuel =
+      !coopFocus ||
+      d < bestD * 0.9 ||
+      (d < 280 && Math.random() < 0.45) ||
+      (d < 180 && Math.random() < 0.7);
+    if (preferDuel) {
       bestD = d;
-      coopFocus = null; // usa o player real como fightTarget abaixo
+      coopFocus = null;
     }
   }
 
-  const m = memory(bot.id, serverTime);
   let weapon = m.preferredWeapon;
   let dx = 0;
   let dy = 0;
@@ -351,7 +499,7 @@ export function botInput(
   let goalX = bot.x;
   let goalY = bot.y;
 
-  // alvo: zumbi sintético OU player humano/bots
+  // alvo: zumbi sintético OU adversário FFA (humano/bot)
   const fightTarget: SimPlayer | undefined = coopFocus
     ? ({
         id: 250,
@@ -373,6 +521,11 @@ export function botInput(
         ability: 0,
         abilityCdUntil: 0,
         stunnedUntil: 0,
+        speedBoostUntil: 0,
+        shieldUntil: 0,
+        dashCharges: 2,
+        dashRechargeAt: 0,
+        dashUntil: 0,
         respawnAt: 0,
         inputQueue: [],
         throwCd: 0,
@@ -380,7 +533,7 @@ export function botInput(
         reloadingUntil: 0,
         ammoBank: [],
       } as SimPlayer)
-    : target;
+    : duel;
 
   const stunned = (bot.stunnedUntil ?? 0) > serverTime;
   const reloading = (bot.reloadingUntil ?? 0) > serverTime;
@@ -446,14 +599,19 @@ export function botInput(
     };
   }
 
-  if (bot.mag <= 0 && bot.reserve > 0) reload = true;
-
   if (fightTarget?.alive) {
     const target = fightTarget;
     const dist = Math.hypot(target.x - bot.x, target.y - bot.y);
     const los = hasLineOfSight(bot.x, bot.y, target.x, target.y, doorBits);
     weapon = pickWeapon(bot, dist, m.style, m, serverTime);
     const wpn = weaponOf(weapon);
+    const switching = weapon !== bot.weapon;
+    // host zera reload ao trocar arma — não bloquear o tiro neste tick
+    const stillReloading = !switching && reloading;
+
+    // reload só na arma que vai ficar; nunca recarrega se está trocando
+    if (!switching && bot.mag <= 0 && bot.reserve > 0) reload = true;
+    else reload = false;
 
     const leadT = clamp(dist / Math.max(180, wpn.bulletSpeed), 0, 0.5);
     const tx = target.x + target.vx * leadT;
@@ -521,23 +679,36 @@ export function botInput(
       sprint = m.style === "aggressive";
     }
 
-    // Q — jato perto; Gigante se alvo longe/preso
-    if (
-      !stunned &&
-      abilityReady &&
-      serverTime >= m.nextCastAt &&
-      los &&
-      Math.abs(da) < 0.55
-    ) {
-      if (dist > 160 && dist < 420 && (m.style === "aggressive" || !!coopFocus)) {
-        ability = 1;
-        cast = true;
-        m.nextCastAt = serverTime + 26000;
-      } else if (dist < 240 && dist > 35) {
-        ability = 0;
-        if (m.style === "aggressive" || dist < 170 || target.hp < 60 || !!coopFocus) {
+    // Q — jato perto OU Gigante (todos os estilos; treino/PvP/survival)
+    // Antes: Gigante só em style==="aggressive" && dist 160–420 → quase nunca no treino.
+    if (!stunned && abilityReady && serverTime >= m.nextCastAt && Math.abs(da) < 0.75) {
+      const giantRange = dist > 120 && dist < BOT_VISION;
+      const giantOk = giantRange && (los || dist < BOT_VISION * 0.45);
+      if (giantOk) {
+        // livre arbítrio: qualquer estilo pode invocar; agressivo/trickster mais frequentemente
+        const chance =
+          m.style === "aggressive" ? 0.9 : m.style === "trickster" ? 0.75 : 0.6;
+        if (Math.random() < chance || !!coopFocus || bot.hp < 45 || dist > 260) {
+          ability = 1;
           cast = true;
-          m.nextCastAt = serverTime + 6500;
+          // CD real da habilidade ~20s; não travar 26s “à mão” só no AI
+          m.nextCastAt = serverTime + 11000;
+        } else {
+          // falhou o roll — tenta de novo em breve (não fica preso no jato)
+          m.nextCastAt = serverTime + 700;
+        }
+      }
+      if (!cast && los && dist < 240 && dist > 35) {
+        ability = 0;
+        if (
+          m.style === "aggressive" ||
+          dist < 170 ||
+          target.hp < 60 ||
+          !!coopFocus ||
+          Math.random() < 0.45
+        ) {
+          cast = true;
+          m.nextCastAt = serverTime + 5500;
         }
       }
     }
@@ -553,13 +724,16 @@ export function botInput(
       }
     }
 
-    // TIRO — independente de estar “travado” no movimento
+    // TIRO — alcance = FOV da câmera (shotgun fica mais curta)
     const aimOk = Math.abs(da) < (wpn.pellets > 1 ? 0.55 : 0.32);
-    const rangeOk = dist < (weapon === 6 ? 720 : weapon === 4 ? 300 : 580);
+    const rangeOk =
+      dist < (weapon === 4 ? Math.min(360, BOT_VISION * 0.35) : BOT_VISION);
+    const canShoot = magReady(bot, weapon) > 0;
     if (
       !stunned &&
-      !reloading &&
-      bot.mag > 0 &&
+      !stillReloading &&
+      !reload &&
+      canShoot &&
       los &&
       aimOk &&
       rangeOk &&
@@ -568,13 +742,15 @@ export function botInput(
       serverTime >= m.nextBurstAt
     ) {
       fire = true;
-      // não cancela reload flag se ainda tem bala
       reload = false;
       const cd = wpn.cooldownMs;
       m.nextBurstAt =
         serverTime + (cd < 100 ? 40 + Math.random() * 40 : cd * (0.7 + Math.random() * 0.35));
     }
   } else {
+    // sem alvo: ainda troca se a arma atual secou
+    weapon = pickWeapon(bot, 400, m.style, m, serverTime);
+    if (weapon === bot.weapon && bot.mag <= 0 && bot.reserve > 0) reload = true;
     const roam = serverTime * 0.0015 + bot.id * 2.1;
     goalX = ARENA_W * (0.3 + 0.4 * (0.5 + 0.5 * Math.sin(roam)));
     goalY = ARENA_H * (0.3 + 0.4 * (0.5 + 0.5 * Math.cos(roam * 0.8)));

@@ -1,9 +1,9 @@
 /**
  * room.ts — Durable Object da sala (PartyServer).
- * Tick 30 Hz, hibernation API, cap de 3 jogadores.
+ * Tick 30 Hz, hibernation API, cap online (ONLINE_ROOM_CAP).
  */
 import { Server, type Connection, routePartykitRequest } from "partyserver";
-import { TICK_MS, MAX_PLAYERS } from "../../shared/constants";
+import { TICK_MS, ONLINE_ROOM_CAP } from "../../shared/constants";
 import { LagHistory } from "../../shared/laghistory";
 import {
   MSG,
@@ -71,7 +71,7 @@ export class GameRoom extends Server {
       this.regionHint = "";
     }
 
-    if (this.meta.size >= MAX_PLAYERS) {
+    if (this.meta.size >= ONLINE_ROOM_CAP) {
       conn.send(encodeCtrl(MSG.ROOM_FULL));
       conn.close(4000, "sala cheia");
     }
@@ -84,7 +84,7 @@ export class GameRoom extends Server {
 
     if (type === MSG.HELLO) {
       if (this.meta.has(conn.id)) return;
-      if (this.meta.size >= MAX_PLAYERS) {
+      if (this.meta.size >= ONLINE_ROOM_CAP) {
         conn.send(encodeCtrl(MSG.ROOM_FULL));
         conn.close(4000, "sala cheia");
         return;
@@ -123,12 +123,9 @@ export class GameRoom extends Server {
     }
 
     if (type === MSG.START) {
-      // só o primeiro conectado inicia
-      const first = [...this.meta.values()][0];
-      if (first && first.playerId === m.playerId) {
-        if (startMatch(this.sim)) {
-          this.broadcast(encodeCtrl(MSG.START));
-        }
+      // qualquer jogador da sala pode iniciar com 2+
+      if (this.meta.has(conn.id) && startMatch(this.sim)) {
+        this.broadcast(encodeCtrl(MSG.START));
       }
     }
   }
@@ -159,7 +156,7 @@ export class GameRoom extends Server {
       encodeLobby({
         players,
         hostId,
-        canStart: players.length >= 2 && players.length <= MAX_PLAYERS,
+        canStart: players.length >= 2 && players.length <= ONLINE_ROOM_CAP,
       }),
     );
   }

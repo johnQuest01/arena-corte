@@ -1,6 +1,12 @@
 /**
  * prediction.ts — movimento local + colisão do mapa + spawn visual de balas.
  */
+import {
+  DASH_MAX_CHARGES,
+  SHIELD_SPEED_MUL,
+  SPRINT_BOOTS_SPEED_MUL,
+  tickDashCharges,
+} from "../../../shared/abilities";
 import { ARENA_H, ARENA_W, MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
 import {
   MAX_STAMINA,
@@ -63,9 +69,17 @@ export class PredictionBuffer {
     dt: number,
     sprint: boolean,
     weapon: number,
+    /** serverTime estimado — boost das Botas */
+    now = 0,
   ) {
     const p = this.predicted;
     if (!p || !p.alive) return;
+    if (p.speedBoostUntil == null) p.speedBoostUntil = 0;
+    if (p.shieldUntil == null) p.shieldUntil = 0;
+    if (p.dashCharges == null) p.dashCharges = DASH_MAX_CHARGES;
+    if (p.dashRechargeAt == null) p.dashRechargeAt = 0;
+    if (p.dashUntil == null) p.dashUntil = 0;
+    if (now > 0) tickDashCharges(p, now);
 
     let mx = clamp(dx, -1, 1);
     let my = clamp(dy, -1, 1);
@@ -84,6 +98,12 @@ export class PredictionBuffer {
     } else {
       p.stamina = Math.min(MAX_STAMINA, p.stamina + STAMINA_REGEN_PER_S * dt);
       if (p.stamina < TIRED_THRESHOLD) speedMult = TIRED_MULT;
+    }
+    if (p.speedBoostUntil > 0 && now < p.speedBoostUntil) {
+      speedMult *= SPRINT_BOOTS_SPEED_MUL;
+    }
+    if (p.shieldUntil > 0 && now < p.shieldUntil) {
+      speedMult *= SHIELD_SPEED_MUL;
     }
 
     const speed = MOVE_SPEED * speedMult;
@@ -106,18 +126,27 @@ export class PredictionBuffer {
     p.angle = aim;
     p.weapon = clamp(weapon, 0, WEAPONS.length - 1);
 
+    // life === 0 → sem TTL (igual host/sim): vai até parede/borda/alvo
+    // life > 0 → countdown em ms (ex.: shotgun); ao expirar vira -1
     this.localBullets = this.localBullets
-      .map((b) => ({
-        ...b,
-        px: b.x,
-        py: b.y,
-        x: b.x + b.vx * dt,
-        y: b.y + b.vy * dt,
-        life: b.life - dt * 1000,
-      }))
+      .map((b) => {
+        let life = b.life;
+        if (life > 0) {
+          life -= dt * 1000;
+          if (life <= 0) life = -1;
+        }
+        return {
+          ...b,
+          px: b.x,
+          py: b.y,
+          x: b.x + b.vx * dt,
+          y: b.y + b.vy * dt,
+          life,
+        };
+      })
       .filter(
         (b) =>
-          b.life > 0 &&
+          b.life >= 0 &&
           b.x > -40 &&
           b.y > -40 &&
           b.x < ARENA_W + 40 &&
@@ -149,7 +178,8 @@ export class PredictionBuffer {
         vx: Math.cos(a) * wpn.bulletSpeed,
         vy: Math.sin(a) * wpn.bulletSpeed,
         weapon,
-        life: wpn.bulletLifeMs || 800,
+        // 0 = sem TTL (AWM/rifles); NÃO usar fallback 800 — sumia no meio do mapa
+        life: wpn.bulletLifeMs,
       });
     }
   }

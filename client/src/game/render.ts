@@ -2,7 +2,16 @@
  * render.ts — mapa deserto tilemap, personagens estilo Gungeon (em pé), arma, feel.
  */
 import { ARENA_H, ARENA_W, CAM_VIEW_H, CAM_VIEW_W } from "../../../shared/constants";
-import { LOADOUTS, MAX_STAMINA, GUN_HAND, GUN_VISUAL_SCALE, gunBarrelLocal, muzzlePoint, weaponOf } from "../../../shared/gear";
+import {
+  LOADOUTS,
+  MAX_STAMINA,
+  GUN_HAND_BODY_Y,
+  GUN_HAND_VISUAL,
+  GUN_VISUAL_SCALE,
+  gunBarrelLocal,
+  muzzlePoint,
+  weaponOf,
+} from "../../../shared/gear";
 import {
   BUILDINGS,
   DOOR_DEFS,
@@ -48,6 +57,15 @@ export const LOSPEC = {
   metal: "#5a5a52",
   roof: "#4a3830",
   shadow: "rgba(46,34,47,0.5)",
+  /** asfalto rachado / calçada suja / mato ressecado (Resurrect 64) */
+  road: "#3a3a38",
+  roadDark: "#2c2c2a",
+  roadLine: "#b8a05a",
+  sidewalk: "#7a7a72",
+  sidewalkDark: "#5e5e58",
+  grass: "#5a6a3a",
+  grassDark: "#3e4a28",
+  grassTall: "#6b7a40",
 };
 
 export interface MuzzleFlash {
@@ -83,6 +101,8 @@ export interface FeelState {
   bodyKick: number;
   /** amplitude shake restante */
   shake: number;
+  /** 0..1 vinheta de dano (tomei hit) */
+  hurt: number;
   shells: ShellCas[];
 }
 
@@ -99,6 +119,10 @@ export interface RenderView {
     /** 0..1 enquanto recarrega; 0 = idle */
     reloadProgress: number;
     stunnedUntil: number;
+    speedBoostUntil?: number;
+    shieldUntil?: number;
+    dashUntil?: number;
+    ability?: number;
     vx: number;
     vy: number;
   } | null;
@@ -120,12 +144,19 @@ export interface RenderView {
   roofAlpha: Map<number, number>; // building id → alpha
   ammoDrops: { id: number; x: number; y: number; amount: number }[];
   weaponDrops: { id: number; x: number; y: number; weaponId: number; mag: number; reserve: number }[];
+  abilityDrops: { id: number; x: number; y: number; abilityId: number }[];
   camZoom: number;
   /** canto superior-esquerdo da câmera no mundo */
   camX: number;
   camY: number;
   damageFlash: number;
   hitFlashSelf: boolean;
+  /** indicadores de direção do dano (ângulo mundo → atacante) */
+  dmgArrows?: { angle: number; at: number }[];
+  /** 0..1 hitmarker na mira */
+  hitMarker?: number;
+  /** performance.now() do frame */
+  nowMs?: number;
   drawDecals: (ctx: CanvasRenderingContext2D) => void;
   drawGore: (ctx: CanvasRenderingContext2D) => void;
   drawAbilityGround: (ctx: CanvasRenderingContext2D) => void;
@@ -219,17 +250,35 @@ function tileColor(t: number, shade: number): string {
         ? LOSPEC.wood
         : t === T.CONCRETE
           ? LOSPEC.concrete
-          : t === T.WALL
-            ? LOSPEC.wall
-            : t === T.METAL
-              ? LOSPEC.metal
-              : t === T.CRATE
-                ? "#8a7040"
-                : t === T.BARREL
-                  ? "#4a5a30"
-                  : t === T.CAR
-                    ? "#3a4048"
-                    : shade ? LOSPEC.sandDark : LOSPEC.sand;
+          : t === T.ROAD
+            ? shade
+              ? LOSPEC.roadDark
+              : LOSPEC.road
+            : t === T.ROAD_LINE
+              ? LOSPEC.roadLine
+              : t === T.SIDEWALK
+                ? shade
+                  ? LOSPEC.sidewalkDark
+                  : LOSPEC.sidewalk
+                : t === T.GRASS
+                  ? shade
+                    ? LOSPEC.grassDark
+                    : LOSPEC.grass
+                  : t === T.GRASS_TALL
+                    ? LOSPEC.grassTall
+                    : t === T.WALL
+                      ? LOSPEC.wall
+                      : t === T.METAL
+                        ? LOSPEC.metal
+                        : t === T.CRATE
+                          ? "#8a7040"
+                          : t === T.BARREL
+                            ? "#4a5a30"
+                            : t === T.CAR
+                              ? "#3a4048"
+                              : shade
+                                ? LOSPEC.sandDark
+                                : LOSPEC.sand;
   return base;
 }
 
@@ -240,6 +289,7 @@ function paintGround(ctx: CanvasRenderingContext2D) {
       const shade = (tx * 3 + ty * 5) % 2;
       const x = tx * TILE;
       const y = ty * TILE;
+      const h = (tx * 17 + ty * 31) >>> 0;
       let img: HTMLImageElement | null = null;
       if (t === T.SAND || t === T.DIRT) img = getTileImg("sand", tx, ty);
       else if (t === T.WOOD) img = getTileImg("floorWood", tx, ty);
@@ -250,12 +300,53 @@ function paintGround(ctx: CanvasRenderingContext2D) {
       } else {
         ctx.fillStyle = tileColor(t, shade);
         ctx.fillRect(x, y, TILE, TILE);
-        if (t === T.SAND || t === T.DIRT) {
+
+        if (t === T.ROAD || t === T.ROAD_LINE) {
+          // asfalto rachado + poeira
+          ctx.fillStyle = "rgba(0,0,0,0.22)";
+          if (h % 5 === 0) {
+            ctx.fillRect(x + (h % 18), y + ((h >> 3) % 20), 8 + (h % 6), 1);
+            ctx.fillRect(x + ((h >> 2) % 22), y + 6 + (h % 14), 1, 7);
+          }
+          if (t === T.ROAD_LINE) {
+            // faixa desbotada
+            ctx.fillStyle = "rgba(184,160,90,0.55)";
+            ctx.fillRect(x + 12, y + 2, 8, TILE - 4);
+            ctx.fillStyle = "rgba(40,36,28,0.35)";
+            ctx.fillRect(x + 13, y + 8, 6, 3);
+          } else {
+            ctx.fillStyle = "rgba(90,90,80,0.12)";
+            ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
+          }
+        } else if (t === T.SIDEWALK) {
+          // juntas da calçada
+          ctx.strokeStyle = "rgba(30,28,24,0.35)";
+          ctx.lineWidth = 1;
+          ctx.strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1);
+          ctx.fillStyle = "rgba(0,0,0,0.12)";
+          if (h % 7 === 0) ctx.fillRect(x + 4, y + 10, 6, 2);
+          if (h % 11 === 0) ctx.fillRect(x + 18, y + 20, 5, 2);
+        } else if (t === T.GRASS || t === T.GRASS_TALL) {
+          // tufos de mato (2–3 tons)
+          const tufts = t === T.GRASS_TALL ? 5 : 3;
+          for (let i = 0; i < tufts; i++) {
+            const px = x + 3 + ((h + i * 13) % 24);
+            const py = y + 4 + ((h + i * 7) % 22);
+            ctx.fillStyle =
+              i % 3 === 0
+                ? LOSPEC.grassDark
+                : i % 3 === 1
+                  ? LOSPEC.grass
+                  : LOSPEC.grassTall;
+            const hh = t === T.GRASS_TALL ? 5 + (i % 3) : 3 + (i % 2);
+            ctx.fillRect(px, py, 2, hh);
+          }
+        } else if (t === T.SAND || t === T.DIRT) {
           ctx.fillStyle = "rgba(0,0,0,0.06)";
           ctx.fillRect(x + 4, y + 8, 3, 2);
           ctx.fillRect(x + 18, y + 20, 4, 2);
         }
-        if ((tx * 17 + ty * 31) % 8 === 0) {
+        if ((tx * 17 + ty * 31) % 8 === 0 && t !== T.ROAD && t !== T.ROAD_LINE) {
           ctx.fillStyle = "rgba(60,40,20,0.18)";
           ctx.fillRect(x + ((tx * 3) % 20), y + ((ty * 5) % 22), 3, 2);
           ctx.fillRect(x + 10, y + 14, 5, 1);
@@ -269,9 +360,19 @@ function drawGround(ctx: CanvasRenderingContext2D) {
   ctx.drawImage(ensureGroundCache(), 0, 0);
 }
 
-function drawSolids(ctx: CanvasRenderingContext2D) {
-  for (let ty = 0; ty < SOLID.length; ty++) {
-    for (let tx = 0; tx < SOLID[0]!.length; tx++) {
+function drawSolids(
+  ctx: CanvasRenderingContext2D,
+  camX: number,
+  camY: number,
+  viewW: number,
+  viewH: number,
+) {
+  const tx0 = Math.max(0, Math.floor(camX / TILE) - 1);
+  const ty0 = Math.max(0, Math.floor(camY / TILE) - 1);
+  const tx1 = Math.min(SOLID[0]!.length, Math.ceil((camX + viewW) / TILE) + 1);
+  const ty1 = Math.min(SOLID.length, Math.ceil((camY + viewH) / TILE) + 1);
+  for (let ty = ty0; ty < ty1; ty++) {
+    for (let tx = tx0; tx < tx1; tx++) {
       const t = SOLID[ty]![tx]!;
       if (t < 10) continue;
       const x = tx * TILE;
@@ -366,13 +467,13 @@ function drawDoors(
  */
 function drawGripHands(ctx: CanvasRenderingContext2D, gunLen: number, skin = "#d4a574") {
   ctx.fillStyle = skin;
-  // mão traseira (punho/coronha) — logo à frente da origem
+  // mão traseira (punho) — colada na origem/ombro com GUN_HAND_VISUAL
   ctx.beginPath();
-  ctx.ellipse(3, 3, 5, 4, 0.15, 0, Math.PI * 2);
+  ctx.ellipse(1, 2.5, 5, 4, 0.15, 0, Math.PI * 2);
   ctx.fill();
   ctx.fillStyle = "rgba(0,0,0,0.25)";
   ctx.beginPath();
-  ctx.ellipse(3, 4, 4, 2.5, 0.15, 0, Math.PI * 2);
+  ctx.ellipse(1, 3.5, 4, 2.5, 0.15, 0, Math.PI * 2);
   ctx.fill();
   // mão dianteira (guarda-mão) — ~55% do comprimento da arma
   const fx = gunLen * 0.55;
@@ -392,36 +493,75 @@ function drawWeaponLayer(
   aim: number,
   gunKick: number,
   muzzleFlash: boolean,
+  /** false = personagem com mãos no sprite (não desenhar elipses flutuantes) */
+  gripHands = true,
+  /** 0 = idle; 0..1 durante reload (client-side) */
+  reloadProgress = 0,
 ) {
   const w = weaponOf(weaponId);
-  const HAND = GUN_HAND;
-  const barrel = gunBarrelLocal(w);
+  const HAND = GUN_HAND_VISUAL;
   const facingLeft = Math.cos(aim) < 0;
+  const side = w.muzzleSide * 0.35;
+  const rp = Math.max(0, Math.min(1, reloadProgress));
+  const reloading = rp > 0.001 && rp < 0.999;
+  // tilt da arma durante reload (abaixa e sobe)
+  const reloadTilt = reloading ? Math.sin(rp * Math.PI) * 0.42 : 0;
+  const reloadDrop = reloading ? Math.sin(rp * Math.PI) * 4 : 0;
 
   ctx.save();
+  // 1) sobe até a altura da mão do designer; 2) avança na mira
+  ctx.translate(0, GUN_HAND_BODY_Y);
   ctx.translate(
-    Math.cos(aim) * HAND - Math.sin(aim) * (w.muzzleSide * 0.35),
-    Math.sin(aim) * HAND + Math.cos(aim) * (w.muzzleSide * 0.35),
+    Math.cos(aim) * HAND - Math.sin(aim) * side,
+    Math.sin(aim) * HAND + Math.cos(aim) * side,
   );
-  ctx.rotate(aim);
+  ctx.rotate(aim + reloadTilt);
   if (facingLeft) ctx.scale(1, -1);
-  ctx.translate(-gunKick * 5, 0);
+  ctx.translate(-gunKick * 5, reloadDrop);
 
   const gunImg = getGunImg(weaponId);
+  const VISUAL_SCALE = GUN_VISUAL_SCALE;
+  const grip = (w.gripInset ?? 4) * VISUAL_SCALE;
+  const visualLen = w.length * VISUAL_SCALE;
+  const magX = visualLen * 0.32;
+  const magW = 5 * VISUAL_SCALE * 0.55;
+  const magH = 9 * VISUAL_SCALE * 0.55;
+
+  /** pente: cai no início (~0..0.18), novo entra no fim (~0.78..1) */
+  const drawMag = (ox: number, oy: number, rot: number, a: number) => {
+    if (a <= 0.02) return;
+    ctx.save();
+    ctx.globalAlpha *= a;
+    ctx.translate(ox, oy);
+    ctx.rotate(rot);
+    ctx.fillStyle = "#2a2418";
+    ctx.fillRect(-magW / 2, 0, magW, magH);
+    ctx.fillStyle = "#5a4a28";
+    ctx.fillRect(-magW / 2 + 1, 1, magW - 2, 3);
+    ctx.restore();
+  };
+
   if (gunImg) {
-    const VISUAL_SCALE = GUN_VISUAL_SCALE;
-    const grip = (w.gripInset ?? 4) * VISUAL_SCALE;
-    const visualLen = w.length * VISUAL_SCALE;
     const scale = visualLen / Math.max(1, gunImg.naturalWidth);
     const dw = gunImg.naturalWidth * scale;
     const dh = gunImg.naturalHeight * scale;
+    const barrel = gunBarrelLocal(w);
 
-    const backX = -grip;
-    ctx.drawImage(gunImg, backX, -dh / 2, dw, dh);
+    ctx.drawImage(gunImg, -grip, -dh / 2, dw, dh);
 
-    drawGripHands(ctx, visualLen);
+    // só fallback procedural — no sheet do designer as mãos já estão no corpo
+    if (gripHands) drawGripHands(ctx, visualLen);
+
+    if (reloading) {
+      if (rp < 0.18) {
+        const t = rp / 0.18;
+        drawMag(magX, 2 + t * t * 36, t * 1.4, 1 - t * 0.35);
+      } else if (rp > 0.78) {
+        const t = (rp - 0.78) / 0.22;
+        drawMag(magX, (1 - t) * 22, (1 - t) * -0.35, 0.55 + t * 0.45);
+      }
+    }
     if (muzzleFlash) {
-      // buraco real do cano (acima do centro da sprite)
       const mx = barrel.x;
       const my = barrel.y;
       const g = ctx.createRadialGradient(mx, my, 0, mx, my, 20);
@@ -446,6 +586,7 @@ function drawWeaponLayer(
   }
 
   // fallback procedural
+  const barrel = gunBarrelLocal(w);
   const T = barrel.x;
   const th = 1.55;
 
@@ -520,7 +661,17 @@ function drawWeaponLayer(
     ctx.fillRect(T * 0.7, -2.5 * th, T * 0.32, 5 * th);
   }
 
-  drawGripHands(ctx, T);
+  if (gripHands) drawGripHands(ctx, T);
+
+  if (reloading) {
+    if (rp < 0.18) {
+      const t = rp / 0.18;
+      drawMag(magX, 2 + t * t * 36, t * 1.4, 1 - t * 0.35);
+    } else if (rp > 0.78) {
+      const t = (rp - 0.78) / 0.22;
+      drawMag(magX, (1 - t) * 22, (1 - t) * -0.35, 0.55 + t * 0.45);
+    }
+  }
 
   if (muzzleFlash) {
     const mx = barrel.x;
@@ -661,10 +812,32 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
       }
     }
 
-    // pernas grossas e curtas
-    ctx.fillStyle = "#0f0b10";
-    ctx.fillRect(-11 * s, 6 * s, 9 * s, 15 * s);
-    ctx.fillRect(2 * s, 6 * s, 9 * s, 15 * s);
+    // pernas grossas — balançam ao andar (fase do bob / passos)
+    const walk = chase ? Math.sin(tMs * 0.01 + en.id) : 0;
+    const stride = 7 * s;
+    const hipY = 6 * s;
+    const legLen = 15 * s;
+    ctx.strokeStyle = "#0f0b10";
+    ctx.lineWidth = 9 * s;
+    ctx.lineCap = "round";
+    // perna esquerda (atrasa quando walk > 0)
+    ctx.beginPath();
+    ctx.moveTo(-7 * s, hipY);
+    ctx.lineTo(-7 * s - walk * stride, hipY + legLen);
+    ctx.stroke();
+    // perna direita (oposta)
+    ctx.beginPath();
+    ctx.moveTo(7 * s, hipY);
+    ctx.lineTo(7 * s + walk * stride, hipY + legLen);
+    ctx.stroke();
+    // pés
+    ctx.fillStyle = "#0a080c";
+    ctx.beginPath();
+    ctx.ellipse(-7 * s - walk * stride, hipY + legLen + 1.5 * s, 5 * s, 2.2 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.ellipse(7 * s + walk * stride, hipY + legLen + 1.5 * s, 5 * s, 2.2 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
 
     // braços longos ANTES do torso (ficam atrás)
     ctx.strokeStyle = "#181016";
@@ -1000,6 +1173,52 @@ function drawGiantTargetMarks(
   }
 }
 
+function drawImpulseBoots(
+  ctx: CanvasRenderingContext2D,
+  legSwing: number,
+  scale: number,
+) {
+  // botas de energia nos pés (acompanham o passo)
+  const boot = (ox: number) => {
+    ctx.fillStyle = "#E07A3A";
+    ctx.fillRect(ox, 7.5 * scale, 5 * scale, 3.2 * scale);
+    ctx.fillStyle = "#F0C060";
+    ctx.fillRect(ox + 0.5 * scale, 8.2 * scale, 4 * scale, 1.2 * scale);
+    ctx.fillStyle = "rgba(255,200,80,0.55)";
+    ctx.fillRect(ox - 0.5 * scale, 9.5 * scale, 6 * scale, 1.2 * scale);
+  };
+  boot((-3 + legSwing) * scale);
+  boot((1 - legSwing) * scale);
+}
+
+function drawBoostTrail(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  vx: number,
+  vy: number,
+  tMs: number,
+) {
+  const spd = Math.hypot(vx, vy);
+  if (spd < 40) return;
+  const ux = -vx / spd;
+  const uy = -vy / spd;
+  const n = Math.min(5, 2 + Math.floor(spd / 120));
+  for (let i = 0; i < n; i++) {
+    const jitter = ((tMs * 0.02 + i * 17) % 7) - 3;
+    const dist = 10 + i * 9 + (tMs * 0.04 + i * 5) % 6;
+    const px = x + ux * dist + uy * jitter;
+    const py = y + uy * dist - ux * jitter;
+    const a = 0.45 - i * 0.07;
+    ctx.strokeStyle = `rgba(240,160,60,${a})`;
+    ctx.lineWidth = 2.2 - i * 0.25;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px + ux * 8, py + uy * 8);
+    ctx.stroke();
+  }
+}
+
 function drawPersonSide(
   ctx: CanvasRenderingContext2D,
   p: {
@@ -1012,6 +1231,10 @@ function drawPersonSide(
     stamina?: number;
     reloadProgress?: number;
     stunnedUntil?: number;
+    speedBoostUntil?: number;
+    shieldUntil?: number;
+    dashUntil?: number;
+    ability?: number;
     flashUntil?: number;
     vx?: number;
     vy?: number;
@@ -1039,8 +1262,65 @@ function drawPersonSide(
   /** ~3.5 tiles — leitura grande no mapa. */
   const CHAR_PX = 112;
   const CHAR = 5.0;
+  const bootsOn = (p.ability ?? 0) === 2;
+  const shieldCapeOn = (p.ability ?? 0) === 4;
+  const recoilCapeOn = (p.ability ?? 0) === 3;
+  const capeOn = shieldCapeOn || recoilCapeOn;
+  const boosted =
+    (p.speedBoostUntil ?? 0) > 0 && (p.speedBoostUntil ?? 0) > serverTime;
+  const shieldUp =
+    (p.shieldUntil ?? 0) > 0 && (p.shieldUntil ?? 0) > serverTime;
+  const dashing =
+    recoilCapeOn && (p.dashUntil ?? 0) > 0 && (p.dashUntil ?? 0) > serverTime;
 
   if (!p.alive) ctx.globalAlpha = 0.35;
+
+  // rastro fantasma no dash da Capa de Recuo
+  if (p.alive && dashing) {
+    const spd = Math.hypot(p.vx ?? 0, p.vy ?? 0) || 1;
+    const bx = -((p.vx ?? 0) / spd) * 16;
+    const by = -((p.vy ?? 0) / spd) * 16;
+    for (let g = 4; g >= 1; g--) {
+      ctx.globalAlpha = 0.1 * g;
+      ctx.fillStyle = g % 2 === 0 ? "#6a2848" : "#a03058";
+      ctx.beginPath();
+      ctx.ellipse(
+        p.x + kickX + bx * g * 0.6,
+        p.y + kickY + by * g * 0.6 + bob,
+        16 + g,
+        26 + g * 0.5,
+        0,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+    }
+    ctx.globalAlpha = p.alive ? 1 : 0.35;
+  }
+
+  // motion streak + rastro enquanto o boost está ativo
+  if (p.alive && boosted) {
+    drawBoostTrail(ctx, p.x + kickX, p.y + kickY, p.vx ?? 0, p.vy ?? 0, tMs);
+    const spd = Math.hypot(p.vx ?? 0, p.vy ?? 0) || 1;
+    const bx = -((p.vx ?? 0) / spd) * 14;
+    const by = -((p.vy ?? 0) / spd) * 14;
+    for (let g = 3; g >= 1; g--) {
+      ctx.globalAlpha = 0.12 * g;
+      ctx.fillStyle = "#E8A838";
+      ctx.beginPath();
+      ctx.ellipse(
+        p.x + kickX + bx * g * 0.55,
+        p.y + kickY + by * g * 0.55 + bob,
+        18,
+        28,
+        0,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+    }
+    ctx.globalAlpha = p.alive ? 1 : 0.35;
+  }
 
   ctx.fillStyle = LOSPEC.shadow;
   ctx.beginPath();
@@ -1059,8 +1339,73 @@ function drawPersonSide(
   ctx.translate(p.x + kickX, p.y + bob + kickY);
   ctx.scale(1, idleScale);
 
+  // Capas nas costas (equipada) — balança com o passo; Recuo estica no dash
+  if (capeOn && !shieldUp && p.alive) {
+    const moveAng = speed > 20 ? Math.atan2(p.vy ?? 0, p.vx ?? 0) : p.angle + Math.PI;
+    const drag = Math.sin(tMs * 0.012 + p.id) * (speed > 25 ? 0.2 : 0.07);
+    // capa "arrasta" atrás do movimento
+    const baseRot = recoilCapeOn
+      ? moveAng + Math.PI + drag * 0.5
+      : p.angle + Math.PI + drag;
+    const stretch = dashing ? 1.65 : 1;
+    const flare = dashing ? 1.25 : 1;
+    ctx.save();
+    ctx.rotate(baseRot);
+    ctx.scale(1, stretch);
+    if (recoilCapeOn) {
+      ctx.fillStyle = dashing ? "#8a2048" : "#5a1838";
+      ctx.beginPath();
+      ctx.moveTo(-7 * flare, 3);
+      ctx.quadraticCurveTo(-20 * flare, 24, -12 * flare, 42);
+      ctx.lineTo(12 * flare, 42);
+      ctx.quadraticCurveTo(20 * flare, 24, 7 * flare, 3);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = dashing ? "#c04070" : "#8a3060";
+      ctx.fillRect(-5, 5, 10, 16);
+      ctx.strokeStyle = "rgba(220,120,160,0.4)";
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+      if (dashing) {
+        ctx.fillStyle = "rgba(255,100,140,0.35)";
+        ctx.beginPath();
+        ctx.moveTo(-10, 36);
+        ctx.lineTo(0, 56);
+        ctx.lineTo(10, 36);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else {
+      ctx.fillStyle = "#3a4a58";
+      ctx.beginPath();
+      ctx.moveTo(-6, 4);
+      ctx.quadraticCurveTo(-18, 22, -10, 38);
+      ctx.lineTo(10, 38);
+      ctx.quadraticCurveTo(18, 22, 6, 4);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#5a7a90";
+      ctx.fillRect(-4, 6, 8, 14);
+      ctx.strokeStyle = "rgba(180,210,230,0.35)";
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // sprite dirs já traz as mãos do designer — não desenhar elipses por cima
+  const showGripHands = !dirs;
+
   if (gunBehind) {
-    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf);
+    drawWeaponLayer(
+      ctx,
+      p.weapon,
+      p.angle,
+      gunKick,
+      muzzle && isSelf,
+      showGripHands,
+      p.reloadProgress ?? 0,
+    );
   }
 
   if (dirs) {
@@ -1099,6 +1444,25 @@ function drawPersonSide(
       );
     }
     ctx.restore();
+    // botas por cima do sheet (pés ~bottom do sprite)
+    if (bootsOn) {
+      ctx.save();
+      if (facingLeft) ctx.scale(-1, 1);
+      const footY = CHAR_PX * 0.28;
+      const swing = legSwing * 2.2;
+      ctx.fillStyle = "#E07A3A";
+      ctx.fillRect(-22 + swing, footY, 16, 10);
+      ctx.fillRect(6 - swing, footY, 16, 10);
+      ctx.fillStyle = "#F0C060";
+      ctx.fillRect(-20 + swing, footY + 3, 12, 3);
+      ctx.fillRect(8 - swing, footY + 3, 12, 3);
+      if (boosted) {
+        ctx.fillStyle = "rgba(255,200,80,0.55)";
+        ctx.fillRect(-24 + swing, footY + 8, 20, 3);
+        ctx.fillRect(4 - swing, footY + 8, 20, 3);
+      }
+      ctx.restore();
+    }
   } else {
     // fallback: sheet lateral OU procedural
     ctx.save();
@@ -1118,10 +1482,19 @@ function drawPersonSide(
           : Math.floor((tMs / 1000) * speedFps) % anim.frames;
       const fs = anim.frameSize;
       drawSheetFrame(ctx, anim, frame, -fs / 2, -fs * 0.72, fs, fs);
+      if (bootsOn) {
+        ctx.fillStyle = "#E07A3A";
+        ctx.fillRect(-4 + legSwing * 0.2, 7.2, 4.5, 2.8);
+        ctx.fillRect(0.5 - legSwing * 0.2, 7.2, 4.5, 2.8);
+        ctx.fillStyle = "#F0C060";
+        ctx.fillRect(-3.5 + legSwing * 0.2, 8, 3.5, 1);
+        ctx.fillRect(1 - legSwing * 0.2, 8, 3.5, 1);
+      }
     } else {
       ctx.fillStyle = look.shoes;
       ctx.fillRect(-3 + legSwing, 8, 4, 3);
       ctx.fillRect(1 - legSwing, 8, 4, 3);
+      if (bootsOn) drawImpulseBoots(ctx, legSwing, 1);
       ctx.fillStyle = look.pants;
       ctx.fillRect(-2.5 + legSwing * 0.7, 1, 3.5, 8);
       ctx.fillRect(0.5 - legSwing * 0.7, 1, 3.5, 8);
@@ -1145,12 +1518,54 @@ function drawPersonSide(
   }
 
   if (!gunBehind) {
-    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf);
+    drawWeaponLayer(
+      ctx,
+      p.weapon,
+      p.angle,
+      gunKick,
+      muzzle && isSelf,
+      showGripHands,
+      p.reloadProgress ?? 0,
+    );
+  }
+
+  // Escudo aberto na FRENTE do corpo (por cima) — leque ~108° com a mira
+  if (shieldCapeOn && shieldUp && p.alive) {
+    const pulse = 0.75 + 0.25 * Math.sin(tMs * 0.02);
+    ctx.save();
+    ctx.rotate(p.angle);
+    ctx.translate(26, 0);
+    const half = Math.PI * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.arc(0, 0, 36, -half, half);
+    ctx.closePath();
+    const grad = ctx.createRadialGradient(4, 0, 4, 10, 0, 38);
+    grad.addColorStop(0, `rgba(160,190,210,${0.6 * pulse})`);
+    grad.addColorStop(0.55, `rgba(70,100,120,${0.55 * pulse})`);
+    grad.addColorStop(1, "rgba(40,55,70,0.12)");
+    ctx.fillStyle = grad;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(200,230,255,${0.8 * pulse})`;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(180,210,230,${0.4 * pulse})`;
+    ctx.lineWidth = 1;
+    for (let i = -2; i <= 2; i++) {
+      const a = (i / 2) * half * 0.85;
+      ctx.beginPath();
+      ctx.moveTo(2, 0);
+      ctx.lineTo(Math.cos(a) * 34, Math.sin(a) * 34);
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   if (isSelf) {
-    ctx.strokeStyle = "rgba(77,155,230,0.65)";
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = shieldUp
+      ? "rgba(160,210,240,0.9)"
+      : "rgba(77,155,230,0.65)";
+    ctx.lineWidth = shieldUp ? 2.2 : 1.5;
     ctx.strokeRect(-CHAR_PX / 2 - 2, -CHAR_PX * 0.65, CHAR_PX + 4, CHAR_PX + 8);
   }
 
@@ -1159,6 +1574,18 @@ function drawPersonSide(
   if (isSelf && p.alive) {
     const headY = p.y + bob + kickY - CHAR_PX * 0.72;
     drawHeadBars(ctx, p.x + kickX, headY, p.stamina ?? MAX_STAMINA, p.reloadProgress ?? 0);
+  }
+
+  // contorno de escudo ativo (próprio e remotos)
+  if (p.alive && shieldUp) {
+    ctx.save();
+    ctx.translate(p.x + kickX, p.y + bob + kickY);
+    ctx.strokeStyle = "rgba(170,210,240,0.55)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(0, -8, 36, 42, 0, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
   }
 
   if (p.alive && (p.stunnedUntil ?? 0) > serverTime) {
@@ -1302,7 +1729,7 @@ export function tickFx(fx: FxPool[], dtMs: number): FxPool[] {
 }
 
 export function createFeel(): FeelState {
-  return { gunKick: 0, bodyKick: 0, shake: 0, shells: [] };
+  return { gunKick: 0, bodyKick: 0, shake: 0, hurt: 0, shells: [] };
 }
 
 export function pulseShotFeel(feel: FeelState, weapon: number, isSelf: boolean) {
@@ -1329,6 +1756,7 @@ export function tickFeel(
 ) {
   feel.gunKick = Math.max(0, feel.gunKick - dtMs / 90);
   feel.bodyKick = Math.max(0, feel.bodyKick - dtMs / 60);
+  feel.hurt = Math.max(0, feel.hurt - dtMs / 250);
   feel.shake *= Math.exp(-dtMs / 40);
   if (feel.shake < 0.05) feel.shake = 0;
   const next: ShellCas[] = [];
@@ -1427,7 +1855,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   drawGround(ctx);
   view.drawDecals(ctx);
   view.drawAbilityGround(ctx);
-  drawSolids(ctx);
+  drawSolids(ctx, camX, camY, viewW, viewH);
   drawDoors(ctx, view.doorsBits, view.doorAnim);
 
   // drops de munição
@@ -1467,6 +1895,59 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       ctx.fillRect(d.x - 36, d.y - 5 + bob, 72, 10);
       ctx.fillStyle = w.accent;
       ctx.fillRect(d.x - 36, d.y - 5 + bob, 16, 10);
+    }
+  }
+
+  // drops de habilidade (Survival) — bota ou capa
+  for (const d of view.abilityDrops ?? []) {
+    const bob = Math.sin(tMs * 0.007 + d.id * 2.1) * 3.5;
+    const pulse = 0.55 + 0.45 * Math.sin(tMs * 0.008 + d.id);
+    ctx.fillStyle = LOSPEC.shadow;
+    ctx.beginPath();
+    ctx.ellipse(d.x, d.y + 8, 12, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    if (d.abilityId === 4) {
+      ctx.fillStyle = `rgba(120,170,210,${0.28 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#3a4a58";
+      ctx.beginPath();
+      ctx.moveTo(d.x - 8, d.y - 2 + bob);
+      ctx.quadraticCurveTo(d.x - 14, d.y + 14 + bob, d.x - 4, d.y + 16 + bob);
+      ctx.lineTo(d.x + 4, d.y + 16 + bob);
+      ctx.quadraticCurveTo(d.x + 14, d.y + 14 + bob, d.x + 8, d.y - 2 + bob);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#8ab0c8";
+      ctx.fillRect(d.x - 5, d.y - 4 + bob, 10, 6);
+    } else if (d.abilityId === 3) {
+      ctx.fillStyle = `rgba(180,60,100,${0.28 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#5a1838";
+      ctx.beginPath();
+      ctx.moveTo(d.x - 8, d.y - 2 + bob);
+      ctx.quadraticCurveTo(d.x - 14, d.y + 14 + bob, d.x - 4, d.y + 16 + bob);
+      ctx.lineTo(d.x + 4, d.y + 16 + bob);
+      ctx.quadraticCurveTo(d.x + 14, d.y + 14 + bob, d.x + 8, d.y - 2 + bob);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = "#c04070";
+      ctx.fillRect(d.x - 5, d.y - 4 + bob, 10, 6);
+    } else {
+      ctx.fillStyle = `rgba(240,160,60,${0.25 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#E07A3A";
+      ctx.fillRect(d.x - 8, d.y - 4 + bob, 16, 10);
+      ctx.fillStyle = "#F0C060";
+      ctx.fillRect(d.x - 6, d.y - 1 + bob, 12, 3);
+      ctx.fillStyle = "#2a2010";
+      ctx.fillRect(d.x - 7, d.y + 4 + bob, 5, 3);
+      ctx.fillRect(d.x + 2, d.y + 4 + bob, 5, 3);
     }
   }
 
@@ -1595,10 +2076,57 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     drawVisionMask(ctx, view.local.x, view.local.y, view.doorsBits);
   }
 
-  if (view.damageFlash > 0 || view.hitFlashSelf) {
-    ctx.strokeStyle = `rgba(180,20,20,${0.25 * Math.max(view.damageFlash, view.hitFlashSelf ? 1 : 0)})`;
-    ctx.lineWidth = 18;
-    ctx.strokeRect(camX + 8, camY + 8, viewW - 16, viewH - 16);
+  const hurt = Math.max(view.feel.hurt, view.damageFlash, view.hitFlashSelf ? 0.55 : 0);
+  if (hurt > 0.02) {
+    // vinheta de dano nas bordas
+    const g = ctx.createRadialGradient(
+      camX + viewW / 2,
+      camY + viewH / 2,
+      Math.min(viewW, viewH) * 0.28,
+      camX + viewW / 2,
+      camY + viewH / 2,
+      Math.max(viewW, viewH) * 0.72,
+    );
+    g.addColorStop(0, "rgba(180,20,20,0)");
+    g.addColorStop(1, `rgba(160,10,10,${0.55 * hurt})`);
+    ctx.fillStyle = g;
+    ctx.fillRect(camX, camY, viewW, viewH);
+    ctx.strokeStyle = `rgba(200,30,30,${0.4 * hurt})`;
+    ctx.lineWidth = 14 + hurt * 10;
+    ctx.strokeRect(camX + 6, camY + 6, viewW - 12, viewH - 12);
+  }
+
+  // indicadores direcionais — perto da cabeça, um pouco afastados na direção do tiro
+  const nowMs = view.nowMs ?? performance.now();
+  if (view.local && (view.dmgArrows?.length ?? 0) > 0) {
+    const headX = view.local.x;
+    const headY = view.local.y - 28; // altura da cabeça (sprite em pé)
+    const ring = 88; // bem afastado da cabeça, ainda perto do personagem
+    for (const arr of view.dmgArrows!) {
+      const age = nowMs - arr.at;
+      if (age < 0 || age > 800) continue;
+      const life = 1 - age / 800;
+      const dx = Math.cos(arr.angle);
+      const dy = Math.sin(arr.angle);
+      const px = headX + dx * ring;
+      const py = headY + dy * ring;
+      ctx.save();
+      ctx.translate(px, py);
+      ctx.rotate(arr.angle);
+      ctx.globalAlpha = 0.4 + life * 0.6;
+      ctx.fillStyle = "#e04030";
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(11, 0);
+      ctx.lineTo(-8, 8);
+      ctx.lineTo(-4, 0);
+      ctx.lineTo(-8, -8);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
   }
 
   if (view.flashBlind > 0) {
@@ -1607,6 +2135,32 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   }
 
   ctx.restore(); // clip da janela da câmera
+
+  // hitmarker no centro da tela (espaço tela)
+  const hm = view.hitMarker ?? 0;
+  if (hm > 0.02) {
+    const sw = ctx.canvas.clientWidth || ctx.canvas.width;
+    const sh = ctx.canvas.clientHeight || ctx.canvas.height;
+    const mx = sw / 2;
+    const my = sh / 2;
+    const s = 7 + (1 - hm) * 4;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalAlpha = hm;
+    ctx.strokeStyle = "#e8efe9";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(mx - s, my - s);
+    ctx.lineTo(mx - s * 0.25, my - s * 0.25);
+    ctx.moveTo(mx + s, my - s);
+    ctx.lineTo(mx + s * 0.25, my - s * 0.25);
+    ctx.moveTo(mx - s, my + s);
+    ctx.lineTo(mx - s * 0.25, my + s * 0.25);
+    ctx.moveTo(mx + s, my + s);
+    ctx.lineTo(mx + s * 0.25, my + s * 0.25);
+    ctx.stroke();
+    ctx.restore();
+  }
 
   void doorsFromBits;
   void dpr;

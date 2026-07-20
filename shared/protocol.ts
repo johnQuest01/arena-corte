@@ -58,6 +58,16 @@ export interface PlayerState {
   abilityCdUntil: number;
   /** serverTime até quando está silenciado (não atira); 0 = livre */
   stunnedUntil: number;
+  /** serverTime até quando o boost de Botas acaba; 0 = sem boost */
+  speedBoostUntil: number;
+  /** serverTime até quando a Capa-Escudo acaba; 0 = sem escudo */
+  shieldUntil: number;
+  /** Capa de Recuo: cargas atuais (0..DASH_MAX_CHARGES) */
+  dashCharges: number;
+  /** serverTime em que a próxima carga volta; 0 = cheio */
+  dashRechargeAt: number;
+  /** serverTime até o fim da janela visual do dash */
+  dashUntil: number;
 }
 export interface BulletState {
   id: number;
@@ -105,7 +115,9 @@ export type EventKind =
   | "enemyDeath"
   | "giantSpawn"
   | "giantHit"
-  | "giantExpire";
+  | "giantExpire"
+  | "abilityDropSpawn"
+  | "abilityDropTaken";
 export interface TickEvent {
   kind: EventKind;
   a: number;
@@ -242,6 +254,8 @@ const EVENT_KIND: Record<EventKind, number> = {
   giantSpawn: 19,
   giantHit: 20,
   giantExpire: 21,
+  abilityDropSpawn: 22,
+  abilityDropTaken: 23,
 };
 const KIND_FROM: EventKind[] = [
   "shot",
@@ -266,8 +280,11 @@ const KIND_FROM: EventKind[] = [
   "giantSpawn",
   "giantHit",
   "giantExpire",
+  "abilityDropSpawn",
+  "abilityDropTaken",
 ];
-const PLAYER_BYTES = 41;
+/** 41 + boost/shield (4) + dashCharges(1) + dashRechargeLeft(2) + dashUntilLeft(2) */
+const PLAYER_BYTES = 50;
 const BULLET_BYTES = 28;
 const THROW_BYTES = 24;
 const EVENT_BYTES = 18;
@@ -364,9 +381,34 @@ export function encodeSnapshot(s: Snapshot): ArrayBuffer {
     v.setUint8(o++, (p.ability ?? 0) & 0xff);
     const cdLeft = Math.max(0, Math.min(65535, Math.round((p.abilityCdUntil ?? 0) - s.serverTime)));
     const stunLeft = Math.max(0, Math.min(65535, Math.round((p.stunnedUntil ?? 0) - s.serverTime)));
+    const boostLeft = Math.max(
+      0,
+      Math.min(65535, Math.round((p.speedBoostUntil ?? 0) - s.serverTime)),
+    );
+    const shieldLeft = Math.max(
+      0,
+      Math.min(65535, Math.round((p.shieldUntil ?? 0) - s.serverTime)),
+    );
+    const dashRechargeLeft = Math.max(
+      0,
+      Math.min(65535, Math.round((p.dashRechargeAt ?? 0) - s.serverTime)),
+    );
+    const dashUntilLeft = Math.max(
+      0,
+      Math.min(65535, Math.round((p.dashUntil ?? 0) - s.serverTime)),
+    );
     v.setUint16(o, cdLeft, true);
     o += 2;
     v.setUint16(o, stunLeft, true);
+    o += 2;
+    v.setUint16(o, boostLeft, true);
+    o += 2;
+    v.setUint16(o, shieldLeft, true);
+    o += 2;
+    v.setUint8(o++, Math.max(0, Math.min(255, (p.dashCharges ?? 0) | 0)));
+    v.setUint16(o, dashRechargeLeft, true);
+    o += 2;
+    v.setUint16(o, dashUntilLeft, true);
     o += 2;
   }
   for (const b of s.bullets) {
@@ -481,6 +523,15 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     o += 2;
     const stunLeft = v.getUint16(o, true);
     o += 2;
+    const boostLeft = v.getUint16(o, true);
+    o += 2;
+    const shieldLeft = v.getUint16(o, true);
+    o += 2;
+    const dashCharges = v.getUint8(o++);
+    const dashRechargeLeft = v.getUint16(o, true);
+    o += 2;
+    const dashUntilLeft = v.getUint16(o, true);
+    o += 2;
     players.push({
       id,
       x,
@@ -500,6 +551,11 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
       ability,
       abilityCdUntil: serverTime + cdLeft,
       stunnedUntil: serverTime + stunLeft,
+      speedBoostUntil: serverTime + boostLeft,
+      shieldUntil: serverTime + shieldLeft,
+      dashCharges,
+      dashRechargeAt: dashRechargeLeft > 0 ? serverTime + dashRechargeLeft : 0,
+      dashUntil: dashUntilLeft > 0 ? serverTime + dashUntilLeft : 0,
     });
   }
   const bullets: BulletState[] = [];

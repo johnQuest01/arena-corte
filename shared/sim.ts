@@ -19,8 +19,16 @@ import {
   TICK_MS,
 } from "./constants";
 import {
+  ABILITY_DROP_IDS,
   abilityOf,
+  DASH_BURST_DT,
+  DASH_MAX_CHARGES,
+  isFrontalShieldHit,
   selectAbilityTargets,
+  SHIELD_SPEED_MUL,
+  SPRINT_BOOTS_SPEED_MUL,
+  tickDashCharges,
+  tryAutoRecoilCape,
   type AbilityCtx,
   type AbilityTargetRef,
 } from "./abilities";
@@ -105,6 +113,8 @@ export interface SimPlayer extends PlayerState {
   reloadingUntil: number;
   /** munição independente por arma */
   ammoBank: AmmoStack[];
+  /** Capa de Recuo: próximo auto-dodge permitido (não vai no wire) */
+  dashAutoReadyAt?: number;
 }
 
 /** PlayerState + campos locais de sim/prediction (não vão no snapshot). */
@@ -113,6 +123,7 @@ export type SimLikePlayer = PlayerState & {
   reloadingUntil?: number;
   ammoBank?: AmmoStack[];
   flashUntil?: number;
+  dashAutoReadyAt?: number;
 };
 
 function ensureAmmoBank(p: SimLikePlayer): AmmoStack[] {
@@ -143,6 +154,13 @@ export interface WeaponDrop {
   reserve: number;
   spawnAt: number;
 }
+export interface AbilityDrop {
+  id: number;
+  x: number;
+  y: number;
+  abilityId: number;
+  spawnAt: number;
+}
 export interface GameSim {
   tick: number;
   serverTime: number;
@@ -158,12 +176,14 @@ export interface GameSim {
   doors: SimDoor[];
   ammoDrops: AmmoDrop[];
   weaponDrops: WeaponDrop[];
+  abilityDrops: AbilityDrop[];
   enemies: Enemy[];
   waves: WaveManager;
   nextBulletId: number;
   nextThrowId: number;
   nextDropId: number;
   nextDropAt: number;
+  nextAbilityDropAt: number;
   events: TickEvent[];
 }
 function clamp(v: number, a: number, b: number) {
@@ -187,12 +207,14 @@ export function createSim(): GameSim {
     doors: DOOR_DEFS.map((d) => ({ id: d.id, open: false, lastUseAt: 0 })),
     ammoDrops: [],
     weaponDrops: [],
+    abilityDrops: [],
     enemies: [],
     waves: createWaveManager(),
     nextBulletId: 1,
     nextThrowId: 1,
     nextDropId: 1,
     nextDropAt: 0,
+    nextAbilityDropAt: 0,
     events: [],
   };
 }
@@ -223,6 +245,11 @@ export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
     ability: 0,
     abilityCdUntil: 0,
     stunnedUntil: 0,
+    speedBoostUntil: 0,
+    shieldUntil: 0,
+    dashCharges: DASH_MAX_CHARGES,
+    dashRechargeAt: 0,
+    dashUntil: 0,
     ammoBank,
     respawnAt: 0,
     inputQueue: [],
@@ -244,13 +271,74 @@ export function queueInput(sim: GameSim, playerId: number, input: PlayerInput) {
   p.inputQueue.push(input);
   p.inputQueue.sort((a, b) => a.seq - b.seq);
 }
+/** Capa de Recuo estilo Cloak of Levitation — auto-fuga autoritativa. */
+function tickAutoRecoilCapes(sim: GameSim, doorBits: number) {
+  const now = sim.serverTime;
+  for (const p of sim.players) {
+    if (!p.alive || (p.ability ?? 0) !== 3) continue;
+    if (p.stunnedUntil > 0 && now < p.stunnedUntil) continue;
+    const did = tryAutoRecoilCape(p, now, sim.bullets, sim.enemies);
+    if (!did) continue;
+    // deslocamento imediato pra sair da trajetória neste tick
+    const slid = moveAndSlide(p.x, p.y, p.vx, p.vy, DASH_BURST_DT, PLAYER_R, doorBits);
+    p.x = slid.x;
+    p.y = slid.y;
+    sim.events.push({
+      kind: "ability",
+      a: p.id,
+      b: 3,
+      x: p.x,
+      y: p.y,
+      angle: p.angle,
+      weaponId: 3,
+    });
+  }
+}
+
 function tryCastAbility(sim: GameSim, p: SimPlayer) {
   const now = sim.serverTime;
   if (!p.alive) return;
   if (p.stunnedUntil > 0 && now < p.stunnedUntil) return;
-  if (p.abilityCdUntil > 0 && now < p.abilityCdUntil) return;
   const ab = abilityOf(p.ability ?? 0);
+  // Capa de Recuo (id 3): CD via cargas — ignora abilityCdUntil
+  if (ab.id !== 3 && p.abilityCdUntil > 0 && now < p.abilityCdUntil) return;
   const bits = doorBitsOf(sim);
+
+  const emitAbility = (abilityId: number) => {
+    sim.events.push({
+      kind: "ability",
+      a: p.id,
+      b: abilityId,
+      x: p.x,
+      y: p.y,
+      angle: p.angle,
+      weaponId: abilityId,
+    });
+  };
+
+  // Self-buffs (Botas / Capa Recuo / Capa-Escudo) — sem alvos / jato
+  if (ab.id === 2 || ab.id === 3 || ab.id === 4) {
+    const ctx: AbilityCtx = {
+      didCast: false,
+      mode: sim.mode,
+      emit: (ev) => {
+        sim.events.push({
+          kind: "ability",
+          a: ev.casterId,
+          b: ev.abilityId,
+          x: ev.x,
+          y: ev.y,
+          angle: ev.angle,
+          weaponId: ev.abilityId,
+        });
+      },
+    };
+    ab.apply(p, [], now, ctx);
+    if (!ctx.didCast) return;
+    if (ab.id !== 3) p.abilityCdUntil = now + ab.cooldownMs;
+    emitAbility(ab.id);
+    return;
+  }
 
   if (ab.id === 1) {
     const candidates: AbilityTargetRef[] = [];
@@ -304,14 +392,7 @@ function tryCastAbility(sim: GameSim, p: SimPlayer) {
     ab.apply(p, [], now, ctx);
     if (!ctx.didCast) return;
     p.abilityCdUntil = now + ab.cooldownMs;
-    ctx.emit({
-      kind: "ability",
-      abilityId: 1,
-      x: p.x,
-      y: p.y,
-      angle: p.angle,
-      casterId: p.id,
-    });
+    emitAbility(1);
     return;
   }
 
@@ -451,7 +532,13 @@ export function applyInput(
   if (p.reloadingUntil == null) p.reloadingUntil = 0;
   if (p.abilityCdUntil == null) p.abilityCdUntil = 0;
   if (p.stunnedUntil == null) p.stunnedUntil = 0;
+  if (p.speedBoostUntil == null) p.speedBoostUntil = 0;
+  if (p.shieldUntil == null) p.shieldUntil = 0;
+  if (p.dashCharges == null) p.dashCharges = DASH_MAX_CHARGES;
+  if (p.dashRechargeAt == null) p.dashRechargeAt = 0;
+  if (p.dashUntil == null) p.dashUntil = 0;
   if (p.ability == null) p.ability = 0;
+  tickDashCharges(p, now);
   if (input.ability != null && input.ability >= 0) {
     p.ability = input.ability & 0xff;
   }
@@ -496,6 +583,13 @@ export function applyInput(
   } else {
     p.stamina = Math.min(MAX_STAMINA, p.stamina + STAMINA_REGEN_PER_S * dt);
     if (p.stamina < TIRED_THRESHOLD) speedMult = TIRED_MULT;
+  }
+  if (p.speedBoostUntil > 0 && now < p.speedBoostUntil) {
+    speedMult *= SPRINT_BOOTS_SPEED_MUL;
+  }
+  // Capa-Escudo: protegido mas lento (trade-off)
+  if (p.shieldUntil > 0 && now < p.shieldUntil) {
+    speedMult *= SHIELD_SPEED_MUL;
   }
   const speed = MOVE_SPEED * speedMult;
   // movimento + knockback residual em vx/vy (habilidades somam impulso)
@@ -608,6 +702,11 @@ export function startMatch(sim: GameSim) {
     p.ability = 0;
     p.abilityCdUntil = 0;
     p.stunnedUntil = 0;
+    p.speedBoostUntil = 0;
+    p.shieldUntil = 0;
+    p.dashCharges = DASH_MAX_CHARGES;
+    p.dashRechargeAt = 0;
+    p.dashUntil = 0;
     p.respawnAt = 0;
     p.flashUntil = 0;
     p.inputQueue = [];
@@ -615,7 +714,9 @@ export function startMatch(sim: GameSim) {
   });
   sim.ammoDrops = [];
   sim.weaponDrops = [];
+  sim.abilityDrops = [];
   sim.nextDropAt = 2000 + Math.random() * 4000;
+  sim.nextAbilityDropAt = 8000 + Math.random() * 6000;
   if (sim.mode === 1) startWaves(sim.waves, sim.serverTime);
   return true;
 }
@@ -721,6 +822,22 @@ function spawnPellets(
       if (hit) {
         const target = sim.players.find((t) => t.id === hit.hitId);
         if (target && target.alive) {
+          const nowHit = sim.serverTime;
+          if (
+            target.shieldUntil > 0 &&
+            nowHit < target.shieldUntil &&
+            isFrontalShieldHit(target.angle, target.x, target.y, ox, oy)
+          ) {
+            sim.events.push({
+              kind: "hit",
+              a: p.id,
+              b: 253,
+              x: hit.x,
+              y: hit.y,
+              weaponId: weapon,
+            });
+            continue;
+          }
           damagePlayer(sim, target, wpn.damage, p.id, weapon);
           sim.events.push({
             kind: "hit",
@@ -790,6 +907,11 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
       p.reloadingUntil = 0;
       p.abilityCdUntil = 0;
       p.stunnedUntil = 0;
+      p.speedBoostUntil = 0;
+      p.shieldUntil = 0;
+      p.dashCharges = DASH_MAX_CHARGES;
+      p.dashRechargeAt = 0;
+      p.dashUntil = 0;
       p.respawnAt = 0;
       sim.events.push({ kind: "respawn", a: p.id, b: 0, x: p.x, y: p.y });
     }
@@ -881,9 +1003,10 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     if (Math.abs(p.vy) < 3) p.vy = 0;
   }
 
-  // drops de munição
+  // drops de munição / armas / habilidades (survival)
   tickAmmoDrops(sim, dt);
   tickWeaponDrops(sim, dt);
+  tickAbilityDrops(sim, dt);
 
   // Ninguém fica trancado: se o player está DENTRO, a porta da casa abre
   for (const def of DOOR_DEFS) {
@@ -941,6 +1064,8 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     }
   }
   const bitsAfter = doorBitsOf(sim);
+  // Capa de Recuo inteligente: auto-fuga de balas ANTES do hit-test
+  tickAutoRecoilCapes(sim, bitsAfter);
   const keepB: BulletState[] = [];
   for (const b of sim.bullets) {
     b.px = b.x;
@@ -997,6 +1122,24 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
         const hx = t.x;
         const hy = t.y + PLAYER_HIT_Y;
         if (Math.hypot(hx - b.x, hy - b.y) < PLAYER_HIT_R + BULLET_R) {
+          // Capa-Escudo: anula projétil no arco frontal (~108°)
+          const nowHit = sim.serverTime;
+          if (
+            t.shieldUntil > 0 &&
+            nowHit < t.shieldUntil &&
+            isFrontalShieldHit(t.angle, t.x, t.y, b.px, b.py)
+          ) {
+            sim.events.push({
+              kind: "hit",
+              a: b.owner,
+              b: 253, // sentinela: bloqueio (faísca, sem sangue)
+              x: b.x,
+              y: b.y,
+              weaponId: b.weapon,
+            });
+            consumed = true;
+            break;
+          }
           damagePlayer(sim, t, dmg, b.owner, b.weapon);
           sim.events.push({
             kind: "hit",
@@ -1045,6 +1188,9 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     s.life -= dt * 1000;
     return s.life > 0;
   });
+
+  // Capa de Recuo: auto-fuga de Gigante/chefe antes do passo de ataque
+  tickAutoRecoilCapes(sim, doorBitsOf(sim));
 
   // Gigante existe nos dois modos
   stepGiants(sim.enemies, dt, makeEnemyCtx(sim));
@@ -1108,12 +1254,14 @@ function makeEnemyCtx(sim: GameSim) {
       if (!en) return null;
       return { x: en.x, y: en.y, alive: en.state !== 3 && en.hp > 0 };
     },
-    findRivalGiant: (myOwnerId: number, x: number, y: number) => {
+    findRivalGiant: (myOwnerId: number, x: number, y: number, maxDist?: number) => {
       let best: { id: number; x: number; y: number } | null = null;
       let bestD = Infinity;
+      const limit = maxDist ?? Infinity;
       for (const en of sim.enemies) {
         if (en.type !== 2 || en.state === 3 || en.ownerId === myOwnerId) continue;
         const d = Math.hypot(en.x - x, en.y - y);
+        if (d > limit) continue;
         if (d < bestD) {
           bestD = d;
           best = { id: en.id, x: en.x, y: en.y };
@@ -1121,7 +1269,43 @@ function makeEnemyCtx(sim: GameSim) {
       }
       return best;
     },
-    pickGiantRetarget: (ownerId: number, x: number, y: number) => {
+    pickGiantRetarget: (
+      ownerId: number,
+      x: number,
+      y: number,
+      primaryId?: number,
+      primaryKind?: 0 | 1 | 2,
+    ) => {
+      // 1) rival perto do conjurador — proteger o owner
+      const owner = sim.players.find((p) => p.id === ownerId);
+      if (owner?.alive) {
+        let bestRival: { id: number; kind: 2 } | null = null;
+        let bestRD = Infinity;
+        for (const en of sim.enemies) {
+          if (en.type !== 2 || en.state === 3 || en.ownerId === ownerId) continue;
+          const d = Math.hypot(en.x - owner.x, en.y - owner.y);
+          if (d < 360 && d < bestRD) {
+            bestRD = d;
+            bestRival = { id: en.id, kind: 2 };
+          }
+        }
+        if (bestRival) return bestRival;
+      }
+
+      // 2) alvo da mira ainda existe? (caso edge de resolve falho)
+      if (primaryId != null && primaryId >= 0 && primaryKind != null) {
+        if (primaryKind === 0) {
+          const pl = sim.players.find((p) => p.id === primaryId);
+          if (pl?.alive) return { id: primaryId, kind: 0 as const };
+        } else if (primaryKind === 1 || primaryKind === 2) {
+          const en = sim.enemies.find((e) => e.id === primaryId);
+          if (en && en.state !== 3 && en.hp > 0) {
+            return { id: primaryId, kind: primaryKind };
+          }
+        }
+      }
+
+      // 3) fallback: mais perto (player > rival > monstro)
       let best: { id: number; kind: 0 | 1 | 2 } | null = null;
       let bestD = Infinity;
       for (const o of sim.players) {
@@ -1378,6 +1562,11 @@ export function toSnapshot(sim: GameSim): Snapshot {
       ability: p.ability ?? 0,
       abilityCdUntil: p.abilityCdUntil ?? 0,
       stunnedUntil: p.stunnedUntil ?? 0,
+      speedBoostUntil: p.speedBoostUntil ?? 0,
+      shieldUntil: p.shieldUntil ?? 0,
+      dashCharges: p.dashCharges ?? DASH_MAX_CHARGES,
+      dashRechargeAt: p.dashRechargeAt ?? 0,
+      dashUntil: p.dashUntil ?? 0,
     })),
     bullets: sim.bullets.map((b) => ({ ...b })),
     throwables: sim.throwables.map((t) => ({ ...t })),
@@ -1476,6 +1665,66 @@ function tickWeaponDrops(sim: GameSim, _dt: number) {
         weaponId: d.weaponId,
       });
       sim.weaponDrops.splice(i, 1);
+    }
+  }
+}
+
+function tickAbilityDrops(sim: GameSim, _dt: number) {
+  // só Survival — Botas (e futuros poderes) no chão
+  if (sim.mode !== 1) {
+    sim.abilityDrops = [];
+    return;
+  }
+  sim.abilityDrops = sim.abilityDrops.filter((d) => sim.serverTime - d.spawnAt <= 40000);
+
+  if (sim.nextAbilityDropAt <= 0) {
+    sim.nextAbilityDropAt = sim.serverTime + 10000 + Math.random() * 8000;
+  }
+  if (sim.serverTime >= sim.nextAbilityDropAt && sim.abilityDrops.length < 3) {
+    const pos = pickDropTile();
+    if (pos) {
+      const pool = ABILITY_DROP_IDS;
+      const abilityId = pool[Math.floor(Math.random() * pool.length)]!;
+      const drop: AbilityDrop = {
+        id: sim.nextDropId++ & 0xff,
+        x: pos.x,
+        y: pos.y,
+        abilityId,
+        spawnAt: sim.serverTime,
+      };
+      sim.abilityDrops.push(drop);
+      sim.events.push({
+        kind: "abilityDropSpawn",
+        a: drop.id,
+        b: drop.abilityId,
+        x: drop.x,
+        y: drop.y,
+        weaponId: drop.abilityId,
+      });
+    }
+    sim.nextAbilityDropAt = sim.serverTime + 14000 + Math.random() * 10000;
+  }
+
+  for (const p of sim.players) {
+    if (!p.alive) continue;
+    for (let i = sim.abilityDrops.length - 1; i >= 0; i--) {
+      const d = sim.abilityDrops[i]!;
+      if (Math.hypot(p.x - d.x, p.y - d.y) > 16) continue;
+      p.ability = d.abilityId & 0xff;
+      if (d.abilityId === 3) {
+        p.dashCharges = DASH_MAX_CHARGES;
+        p.dashRechargeAt = 0;
+        p.dashUntil = 0;
+      }
+      sim.events.push({
+        kind: "abilityDropTaken",
+        a: d.id,
+        b: p.id,
+        x: d.x,
+        y: d.y,
+        weaponId: d.abilityId,
+      });
+      sim.abilityDrops.splice(i, 1);
     }
   }
 }

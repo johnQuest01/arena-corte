@@ -21,7 +21,8 @@ export class CloudTransport implements Transport {
     this.socket = new PartySocket({
       host: this.opts.host,
       room: this.opts.room,
-      party: "GameRoom",
+      // PartyServer mapeia o binding GameRoom → "game-room"
+      party: "game-room",
       query: this.opts.region ? { region: this.opts.region } : undefined,
     });
     this.socket.binaryType = "arraybuffer";

@@ -18,6 +18,8 @@ const NAMES = [
   "giant_roar",
   "giant_roar_short",
   "giant_hit",
+  "boost",
+  "block",
 ] as const;
 
 export type SfxName = (typeof NAMES)[number] | string;
@@ -187,7 +189,8 @@ export function playSfx(
   } else if (!buf && name === "giant_hit") buf = buffers.get("hit_flesh");
   if (!buf) {
     if (name === "empty_click" || name === "pickup" || name === "reload") synthClick();
-    if (name === "water_whoosh") synthWhoosh();
+    if (name === "water_whoosh" || name === "boost") synthWhoosh();
+    if (name === "block") synthClick();
     if (name === "splash") synthSplash();
     if (name === "giant_step") synthGiant("step", 0.9);
     if (name === "giant_roar") synthGiant("roar", 1);

@@ -83,7 +83,7 @@ export const ENEMY_DEFS: Record<EnemyType, EnemyDef> = {
     hitRadius: 36,
     hitY: -12,
     aggroRange: 99999,
-    attackRange: 52,
+    attackRange: 64,
     attackDamage: 999,
     windupMs: 150,
     cooldownMs: 0,
@@ -108,6 +108,12 @@ export interface Enemy {
   targetId: number;
   /** 0 = player, 1 = monstro, 2 = Gigante rival (só Gigante) */
   targetKind: 0 | 1 | 2;
+  /**
+   * Alvo travado na invocação (mira do conjurador).
+   * Rival perto do owner pode interromper; depois volta pra cá.
+   */
+  primaryTargetId: number;
+  primaryTargetKind: 0 | 1 | 2;
   /** conjurador (só Gigante; -1 nos demais) */
   ownerId: number;
   /** serverTime em que some (só Gigante) */
@@ -227,10 +233,38 @@ function pickTarget(
   return best;
 }
 
+/**
+ * Spawn perto do grupo (anel 280–560 px) — mapa grande não pode
+ * jogar inimigos em cantos vazios. Fallback: borda do mapa.
+ */
 function spawnPointAwayFromPlayers(
   players: { x: number; y: number; alive: boolean }[],
 ): { x: number; y: number } {
-  const margin = 48;
+  const alive = players.filter((p) => p.alive);
+  const margin = 64;
+  const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
+
+  if (alive.length > 0) {
+    const anchor = alive[Math.floor(Math.random() * alive.length)]!;
+    for (let i = 0; i < 28; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const d = 280 + Math.random() * 280;
+      const x = clamp(anchor.x + Math.cos(ang) * d, margin, ARENA_W - margin);
+      const y = clamp(anchor.y + Math.sin(ang) * d, margin, ARENA_H - margin);
+      // fora demais de outros players (não em cima da cabeça)
+      let tooClose = false;
+      for (const p of alive) {
+        if (Math.hypot(p.x - x, p.y - y) < 160) {
+          tooClose = true;
+          break;
+        }
+      }
+      if (tooClose) continue;
+      if (!hitsSolid(x, y, 12, 0)) return { x, y };
+    }
+  }
+
+  // fallback: bordas (mapa antigo)
   const edges: { x: number; y: number }[] = [
     { x: margin, y: ARENA_H * 0.25 },
     { x: margin, y: ARENA_H * 0.5 },
@@ -304,19 +338,30 @@ export interface EnemySimCtx {
     knockX: number,
     knockY: number,
   ) => void;
-  /** Gigante rival mais próximo (outro owner) — duelo */
+  /**
+   * Gigante rival mais próximo de (x,y).
+   * `maxDist` limita o raio (undefined = mapa inteiro — evitar no step).
+   */
   findRivalGiant?: (
     myOwnerId: number,
     x: number,
     y: number,
+    maxDist?: number,
   ) => { id: number; x: number; y: number } | null;
   /** novo alvo se o travado morreu/sumiu */
   pickGiantRetarget?: (
     ownerId: number,
     x: number,
     y: number,
+    primaryId?: number,
+    primaryKind?: 0 | 1 | 2,
   ) => { id: number; kind: 0 | 1 | 2 } | null;
 }
+
+/** Rival ameaça o conjurador — prioridade máxima de duelo */
+const RIVAL_OWNER_GUARD = 360;
+/** Já engajado corpo-a-corpo com rival */
+const RIVAL_ENGAGE = 170;
 
 let nextEnemyId = 1;
 
@@ -368,6 +413,8 @@ export function stepWaves(
       state: 0,
       targetId: -1,
       targetKind: 0,
+      primaryTargetId: -1,
+      primaryTargetKind: 0,
       ownerId: -1,
       expiresAt: 0,
       missTargetMs: 0,
@@ -521,6 +568,8 @@ export function spawnGiant(
     state: 1,
     targetId: opts.targetId,
     targetKind: opts.targetKind,
+    primaryTargetId: opts.targetId,
+    primaryTargetKind: opts.targetKind,
     ownerId: opts.ownerId,
     expiresAt:
       opts.expiresAt > ctx.serverTime
@@ -572,14 +621,51 @@ export function stepGiants(enemies: Enemy[], dt: number, ctx: EnemySimCtx) {
 }
 
 function tryRetargetGiant(e: Enemy, ctx: EnemySimCtx): boolean {
-  const next = ctx.pickGiantRetarget?.(e.ownerId, e.x, e.y);
+  const next = ctx.pickGiantRetarget?.(
+    e.ownerId,
+    e.x,
+    e.y,
+    e.primaryTargetId,
+    e.primaryTargetKind,
+  );
   if (!next) return false;
   e.targetId = next.id;
   e.targetKind = next.kind;
+  // novo "primário" só se não for interrupção de duelo temporária
+  if (next.kind !== 2) {
+    e.primaryTargetId = next.id;
+    e.primaryTargetKind = next.kind;
+  }
   e.missTargetMs = 0;
   e.state = 1;
   e.timer = 0;
   return true;
+}
+
+/** Duelo só se rival ameaça o owner OU já está em cima do meu Gigante. */
+function applyRivalPriority(e: Enemy, ctx: EnemySimCtx): void {
+  const owner = ctx.resolveGiantTarget?.(0, e.ownerId);
+  const rivalAtOwner =
+    owner && owner.alive
+      ? ctx.findRivalGiant?.(e.ownerId, owner.x, owner.y, RIVAL_OWNER_GUARD)
+      : null;
+  const rivalAtMe = ctx.findRivalGiant?.(e.ownerId, e.x, e.y, RIVAL_ENGAGE);
+  const threat = rivalAtOwner ?? rivalAtMe;
+  if (threat) {
+    e.targetId = threat.id;
+    e.targetKind = 2;
+    e.missTargetMs = 0;
+    return;
+  }
+  // ameaça passou → volta ao alvo da mira (se ainda vivo)
+  if (e.targetKind === 2 && e.primaryTargetId >= 0) {
+    const primary = ctx.resolveGiantTarget?.(e.primaryTargetKind, e.primaryTargetId);
+    if (primary?.alive) {
+      e.targetId = e.primaryTargetId;
+      e.targetKind = e.primaryTargetKind;
+      e.missTargetMs = 0;
+    }
+  }
 }
 
 function stepGiant(e: Enemy, dt: number, dtMs: number, ctx: EnemySimCtx): boolean {
@@ -600,13 +686,8 @@ function stepGiant(e: Enemy, dt: number, dtMs: number, ctx: EnemySimCtx): boolea
     return false;
   }
 
-  // Duelo: se existe Gigante rival, prioriza brigar com ele
-  const rival = ctx.findRivalGiant?.(e.ownerId, e.x, e.y);
-  if (rival) {
-    e.targetId = rival.id;
-    e.targetKind = 2;
-    e.missTargetMs = 0;
-  }
+  // Duelo: só abandona a mira se rival ameaça o conjurador ou já engajou
+  applyRivalPriority(e, ctx);
 
   let target = ctx.resolveGiantTarget?.(e.targetKind, e.targetId);
   if (!target || !target.alive) {
@@ -684,7 +765,7 @@ function stepGiant(e: Enemy, dt: number, dtMs: number, ctx: EnemySimCtx): boolea
 
   // só golpeia se "vê" o alvo (LOS) ou está colado — não esmurra parede
   const seesTarget = clearPath(e.x, e.y, target.x, target.y, def.radius * 0.7, ctx.doorBits);
-  if (dist < def.attackRange && (seesTarget || dist < 30)) {
+  if (dist < def.attackRange && (seesTarget || dist < 48)) {
     // trava direção do arremesso: Gigante → alvo (ou heading de aproximação)
     let tx = target.x - e.x;
     let ty = target.y - e.y;

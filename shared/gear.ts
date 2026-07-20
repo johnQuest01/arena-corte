@@ -1,4 +1,4 @@
-/** Armas, throwables, loadouts visuais e stamina. */
+﻿/** Armas, throwables, loadouts visuais e stamina. */
 
 export type WeaponId = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 export type ThrowId = 0 | 1 | 2 | 3 | 4;
@@ -161,6 +161,7 @@ export const WEAPONS: WeaponDef[] = [
     muzzleSide: 7,
     gripInset: 6,
     pellets: 1,
+    /** 0 = sem TTL: viaja até parede, borda do mapa ou alvo */
     bulletLifeMs: 0,
     magSize: 5,
     reserveMax: 25,
@@ -213,14 +214,28 @@ export const LOADOUTS: LoadoutLook[] = [
   { hair: "#1a120c", skin: "#d4a574", shirt: "#2F5FD0", pants: "#1F4A3D", shoes: "#222" },
   { hair: "#3b2814", skin: "#c68642", shirt: "#E8A838", pants: "#2a3540", shoes: "#1a1a1a" },
   { hair: "#0d0d0d", skin: "#e0b090", shirt: "#C45C5C", pants: "#3a3a48", shoes: "#2a2018" },
+  { hair: "#2a1a10", skin: "#d4a574", shirt: "#7BC47F", pants: "#2a3540", shoes: "#222" },
+  { hair: "#1a0c08", skin: "#c68642", shirt: "#C9A0DC", pants: "#3a3a48", shoes: "#1a1a1a" },
+  { hair: "#3b2010", skin: "#e0b090", shirt: "#E07A5F", pants: "#1F4A3D", shoes: "#2a2018" },
+  { hair: "#0d0d0d", skin: "#d4a574", shirt: "#81B29A", pants: "#2a3540", shoes: "#222" },
 ];
 
 export function weaponOf(id: number): WeaponDef {
   return WEAPONS[id as WeaponId] ?? WEAPONS[0]!;
 }
 
-/** Deve bater com drawWeaponLayer em render.ts */
+/** Offset autoritativo da mão → muzzlePoint (hitscan). NÃO alterar. */
 export const GUN_HAND = 18;
+/**
+ * Desenho da arma no personagem (CHAR_PX≈112):
+ * - BODY_Y: altura das mãos do sprite (não o pé/centro)
+ * - HAND_VISUAL: avanço na mira — punho na mão traseira do personagem
+ * Tamanho da arma = GUN_VISUAL_SCALE (igual ao de antes). Hitscan: GUN_HAND.
+ */
+export const GUN_HAND_BODY_Y = -16;
+/** Punho na mão traseira do sprite; cano passa pela dianteira (rifle 2 mãos). */
+export const GUN_HAND_VISUAL = 5;
+/** Usado no desenho E em muzzlePoint / gunBarrelLocal. */
 export const GUN_VISUAL_SCALE = 2.15;
 
 /**

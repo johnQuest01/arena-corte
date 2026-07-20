@@ -168,16 +168,20 @@ export function Lobby({
             </button>
             <div className="row">
               <input
-                placeholder="código"
+                placeholder="código (6 letras)"
                 value={code}
                 maxLength={6}
-                onChange={(e) => setCode(e.target.value.toUpperCase())}
+                autoCapitalize="characters"
+                autoCorrect="off"
+                spellCheck={false}
+                onChange={(e) =>
+                  setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6))
+                }
                 style={{ flex: 1 }}
               />
               <button
                 type="button"
-                className="secondary"
-                disabled={code.length < 4}
+                disabled={code.length !== 6}
                 onClick={() =>
                   onAction({
                     type: "online_join",
@@ -190,6 +194,9 @@ export function Lobby({
                 Entrar
               </button>
             </div>
+            {code.length > 0 && code.length < 6 && (
+              <p className="hint">Digite o código completo ({code.length}/6).</p>
+            )}
             {warning && <div className="warn-soft">{warning}</div>}
             <button type="button" className="ghost" onClick={() => setPath("pick")}>
               Voltar

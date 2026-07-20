@@ -192,6 +192,28 @@ export function processAbilityEvents(
         feel.shake = Math.max(feel.shake, 1.4);
       }
     }
+    // Botas: whoosh no cast (próprio já toca na predição)
+    if (abilityId === 2) {
+      if (e.a !== selfId) onWhoosh?.(e.x, e.y);
+      if (e.a === selfId) {
+        feel.bodyKick = Math.max(feel.bodyKick, 0.3);
+      }
+    }
+    // Capa de Recuo
+    if (abilityId === 3) {
+      if (e.a !== selfId) onWhoosh?.(e.x, e.y);
+      if (e.a === selfId) {
+        feel.bodyKick = Math.max(feel.bodyKick, 0.5);
+        feel.shake = Math.max(feel.shake, 0.7);
+      }
+    }
+    // Capa-Escudo
+    if (abilityId === 4) {
+      if (e.a !== selfId) onWhoosh?.(e.x, e.y);
+      if (e.a === selfId) {
+        feel.bodyKick = Math.max(feel.bodyKick, 0.25);
+      }
+    }
     void abilityOf;
     void angle;
     void onWhoosh;

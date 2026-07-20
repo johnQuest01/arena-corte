@@ -157,7 +157,15 @@ export function TouchControls({
     setActiveWeapon(id);
   };
 
-  const glyph = (abilityName ?? "").includes("Gigante") ? "G" : "W";
+  const glyph = (abilityName ?? "").includes("Recuo")
+    ? "R"
+    : (abilityName ?? "").includes("Capa")
+      ? "C"
+      : (abilityName ?? "").includes("Botas")
+        ? "B"
+        : (abilityName ?? "").includes("Gigante")
+          ? "G"
+          : "W";
   const cooling = (abilityCd ?? 1) < 1;
 
   return (

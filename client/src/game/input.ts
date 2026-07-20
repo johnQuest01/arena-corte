@@ -1,4 +1,5 @@
 /** WASD/setas, sprint, armas 1-7, throwables G/F/C/V, E porta, Q habilidade, mira/tiro. */
+import { ABILITY_CYCLE_IDS } from "../../../shared/abilities";
 
 export interface RawInput {
   dx: number;
@@ -11,7 +12,7 @@ export interface RawInput {
   cast: boolean;
   weapon: number;
   throw: number;
-  /** 0 jato, 1 gigante */
+  /** id da habilidade (0 jato, 1 gigante, 2 botas, 3 capa recuo, 4 capa escudo) */
   ability: number;
 }
 
@@ -70,6 +71,8 @@ export class InputController {
   mouseX = 0;
   mouseY = 0;
   mouseDown = false;
+  /** pointerId do botão esquerdo em hold — evita pointerup de outro dedo/UI zerar o tiro */
+  private firePointerId: number | null = null;
   weapon = 0;
   ability = 0;
   private throwPulse = 0;
@@ -127,7 +130,15 @@ export class InputController {
   }
 
   toggleAbility() {
-    this.ability = this.ability === 0 ? 1 : 0;
+    // Jato → Gigante → Botas → Capa-Escudo → …
+    const cycle = ABILITY_CYCLE_IDS as unknown as number[];
+    const i = cycle.indexOf(this.ability);
+    this.ability = cycle[((i < 0 ? 0 : i) + 1) % cycle.length]!;
+  }
+
+  setAbility(id: number) {
+    const cycle = ABILITY_CYCLE_IDS as unknown as number[];
+    this.ability = cycle.includes(id) ? id : 0;
   }
 
   setWeaponSlot(id: number) {
@@ -224,7 +235,7 @@ export class InputController {
     if (code === "KeyE") this.usePulse = true;
     if (code === "KeyR") this.reloadPulse = true;
     if (code === "KeyQ") this.castPulse = true;
-    if (code === "KeyT") this.ability = this.ability === 0 ? 1 : 0;
+    if (code === "KeyT") this.toggleAbility();
     if (code === "KeyG") this.throwPulse = 1;
     if (code === "KeyF") this.throwPulse = 2;
     if (code === "KeyC") this.throwPulse = 3;
@@ -291,7 +302,17 @@ export class InputController {
   private clearKeys = () => {
     this.clearKeyboard();
     this.mouseDown = false;
+    this.firePointerId = null;
   };
+
+  /** Re-sincroniza hold do LMB com o estado real do browser. */
+  private syncMouseButtons(buttons: number) {
+    if ((buttons & 1) === 1) {
+      this.mouseDown = true;
+    } else if (this.firePointerId == null) {
+      this.mouseDown = false;
+    }
+  }
 
   private onVisibility = () => {
     // aba oculta de verdade — zera tudo (keyup/mouseup se perdem)
@@ -318,8 +339,14 @@ export class InputController {
       const r = canvas.getBoundingClientRect();
       this.mouseX = e.clientX - r.left;
       this.mouseY = e.clientY - r.top;
-      // NÃO limpar mouseDown aqui: com setPointerCapture o browser
-      // às vezes manda buttons===0 no move e o tiro “trava” no hold.
+      // só REARMA se LMB estiver baixo — nunca zera no move (buttons===0 falso com capture)
+      if ((e.buttons & 1) === 1) this.mouseDown = true;
+    });
+    canvas.addEventListener("pointermove", (e) => {
+      if (this.touchUi && e.pointerType !== "mouse") return;
+      const r = canvas.getBoundingClientRect();
+      this.mouseX = e.clientX - r.left;
+      this.mouseY = e.clientY - r.top;
       if ((e.buttons & 1) === 1) this.mouseDown = true;
     });
     const block = (e: Event) => e.preventDefault();
@@ -341,6 +368,7 @@ export class InputController {
       if (e.pointerType === "mouse" && e.button !== 0) return;
       if (e.button === 0 || e.pointerType === "touch") {
         this.mouseDown = true;
+        this.firePointerId = e.pointerId;
         try {
           canvas.setPointerCapture(e.pointerId);
         } catch {
@@ -351,14 +379,43 @@ export class InputController {
     const endFire = (e: MouseEvent | PointerEvent) => {
       // só solta no botão esquerdo / touch; ignora outros botões
       if ("button" in e && e.button !== 0 && e.button !== -1) return;
-      // pointerup: buttons já reflete o estado APÓS o release (0 = solto)
-      if ("buttons" in e && (e.buttons & 1) === 1) return;
+      // LMB ainda pressionado (outro pointer soltou) — mantém tiro
+      if ("buttons" in e && (e.buttons & 1) === 1) {
+        this.mouseDown = true;
+        return;
+      }
+      // pointerup de outro dedo/UI não cancela o hold do mouse
+      if (
+        "pointerId" in e &&
+        this.firePointerId != null &&
+        e.pointerId !== this.firePointerId
+      ) {
+        return;
+      }
       this.mouseDown = false;
+      this.firePointerId = null;
     };
     window.addEventListener("mouseup", endFire);
     window.addEventListener("pointerup", endFire);
-    window.addEventListener("pointercancel", () => {
+    window.addEventListener("pointercancel", (e: PointerEvent) => {
+      if (this.firePointerId != null && e.pointerId !== this.firePointerId) return;
+      // cancel com LMB ainda baixo (comum em capture) — não zera
+      if ((e.buttons & 1) === 1) {
+        this.mouseDown = true;
+        return;
+      }
       this.mouseDown = false;
+      this.firePointerId = null;
+    });
+    canvas.addEventListener("lostpointercapture", (e: PointerEvent) => {
+      if (this.firePointerId != null && e.pointerId !== this.firePointerId) return;
+      if ((e.buttons & 1) === 1) {
+        this.mouseDown = true;
+        return;
+      }
+      // perdeu capture e botão solto
+      this.syncMouseButtons(e.buttons);
+      if ((e.buttons & 1) === 0) this.firePointerId = null;
     });
     canvas.setAttribute("tabindex", "0");
 

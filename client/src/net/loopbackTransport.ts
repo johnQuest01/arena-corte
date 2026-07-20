@@ -146,15 +146,16 @@ export class LoopbackTransport implements Transport {
   }
 
   private driveBots() {
-    const self = this.sim.players.find((x) => x.id === Number(this.selfId));
     const bits = doorBitsOf(this.sim);
     const enemies = this.sim.enemies;
     for (const p of this.sim.players) {
       if (p.id === Number(this.selfId)) continue;
       if (!p.alive) continue;
+      // FFA: cada bot vê todos os outros (humanos + bots) e duelam entre si
+      const opponents = this.sim.players.filter((x) => x.id !== p.id);
       const input = botInput(
         p,
-        self,
+        opponents,
         bits,
         this.sim.tick * 10 + p.id,
         this.sim.serverTime,

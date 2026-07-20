@@ -319,6 +319,53 @@ input:focus {
   color: var(--danger);
 }
 
+.kill-feed {
+  position: absolute;
+  top: 3.1rem;
+  right: 0.75rem;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.28rem;
+  pointer-events: none;
+  max-width: min(72vw, 280px);
+}
+
+.kill-feed-line {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.2rem 0.45rem;
+  background: rgba(8, 12, 10, 0.72);
+  border: 1px solid rgba(0, 0, 0, 0.85);
+  box-shadow: 2px 2px 0 #000;
+  white-space: nowrap;
+  transition: opacity 80ms linear;
+}
+
+.kill-feed-line.you-kill {
+  border-color: var(--giz);
+  box-shadow: 2px 2px 0 #0a1a40;
+}
+
+.kf-name {
+  color: var(--ink);
+}
+.kf-you {
+  color: var(--giz);
+}
+.kf-victim {
+  color: #e07070;
+}
+.kf-cause {
+  color: var(--sand);
+  margin: 0 0.4rem;
+  font-weight: 400;
+  text-transform: lowercase;
+}
+
 .arena-wrap {
   flex: 1;
   display: flex;
@@ -485,9 +532,48 @@ input:focus {
   z-index: 1;
 }
 
+.ability-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.2rem;
+}
+
 .ability-label {
   font-size: 0.75rem;
   color: var(--muted);
+}
+
+.ability-pips {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.ability-pip {
+  width: 14px;
+  height: 8px;
+  border: 1px solid #000;
+  background: #1a1420;
+  box-shadow: 1px 1px 0 #000;
+  position: relative;
+  overflow: hidden;
+}
+
+.ability-pip::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: calc(var(--pip, 0) * 100%);
+  background: linear-gradient(90deg, #8a3060, #c04070);
+}
+
+.ability-pip.full::after {
+  background: linear-gradient(90deg, #a03058, #e06090);
+}
+
+.ability-pip.charging::after {
+  background: linear-gradient(90deg, #5a1838, #a03058);
 }
 
 @media (max-width: 640px) {

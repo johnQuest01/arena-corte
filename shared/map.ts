@@ -1,11 +1,11 @@
 /**
- * map.ts — tilemap deserto (Atomic Exile–inspired), colisão e portas.
- * Grade 80×56 × 32px = 2560×1792. Sem import de constants (evita ciclo).
+ * map.ts — cidade pós-apocalíptica (ruas, calçadas, quarteirões, prédios).
+ * Grade 160×120 × 32px = 5120×3840. Sem import de constants (evita ciclo).
  */
 
 export const TILE = 32;
-export const MAP_W = 80;
-export const MAP_H = 56;
+export const MAP_W = 160;
+export const MAP_H = 120;
 const ARENA_W = MAP_W * TILE;
 const ARENA_H = MAP_H * TILE;
 
@@ -17,6 +17,11 @@ export const T = {
   DIRT: 1,
   WOOD: 2,
   CONCRETE: 3,
+  ROAD: 4,
+  ROAD_LINE: 5,
+  SIDEWALK: 6,
+  GRASS: 7,
+  GRASS_TALL: 8,
   WALL: 10,
   METAL: 11,
   CRATE: 20,
@@ -59,112 +64,310 @@ function fillRect(
   }
 }
 
-function wallRing(g: number[][], tx: number, ty: number, tw: number, th: number, tile: number = T.WALL) {
+function wallRing(
+  g: number[][],
+  tx: number,
+  ty: number,
+  tw: number,
+  th: number,
+  tile: number = T.WALL,
+) {
   fillRect(g, tx, ty, tw, 1, tile);
   fillRect(g, tx, ty + th - 1, tw, 1, tile);
   fillRect(g, tx, ty, 1, th, tile);
   fillRect(g, tx + tw - 1, ty, 1, th, tile);
 }
 
-export const GROUND: number[][] = (() => {
-  const g: number[][] = [];
+/** Hash determinístico 0..n-1 */
+function hxy(x: number, y: number, n: number): number {
+  let h = (x * 73856093) ^ (y * 19349663);
+  h = (h ^ (h >>> 13)) >>> 0;
+  return h % n;
+}
+
+const PITCH = 20;
+const ROAD_W = 4;
+
+function isRoadX(x: number): boolean {
+  return x % PITCH < ROAD_W;
+}
+function isRoadY(y: number): boolean {
+  return y % PITCH < ROAD_W;
+}
+
+function buildCity(): {
+  ground: number[][];
+  solid: number[][];
+  buildings: BuildingDef[];
+  doors: DoorDef[];
+} {
+  const ground: number[][] = [];
   for (let y = 0; y < MAP_H; y++) {
     const row: number[] = [];
     for (let x = 0; x < MAP_W; x++) {
-      row.push((x + y) % 7 === 0 ? T.DIRT : T.SAND);
+      // base: mato ressecado / terra
+      row.push(hxy(x, y, 9) === 0 ? T.DIRT : T.GRASS);
     }
-    g.push(row);
+    ground.push(row);
   }
-  // interiores nos cantos + centro — arena grande
-  fillRect(g, 4, 4, 6, 5, T.WOOD);
-  fillRect(g, 68, 3, 7, 6, T.CONCRETE);
-  fillRect(g, 5, 46, 8, 5, T.WOOD);
-  fillRect(g, 66, 45, 6, 5, T.CONCRETE);
-  fillRect(g, 36, 24, 6, 4, T.CONCRETE);
-  fillRect(g, 20, 18, 5, 4, T.WOOD);
-  fillRect(g, 52, 30, 5, 4, T.CONCRETE);
-  return g;
-})();
 
-export const SOLID: number[][] = (() => {
-  const g: number[][] = Array.from({ length: MAP_H }, () => Array(MAP_W).fill(0));
+  const solid: number[][] = Array.from({ length: MAP_H }, () => Array(MAP_W).fill(0));
+  const buildings: BuildingDef[] = [];
+  const doors: DoorDef[] = [];
 
-  // NW
-  wallRing(g, 3, 3, 8, 7, T.WALL);
-  fillRect(g, 4, 4, 6, 5, 0);
-  g[9]![6] = 0;
+  // —— malha de ruas + calçadas + faixas ——
+  for (let y = 0; y < MAP_H; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      const vr = isRoadX(x);
+      const hr = isRoadY(y);
+      if (vr || hr) {
+        const mx = x % PITCH;
+        const my = y % PITCH;
+        // faixa central desbotada
+        if ((vr && !hr && (mx === 1 || mx === 2)) || (hr && !vr && (my === 1 || my === 2))) {
+          ground[y]![x] = T.ROAD_LINE;
+        } else {
+          ground[y]![x] = T.ROAD;
+        }
+        continue;
+      }
+      // calçada: 1–2 tiles na borda do quarteirão (lado da rua)
+      const bx = x % PITCH;
+      const by = y % PITCH;
+      if (
+        bx === ROAD_W ||
+        bx === ROAD_W + 1 ||
+        bx === PITCH - 1 ||
+        bx === PITCH - 2 ||
+        by === ROAD_W ||
+        by === ROAD_W + 1 ||
+        by === PITCH - 1 ||
+        by === PITCH - 2
+      ) {
+        ground[y]![x] = T.SIDEWALK;
+      } else if (hxy(x, y, 11) < 3) {
+        ground[y]![x] = T.GRASS_TALL;
+      } else if (hxy(x + 3, y + 7, 7) === 0) {
+        ground[y]![x] = T.CONCRETE;
+      }
+    }
+  }
 
-  // NE
-  wallRing(g, 67, 2, 9, 8, T.METAL);
-  fillRect(g, 68, 3, 7, 6, 0);
-  g[5]![67] = 0;
+  // cruzamentos: asfalto limpo (sem faixa) — legibilidade
+  for (let y = 0; y < MAP_H; y++) {
+    for (let x = 0; x < MAP_W; x++) {
+      if (isRoadX(x) && isRoadY(y)) ground[y]![x] = T.ROAD;
+    }
+  }
 
-  // SW
-  wallRing(g, 4, 45, 10, 7, T.WALL);
-  fillRect(g, 5, 46, 8, 5, 0);
-  g[45]![8] = 0;
+  // praças abertas (combate) — limpa mato alto / concreto denso
+  const plazas: { tx: number; ty: number; tw: number; th: number }[] = [
+    { tx: 44, ty: 44, tw: 12, th: 12 },
+    { tx: 104, ty: 24, tw: 14, th: 10 },
+    { tx: 24, ty: 84, tw: 12, th: 12 },
+    { tx: 84, ty: 84, tw: 16, th: 10 },
+  ];
+  for (const p of plazas) {
+    fillRect(ground, p.tx, p.ty, p.tw, p.th, T.CONCRETE);
+    // mato nas bordas da praça
+    for (let i = 0; i < p.tw; i++) {
+      if (hxy(p.tx + i, p.ty, 3) === 0) ground[p.ty]![p.tx + i] = T.GRASS;
+      if (hxy(p.tx + i, p.ty + p.th - 1, 3) === 0) {
+        ground[p.ty + p.th - 1]![p.tx + i] = T.GRASS_TALL;
+      }
+    }
+  }
 
-  // SE
-  wallRing(g, 65, 44, 8, 7, T.METAL);
-  fillRect(g, 66, 45, 6, 5, 0);
-  g[47]![65] = 0;
+  function overlapsSolid(ox: number, oy: number, tw: number, th: number): boolean {
+    for (let y = oy; y < oy + th; y++) {
+      for (let x = ox; x < ox + tw; x++) {
+        if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return true;
+        if (solid[y]![x]! >= 10) return true;
+        // não construir em cima de rua
+        if (isRoadX(x) || isRoadY(y)) return true;
+      }
+    }
+    return false;
+  }
 
-  // bunker central
-  wallRing(g, 35, 23, 8, 6, T.WALL);
-  fillRect(g, 36, 24, 6, 4, 0);
-  g[28]![38] = 0;
+  function inPlaza(ox: number, oy: number, tw: number, th: number): boolean {
+    for (const p of plazas) {
+      if (ox < p.tx + p.tw && ox + tw > p.tx && oy < p.ty + p.th && oy + th > p.ty) {
+        return true;
+      }
+    }
+    return false;
+  }
 
-  // hangares mid
-  wallRing(g, 19, 17, 7, 6, T.WALL);
-  fillRect(g, 20, 18, 5, 4, 0);
-  g[22]![19] = 0;
+  function placeBuilding(
+    ox: number,
+    oy: number,
+    tw: number,
+    th: number,
+    wallTile: number,
+    doorDir: "n" | "s" | "e" | "w",
+  ): boolean {
+    if (doors.length >= 16) return false;
+    if (tw < 5 || th < 5) return false;
+    if (overlapsSolid(ox, oy, tw, th)) return false;
+    if (inPlaza(ox, oy, tw, th)) return false;
 
-  wallRing(g, 51, 29, 7, 6, T.METAL);
-  fillRect(g, 52, 30, 5, 4, 0);
-  g[31]![57] = 0;
+    wallRing(solid, ox, oy, tw, th, wallTile);
+    fillRect(solid, ox + 1, oy + 1, tw - 2, th - 2, 0);
+    fillRect(
+      ground,
+      ox + 1,
+      oy + 1,
+      tw - 2,
+      th - 2,
+      wallTile === T.METAL ? T.CONCRETE : T.WOOD,
+    );
 
-  // props
-  g[16]![28] = T.CRATE;
-  g[16]![29] = T.CRATE;
-  g[17]![28] = T.BARREL;
-  g[14]![40] = T.CAR;
-  g[14]![41] = T.CAR;
-  g[30]![22] = T.CRATE;
-  g[26]![50] = T.BARREL;
-  g[38]![34] = T.CRATE;
-  g[12]![55] = T.BARREL;
-  g[42]![26] = T.CRATE;
-  g[28]![62] = T.BARREL;
-  g[20]![18] = T.CRATE;
-  g[44]![48] = T.BARREL;
+    let dtx = ox + Math.floor(tw / 2);
+    let dty = oy + Math.floor(th / 2);
+    let orient: "h" | "v" = "h";
+    if (doorDir === "n") {
+      dtx = ox + Math.floor(tw / 2);
+      dty = oy;
+      orient = "h";
+    } else if (doorDir === "s") {
+      dtx = ox + Math.floor(tw / 2);
+      dty = oy + th - 1;
+      orient = "h";
+    } else if (doorDir === "w") {
+      dtx = ox;
+      dty = oy + Math.floor(th / 2);
+      orient = "v";
+    } else {
+      dtx = ox + tw - 1;
+      dty = oy + Math.floor(th / 2);
+      orient = "v";
+    }
+    solid[dty]![dtx] = 0;
 
-  return g;
-})();
+    const id = buildings.length;
+    buildings.push({
+      id,
+      interior: { tx: ox + 1, ty: oy + 1, tw: tw - 2, th: th - 2 },
+    });
+    doors.push({ id, tx: dtx, ty: dty, orient });
+    return true;
+  }
 
-export const BUILDINGS: BuildingDef[] = [
-  { id: 0, interior: { tx: 4, ty: 4, tw: 6, th: 5 } },
-  { id: 1, interior: { tx: 68, ty: 3, tw: 7, th: 6 } },
-  { id: 2, interior: { tx: 5, ty: 46, tw: 8, th: 5 } },
-  { id: 3, interior: { tx: 66, ty: 45, tw: 6, th: 5 } },
-  { id: 4, interior: { tx: 36, ty: 24, tw: 6, th: 4 } },
-  { id: 5, interior: { tx: 20, ty: 18, tw: 5, th: 4 } },
-  { id: 6, interior: { tx: 52, ty: 30, tw: 5, th: 4 } },
-];
+  // —— prédios por quarteirão (máx 16 portas) ——
+  const doorDirs: ("n" | "s" | "e" | "w")[] = ["s", "e", "n", "w"];
+  let bi = 0;
+  for (let by = 0; by < MAP_H; by += PITCH) {
+    for (let bx = 0; bx < MAP_W; bx += PITCH) {
+      // interior do quarteirão (depois da rua + calçada)
+      const ix = bx + ROAD_W + 1;
+      const iy = by + ROAD_W + 1;
+      const iw = PITCH - ROAD_W - 2;
+      const ih = PITCH - ROAD_W - 2;
+      if (iw < 8 || ih < 8) continue;
+      if (inPlaza(ix, iy, iw, ih)) continue;
 
-export const DOOR_DEFS: DoorDef[] = [
-  { id: 0, tx: 6, ty: 9, orient: "h" },
-  { id: 1, tx: 67, ty: 5, orient: "v" },
-  { id: 2, tx: 8, ty: 45, orient: "h" },
-  { id: 3, tx: 65, ty: 47, orient: "v" },
-  { id: 4, tx: 38, ty: 28, orient: "h" },
-  { id: 5, tx: 19, ty: 20, orient: "v" },
-  { id: 6, tx: 57, ty: 31, orient: "v" },
-];
+      const roll = hxy(bx, by, 10);
+      // ~70% dos quarteirões ganham prédio
+      if (roll < 3) continue;
 
+      const tw = 5 + hxy(bx + 1, by, 3); // 5..7
+      const th = 5 + hxy(bx, by + 1, 3);
+      const ox = ix + 1 + hxy(bx + 2, by, Math.max(1, iw - tw - 1));
+      const oy = iy + 1 + hxy(bx, by + 2, Math.max(1, ih - th - 1));
+      const wall = hxy(bx + 5, by + 5, 2) === 0 ? T.WALL : T.METAL;
+      const dir = doorDirs[bi % doorDirs.length]!;
+      if (placeBuilding(ox, oy, tw, th, wall, dir)) bi++;
+
+      // segundo prédio menor em quarteirões grandes
+      if (doors.length < 16 && iw > 12 && ih > 12 && hxy(bx + 9, by + 3, 5) < 2) {
+        const tw2 = 5;
+        const th2 = 5;
+        const ox2 = ix + iw - tw2 - 1;
+        const oy2 = iy + ih - th2 - 1;
+        placeBuilding(ox2, oy2, tw2, th2, T.METAL, "n");
+      }
+    }
+  }
+
+  const isAsphalt = (t: number) => t === T.ROAD || t === T.ROAD_LINE;
+
+  // —— cover: carros nas ruas, caixas/barris em calçadas ——
+  for (let y = 2; y < MAP_H - 2; y++) {
+    for (let x = 2; x < MAP_W - 2; x++) {
+      if (solid[y]![x]! >= 10) continue;
+      const g = ground[y]![x]!;
+
+      // carros abandonados no asfalto (2 tiles) — borda da faixa, fora do cruzamento
+      const onVertRoad = isRoadX(x) && !isRoadY(y);
+      const onHorzRoad = isRoadY(y) && !isRoadX(x);
+      if (
+        onVertRoad &&
+        isAsphalt(g) &&
+        isAsphalt(ground[y]![x + 1]!) &&
+        solid[y]![x + 1]! < 10 &&
+        isRoadX(x + 1) &&
+        !isRoadY(y) &&
+        hxy(x, y, 37) === 0
+      ) {
+        solid[y]![x] = T.CAR;
+        solid[y]![x + 1] = T.CAR;
+        continue;
+      }
+      if (
+        onHorzRoad &&
+        isAsphalt(g) &&
+        isAsphalt(ground[y + 1]![x]!) &&
+        solid[y + 1]![x]! < 10 &&
+        isRoadY(y + 1) &&
+        !isRoadX(x) &&
+        hxy(x + 11, y, 41) === 0
+      ) {
+        solid[y]![x] = T.CAR;
+        solid[y + 1]![x] = T.CAR;
+        continue;
+      }
+
+      // entulho na calçada
+      if (g === T.SIDEWALK && hxy(x, y, 29) === 0) {
+        solid[y]![x] = hxy(x + 1, y, 2) === 0 ? T.CRATE : T.BARREL;
+      }
+      // caixas em baldios
+      if ((g === T.GRASS || g === T.GRASS_TALL) && hxy(x, y, 61) === 0) {
+        solid[y]![x] = T.CRATE;
+      }
+    }
+  }
+
+  // muro de borda da cidade (contém o mapa)
+  fillRect(solid, 0, 0, MAP_W, 1, T.WALL);
+  fillRect(solid, 0, MAP_H - 1, MAP_W, 1, T.WALL);
+  fillRect(solid, 0, 0, 1, MAP_H, T.WALL);
+  fillRect(solid, MAP_W - 1, 0, 1, MAP_H, T.WALL);
+
+  return { ground, solid, buildings, doors };
+}
+
+const CITY = buildCity();
+export const GROUND = CITY.ground;
+export const SOLID = CITY.solid;
+export const BUILDINGS: BuildingDef[] = CITY.buildings;
+export const DOOR_DEFS: DoorDef[] = CITY.doors;
+
+/** Spawns no centro das ruas / praças (treino 7 slots + online 3). */
 export const MAP_SPAWNS: { x: number; y: number }[] = [
-  { x: 160, y: ARENA_H / 2 },
-  { x: ARENA_W - 160, y: ARENA_H / 2 },
-  { x: ARENA_W / 2, y: ARENA_H - 160 },
+  { x: 2 * TILE + 16, y: 2 * TILE + 16 },
+  { x: 42 * TILE + 16, y: 2 * TILE + 16 },
+  { x: 82 * TILE + 16, y: 2 * TILE + 16 },
+  { x: 122 * TILE + 16, y: 2 * TILE + 16 },
+  { x: 2 * TILE + 16, y: 62 * TILE + 16 },
+  { x: 62 * TILE + 16, y: 62 * TILE + 16 },
+  { x: 122 * TILE + 16, y: 62 * TILE + 16 },
+  { x: 2 * TILE + 16, y: 102 * TILE + 16 },
+  { x: 82 * TILE + 16, y: 102 * TILE + 16 },
+  { x: 50 * TILE, y: 50 * TILE }, // praça
+  { x: 111 * TILE, y: 29 * TILE }, // praça
+  { x: 90 * TILE, y: 89 * TILE }, // praça
 ];
 
 export function isSolidTile(t: number): boolean {
@@ -234,7 +437,6 @@ function mergeSolidTiles(): { x: number; y: number; w: number; h: number }[] {
     }
   }
 
-  // funde spans empilhados com mesmo tx/tw
   const used = new Array(rowSpans.length).fill(false);
   const out: { x: number; y: number; w: number; h: number }[] = [];
   for (let i = 0; i < rowSpans.length; i++) {
@@ -284,7 +486,6 @@ function separateCircleRect(
   let dy = py - nearestY;
   const distSq = dx * dx + dy * dy;
 
-  // centro fora do retângulo
   if (distSq > 1e-8) {
     if (distSq >= r * r) return { x: px, y: py, hit: false };
     const dist = Math.sqrt(distSq);
@@ -292,7 +493,6 @@ function separateCircleRect(
     return { x: px + (dx / dist) * pen, y: py + (dy / dist) * pen, hit: true };
   }
 
-  // centro dentro — sai pelo eixo de menor penetração (não teleporta pelo tile)
   const penL = px - o.x + r;
   const penR = o.x + o.w - px + r;
   const penT = py - o.y + r;
@@ -314,7 +514,6 @@ export function resolveWalls(
   let py = clamp(y, r, ARENA_H - r);
   const solids = solidRects(doorBits);
 
-  // várias passadas: cantos / vários AABBs
   for (let iter = 0; iter < 8; iter++) {
     let moved = false;
     for (const o of solids) {
@@ -346,7 +545,6 @@ export function moveAndSlide(
 ): { x: number; y: number; vx: number; vy: number } {
   const dx = vx * dt;
   const dy = vy * dt;
-  // tenta X e Y separados → desliza em cantos/paredes
   let nx = x;
   let ny = y;
   let ovx = vx;
@@ -356,7 +554,6 @@ export function moveAndSlide(
     const tryX = x + dx;
     const posX = resolveWalls(tryX, y, r, doorBits);
     if (Math.abs(posX.x - tryX) > 0.01) {
-      // bateu em X — cancela vx para dentro
       ovx = 0;
     }
     nx = posX.x;
@@ -372,7 +569,6 @@ export function moveAndSlide(
     nx = posY.x;
   }
 
-  // passada final (cantos / overlap residual)
   const end = resolveWalls(nx, ny, r, doorBits);
   return { x: end.x, y: end.y, vx: ovx, vy: ovy };
 }

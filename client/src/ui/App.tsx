@@ -20,15 +20,27 @@ import { Hud } from "./Hud";
 import { Lobby, type LobbyAction } from "./Lobby";
 import { TouchControls } from "./TouchControls";
 
-const PARTY_HOST =
-  import.meta.env.VITE_PARTY_HOST || "localhost:1999";
+/** Host do Party: env, senão o mesmo IP da página (celular na LAN), senão localhost. */
+function resolvePartyHost(): string {
+  if (import.meta.env.VITE_PARTY_HOST) return import.meta.env.VITE_PARTY_HOST;
+  if (typeof location !== "undefined") {
+    const h = location.hostname;
+    if (h && h !== "localhost" && h !== "127.0.0.1") {
+      return `${h}:1999`;
+    }
+  }
+  return "localhost:1999";
+}
 
-const REGION_PINGS: Record<string, string> = {
-  "São Paulo":
-    import.meta.env.VITE_PING_GRU || `http://${PARTY_HOST}/ping`,
-  "US East": import.meta.env.VITE_PING_IAD || `http://${PARTY_HOST}/ping`,
-  Europe: import.meta.env.VITE_PING_AMS || `http://${PARTY_HOST}/ping`,
-};
+function regionPingUrls(): Record<string, string> {
+  const host = resolvePartyHost();
+  return {
+    "São Paulo":
+      import.meta.env.VITE_PING_GRU || `http://${host}/ping`,
+    "US East": import.meta.env.VITE_PING_IAD || `http://${host}/ping`,
+    Europe: import.meta.env.VITE_PING_AMS || `http://${host}/ping`,
+  };
+}
 
 function randomRoomCode() {
   const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -91,7 +103,7 @@ export function App() {
       const mode = await autoSelectMode({
         probeSignaling: null, // sem peers ainda no lobby solo
         isInitiator: true,
-        regionPingUrls: REGION_PINGS,
+        regionPingUrls: regionPingUrls(),
         exchangeRegionRtts: async (mine) => [mine],
       });
       setRecommendation(mode);
@@ -204,7 +216,7 @@ export function App() {
               ? recommendation.region
               : undefined;
         const t = new CloudTransport({
-          host: PARTY_HOST,
+          host: resolvePartyHost(),
           room,
           region: region === "auto" ? undefined : region,
         });
