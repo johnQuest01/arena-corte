@@ -60,6 +60,10 @@ import { drawGunArt, drawGunHands, drawGunIcon, gunGeom } from "./guns";
 import { drawCape, RECOIL_CAPE_DEF, stepCape } from "./capes";
 import { drawShieldSparks, drawStarShield } from "./shield";
 import { drawPowersFx, drawThrownShield } from "./powers_fx";
+import { drawBomb2, drawFx2Air, drawFx2Ground, drawIceBlock2, drawShieldBarrier2, drawThrownShield2 } from "./fx2";
+import { setFx2View } from "./fx2_core";
+import { drawGiant2, GIANT2_TOP } from "./giant2";
+import { frostIsOld, fxOld, giantIsOld } from "./fxstyle";
 import { SHIELD_THROW_KIND } from "../../../shared/abilities";
 import { CAPES, autoLookFor, type Look } from "../../../shared/cosmetics";
 
@@ -689,8 +693,28 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
 
   ctx.save();
   ctx.translate(en.x, en.y + bob);
+  const giantNew = en.type === 2 && !giantIsOld(en.id);
 
-  if (en.type === 2) {
+  if (giantNew) {
+    let near = 0;
+    if (view.local?.alive) {
+      near = 1 - Math.min(1, Math.hypot(en.x - view.local.x, en.y - view.local.y) / 520);
+    }
+    drawGiant2(ctx, {
+      s: scale,
+      id: en.id,
+      tMs,
+      chase,
+      windup,
+      charge,
+      stun,
+      frozen,
+      windupFlash,
+      skew,
+      facing,
+      near,
+    });
+  } else if (en.type === 2) {
     // Gigante procedural — silhueta monstruosa (ombros largos, corcunda, olhos vermelhos)
     const s = scale;
     const shadowOx = Math.cos(facing) * 5 * s;
@@ -1123,7 +1147,7 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
   if (en.type !== 1) {
     const pct = Math.max(0, Math.min(1, en.hp / 255));
     const bw = 26 * scale;
-    const by = -32 * scale;
+    const by = giantNew ? GIANT2_TOP * scale * 0.9 - 6 : -32 * scale;
     ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.fillRect(-bw / 2, by, bw, 4);
     ctx.fillStyle = "#6ecf5a";
@@ -1141,7 +1165,11 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
   ctx.restore();
 
   // Congelamento — bloco sobre inimigo/Gigante
-  if (frozen) {
+  if (frozen && !frostIsOld(en.id)) {
+    const w = en.type === 2 ? 50 : en.type === 1 ? 46 : 24;
+    const h = en.type === 2 ? 104 : en.type === 1 ? 100 : 66;
+    drawIceBlock2(ctx, en.x, en.y + bob, tMs, w, h, en.id * 0.91);
+  } else if (frozen) {
     const iceScale = en.type === 2 ? 2.35 : en.type === 1 ? 1.65 : 1.05;
     ctx.fillStyle = "rgba(100,180,230,0.28)";
     ctx.beginPath();
@@ -1396,7 +1424,11 @@ function drawPersonSide(
   name?: string,
 ) {
   if (look.body === 1) {
+    const barrier =
+      p.alive && (p.ability ?? 0) === 4 && (p.shieldUntil ?? 0) > serverTime && !fxOld(p.id);
+    if (barrier) drawShieldBarrier2(ctx, p.x, p.y, p.angle, tMs, "back");
     drawPersonLegacy(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look.gun);
+    if (barrier) drawShieldBarrier2(ctx, p.x, p.y, p.angle, tMs, "front");
     return;
   }
   drawPersonNew(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look, capeKey, name);
@@ -1554,6 +1586,8 @@ function drawPersonNew(
     }
   }
 
+  const barrier = shieldUp && p.alive && !fxOld(p.id);
+  if (barrier) drawShieldBarrier2(ctx, ox, oy, p.angle, tMs, "back");
   if (shieldUp && p.alive && gunBehind) drawRaisedShield(ctx, ox, oy, p.angle, tMs, 1);
 
   ctx.save();
@@ -1580,6 +1614,7 @@ function drawPersonNew(
   }
   ctx.restore();
   if (shieldUp && p.alive && !gunBehind) drawRaisedShield(ctx, ox, oy, p.angle, tMs, 1);
+  if (barrier) drawShieldBarrier2(ctx, ox, oy, p.angle, tMs, "front");
 
   const topY = oy + BODY.top * CHAR_SCALE;
   if (isSelf && p.alive) {
@@ -1608,7 +1643,9 @@ function drawPersonNew(
     drawSilenceIcon(ctx, ox, topY - (!isSelf && name ? 36 : 26));
   }
 
-  if (frozen) {
+  if (frozen && !frostIsOld(p.id)) {
+    drawIceBlock2(ctx, ox, oy, tMs, 23, 78, p.id * 1.37);
+  } else if (frozen) {
     ctx.fillStyle = "rgba(100,180,230,0.3)";
     ctx.beginPath();
     ctx.ellipse(ox, oy - 34 * BODY_K, 32 * BODY_K, 52 * BODY_K, 0, 0, Math.PI * 2);
@@ -2045,7 +2082,9 @@ function drawPersonLegacyAt(
   }
 
   // Congelamento — tint frio + bloco de gelo (por cima do corpo)
-  if (frozen) {
+  if (frozen && !frostIsOld(p.id)) {
+    drawIceBlock2(ctx, p.x + kickX, p.y + bob + kickY, tMs, 27, 93, p.id * 1.37);
+  } else if (frozen) {
     ctx.fillStyle = "rgba(100,180,230,0.32)";
     ctx.beginPath();
     ctx.ellipse(p.x + kickX, p.y + bob + kickY - 10, 28, 40, 0, 0, Math.PI * 2);
@@ -2303,6 +2342,8 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   drawWorld(ctx, camX, camY, viewW, viewH);
   view.drawDecals(ctx, camX, camY, viewW, viewH);
   view.drawAbilityGround(ctx);
+  setFx2View(camX, camY, viewW, viewH);
+  drawFx2Ground(ctx, tMs);
   if (view.spikeTotems?.length && view.drawSpikeTotems) {
     view.drawSpikeTotems(ctx, view.spikeTotems, tMs);
   }
@@ -2556,6 +2597,10 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   // throwables
   for (const t of view.throwables) {
     if (t.kind === SHIELD_THROW_KIND) continue; // desenhado na camada "ar"
+    if (t.kind === 5 && !fxOld(t.owner)) {
+      drawBomb2(ctx, t, tMs);
+      continue;
+    }
     if (t.kind === 5) {
       // Bomba Devastadora — pavio pisca mais rápido perto do fim
       const fuseLeft = Math.max(0, t.fuse);
@@ -2701,9 +2746,12 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   // Escudo Bumerangue em voo + raios / teleporte
   for (const t of view.throwables) {
-    if (t.kind === SHIELD_THROW_KIND) drawThrownShield(ctx, t, tMs);
+    if (t.kind !== SHIELD_THROW_KIND) continue;
+    if (fxOld(t.owner)) drawThrownShield(ctx, t, tMs);
+    else drawThrownShield2(ctx, t, tMs);
   }
   drawPowersFx(ctx);
+  drawFx2Air(ctx, tMs);
 
   // balas — rastro na altura da arma (3/4: a bala voa no nível das mãos)
   const EL = GUN_HAND_BODY_Y;

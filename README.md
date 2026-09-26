@@ -49,12 +49,28 @@ Sprites/base: Kenney.nl · paleta: Lospec · efeitos (muzzle, trail, bob, sombra
 - **Boneco** (`character.ts`): 8 direções, idle/caminhada, com camadas de pele, cabelo, roupa, armadura, calçado e capacete. O boneco antigo (sprite) continua como corpo **"Rascunho"**, com as capas, as botas e o escudo antigos.
 - **Capas** (`capes.ts`): física de pano (verlet, 7 pontos) em todas as capas, cosméticas e de habilidade.
 - **Escudo Estelar** (`shield.ts`): inspirado no escudo do Capitão América. Fica nas costas quando equipado e é erguido na frente quando ativo.
+- **Armas** (`guns.ts`): as 7 armas desenhadas em código (pistola, M4, M16, AK, escopeta, SMG e sniper). Os sprites antigos continuam como estilo **"Rascunho"**. Só o desenho muda: dano, cadência, pente e alcance são os mesmos.
+- **Poderes** (`fx2.ts` + `fx2_core.ts`, Gigante em `giant2.ts`): visual novo dos 12 poderes, com partículas com altura e gravidade, brilho aditivo com sprites em cache, anéis de choque e marcas no chão:
+  - rajada d'água com espuma e poças;
+  - golem de pedra com veias de magma;
+  - chamas nos calcanhares (Botas);
+  - rastro rosa (Capa);
+  - barreira hexagonal (Escudo Estelar);
+  - fissura de magma com buraco de lava (Fenda);
+  - bomba com zona de perigo e explosão com fumaça e cratera;
+  - muro de cristais esmeralda (Espinhos);
+  - sopro gelado com geada e prisma de gelo;
+  - disco com rastro de luz (Bumerangue);
+  - raios com ramificações;
+  - silhueta que se desfaz com runas (Passo Sombrio).
+
+  O visual antigo continua como estilo **"Rascunho"** (`abilities_fx.ts` / `powers_fx.ts`). Quem conjura escolhe: todo mundo vê o poder no estilo do dono (`fxstyle.ts`). Nada muda na simulação. No perfil Leve, o orçamento de partículas cai para ~40%.
 
 ## Guarda-roupa (cosméticos)
 
-Botão **Guarda-roupa** no menu e na sala. Tem skins completas (Recruta, Lorde Sombrio — inspirado no Darth Vader —, Cavaleiro, Soldado, Neon, Rei, Andarilho, Herói e Rascunho) ou item por item: roupa, armadura, calçado, capa, capacete, cabelo e pele.
+Botão **Guarda-roupa** no menu e na sala. Tem skins completas (Recruta, Lorde Sombrio — inspirado no Darth Vader —, Cavaleiro, Soldado, Neon, Rei, Andarilho, Herói e Rascunho) ou item por item: roupa, armadura, calçado, capa, capacete, cabelo e pele. As abas **Armas** e **Poderes** escolhem entre o desenho novo e o "Rascunho".
 
-É **só visual**. O visual vai 1× no `HELLO` (9 bytes) e numa mensagem `LOOK` quando o jogador troca. O host valida e repassa no `LOBBY`. Não há nenhum byte extra por tick.
+É **só visual**. O visual vai 1× no `HELLO` (11 bytes; o formato antigo de 9 bytes ainda é aceito) e numa mensagem `LOOK` quando o jogador troca. O host valida e repassa no `LOBBY`. Não há nenhum byte extra por tick.
 
 ## Poderes (Q usa · T troca no treino · drops no Survival)
 
