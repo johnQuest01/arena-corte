@@ -579,6 +579,7 @@ export class GameClient {
           if (e.b === this.selfId) {
             this.flashBlind = 1;
             this.flashHoldMs = 400;
+            this.prediction.flashUntil = until;
             if (this.prediction.predicted) {
               (this.prediction.predicted as { flashUntil?: number }).flashUntil = until;
             }
@@ -628,6 +629,8 @@ export class GameClient {
           for (let i = 0; i < 6; i++) {
             const ang = (i / 6) * Math.PI * 2 + Math.random() * 0.4;
             this.flashes.push({
+              // -1: faísca do bloqueio, não é tiro do jogador local (sem muzzle flash)
+              owner: -1,
               x: e.x,
               y: e.y,
               angle: ang,

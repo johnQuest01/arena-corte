@@ -79,9 +79,10 @@ export function reconcile(
       doorBits: buffer.doorBits,
       serverTime: t,
       spikeTotems: buffer.spikeTotems,
-      // Passo Sombrio é determinístico: refaz o teleporte no replay (sem puxar de volta)
+      // Passo Sombrio é determinístico: refaz o teleporte no replay (sem puxar de volta).
+      // Cego de flash o host não conjura — o auth não traz flashUntil, então checa aqui.
       onCast: () => {
-        if ((merged.ability ?? replayed.ability) === 11) {
+        if ((merged.ability ?? replayed.ability) === 11 && buffer.flashUntil <= t) {
           performBlink(replayed, t, merged.aim, buffer.doorBits, hitsSolid, buffer.spikeTotems);
         }
       },

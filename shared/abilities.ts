@@ -1,6 +1,7 @@
 /**
  * abilities.ts — framework de habilidades (receita: efeito + evento + cooldown).
  */
+import { PLAYER_R } from "./constants";
 import type { PlayerState } from "./protocol";
 
 export interface AbilityTargetRef {
@@ -1115,8 +1116,14 @@ export const SHIELD_THROW_OUT_MS = 820;
 /** Some se não conseguir voltar. */
 export const SHIELD_THROW_MAX_MS = 3200;
 export const SHIELD_THROW_BOUNCES = 3;
-/** Raio de colisão do disco. */
+/** Raio do disco (acerto em alvos / visual). */
 export const SHIELD_THROW_R = 17;
+/**
+ * Raio do disco contra paredes: menor que o do jogador (PLAYER_R), senão o
+ * disco nasce dentro da parede quando o dono está encostado nela e não passa
+ * em portas de 1 tile.
+ */
+export const SHIELD_THROW_WALL_R = 10;
 export const SHIELD_THROW_DMG = 34;
 export const SHIELD_THROW_ENEMY_DMG = 60;
 /** Empurrão no alvo. */
@@ -1167,7 +1174,17 @@ export const BLINK_MIN = 26;
 
 type SolidFn = (x: number, y: number, r: number, doorBits: number) => boolean;
 
-/** Destino do Passo Sombrio: anda na mira até achar parede (não atravessa). */
+/**
+ * Sonda do teleporte: meio px menor que o jogador — quem desliza encostado
+ * na parede fica a exatamente PLAYER_R dela e não pode contar como colisão.
+ */
+const BLINK_PROBE_R = PLAYER_R - 0.5;
+const BLINK_STEP = 6;
+
+/**
+ * Destino do Passo Sombrio: anda na mira em passos curtos; se bater em
+ * parede/totem, desliza no eixo livre (como o movimento). Nunca atravessa.
+ */
 export function blinkDestination(
   x: number,
   y: number,
@@ -1176,17 +1193,26 @@ export function blinkDestination(
   hitsSolidFn: SolidFn,
   totems?: readonly SpikeTotemSense[],
 ): { x: number; y: number } {
-  const dx = Math.cos(aim);
-  const dy = Math.sin(aim);
+  const sx = Math.cos(aim) * BLINK_STEP;
+  const sy = Math.sin(aim) * BLINK_STEP;
+  const blocked = (px: number, py: number) =>
+    hitsSolidFn(px, py, BLINK_PROBE_R, doorBits) ||
+    (!!totems?.length && hitsTotemBody(px, py, BLINK_PROBE_R, totems));
+  // quina (os dois eixos livres): anda no eixo dominante da mira
+  const xFirst = Math.abs(sx) >= Math.abs(sy);
   let bx = x;
   let by = y;
-  for (let d = 6; d <= BLINK_RANGE; d += 6) {
-    const nx = x + dx * d;
-    const ny = y + dy * d;
-    if (hitsSolidFn(nx, ny, 15, doorBits)) break;
-    if (totems?.length && hitsTotemBody(nx, ny, 15, totems)) break;
-    bx = nx;
-    by = ny;
+  for (let d = BLINK_STEP; d <= BLINK_RANGE; d += BLINK_STEP) {
+    if (!blocked(bx + sx, by + sy)) {
+      bx += sx;
+      by += sy;
+      continue;
+    }
+    const canX = Math.abs(sx) > 0.5 && !blocked(bx + sx, by);
+    const canY = Math.abs(sy) > 0.5 && !blocked(bx, by + sy);
+    if (canX && (xFirst || !canY)) bx += sx;
+    else if (canY) by += sy;
+    else break;
   }
   return { x: bx, y: by };
 }

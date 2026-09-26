@@ -205,12 +205,16 @@ export function drawPowersFx(ctx: CanvasRenderingContext2D) {
 /** Altura visual do disco em voo (px acima do chão). */
 const SHIELD_FLY_Y = -26;
 
-/** Escudo Bumerangue em voo (throwable kind 7). */
+/** Escudo Bumerangue em voo (throwable kind 7). fuse: 1 voltando, 2 voltando por dentro de parede. */
 export function drawThrownShield(ctx: CanvasRenderingContext2D, t: ThrowableState, tMs: number) {
   const sp = Math.hypot(t.vx, t.vy) || 1;
   const ux = t.vx / sp;
   const uy = t.vy / sp;
   const y = t.y + SHIELD_FLY_Y;
+  const ghost = t.fuse >= 2;
+  ctx.save();
+  // atravessando parede na volta: translúcido (não fere ninguém)
+  if (ghost) ctx.globalAlpha *= 0.4;
   // sombra no chão (posição lógica)
   ctx.fillStyle = "rgba(10,10,14,0.3)";
   ctx.beginPath();
@@ -219,14 +223,15 @@ export function drawThrownShield(ctx: CanvasRenderingContext2D, t: ThrowableStat
   // rastro
   for (let i = 3; i >= 1; i--) {
     ctx.save();
-    ctx.globalAlpha = 0.12 * (4 - i);
+    ctx.globalAlpha *= 0.12 * (4 - i);
     drawStarShield(ctx, t.x - ux * i * 11, y - uy * i * 11, 17, { squash: 0.62, spin: tMs * 0.03 - i * 0.4, t: tMs });
     ctx.restore();
   }
   drawStarShield(ctx, t.x, y, 17, {
     squash: 0.62,
     spin: tMs * 0.03,
-    glow: t.fuse > 0 ? 0.35 : 0.6,
+    glow: ghost ? 0 : t.fuse > 0 ? 0.35 : 0.6,
     t: tMs,
   });
+  ctx.restore();
 }

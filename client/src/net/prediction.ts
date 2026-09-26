@@ -40,6 +40,8 @@ export class PredictionBuffer {
   spikeTotems: SpikeTotemSense[] = [];
   /** tempo do último snapshot (para replay de reload) */
   serverTime = 0;
+  /** flash no próprio jogador (serverTime) — snapshot não leva; replay precisa */
+  flashUntil = 0;
   /** inventário de munição por arma (preservado na reconciliação) */
   ammoBank: AmmoStack[] = fullAmmoBank();
   /** balas locais (shotgun leque / feel) — não autoritativas */
