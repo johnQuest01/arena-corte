@@ -1,7 +1,7 @@
 /**
  * cosmetics.ts — visual do personagem (só aparência, zero efeito no jogo).
  *
- * Viaja 1× no HELLO (9 bytes) e no LOBBY (JSON); nada por tick.
+ * Viaja 1× no HELLO (11 bytes; clientes antigos mandam 9) e no LOBBY (JSON); nada por tick.
  * O cliente desenha tudo por código (character.ts); o host só guarda/repassa.
  */
 
@@ -16,6 +16,10 @@ export interface Look {
   boots: number;
   cape: number;
   helmet: number;
+  /** 0 = armas desenhadas em código, 1 = "Rascunho" (sprites antigos) */
+  gun: number;
+  /** 0 = efeitos novos dos poderes, 1 = "Rascunho" (efeitos antigos) */
+  fx: number;
 }
 
 export const LOOK_KEYS = [
@@ -28,7 +32,11 @@ export const LOOK_KEYS = [
   "boots",
   "cape",
   "helmet",
+  "gun",
+  "fx",
 ] as const;
+/** Visual antigo (antes de gun/fx) — 9 bytes; o que faltar vira padrão. */
+export const LOOK_MIN_BYTES = 9;
 export type LookKey = (typeof LOOK_KEYS)[number];
 
 export interface NamedItem {
@@ -36,6 +44,8 @@ export interface NamedItem {
 }
 
 export const BODIES: NamedItem[] = [{ name: "Novo" }, { name: "Rascunho (antigo)" }];
+export const GUN_STYLES: NamedItem[] = [{ name: "Novas (código)" }, { name: "Rascunho (sprites antigos)" }];
+export const FX_STYLES: NamedItem[] = [{ name: "Novos" }, { name: "Rascunho (efeitos antigos)" }];
 
 export const SKIN_TONES: (NamedItem & { color: string; shade: string })[] = [
   { name: "Clara", color: "#f2cba6", shade: "#d9a883" },
@@ -181,6 +191,8 @@ export const LOOK_SIZES: Record<LookKey, number> = {
   boots: BOOTS.length,
   cape: CAPES.length,
   helmet: HELMETS.length,
+  gun: GUN_STYLES.length,
+  fx: FX_STYLES.length,
 };
 
 export const DEFAULT_LOOK: Look = {
@@ -193,6 +205,8 @@ export const DEFAULT_LOOK: Look = {
   boots: 0,
   cape: 0,
   helmet: 0,
+  gun: 0,
+  fx: 0,
 };
 
 export interface LookPreset {
@@ -207,42 +221,42 @@ export const PRESETS: LookPreset[] = [
   {
     name: "Lorde Sombrio",
     desc: "Inspirado no Darth Vader: elmo, couraça com painel de luzes, capa e botas pretas.",
-    look: { body: 0, skin: 0, hair: 3, hairColor: 0, outfit: 7, armor: 6, boots: 5, cape: 3, helmet: 4 },
+    look: { body: 0, skin: 0, hair: 3, hairColor: 0, outfit: 7, armor: 6, boots: 5, cape: 3, helmet: 4, gun: 0, fx: 0 },
   },
   {
     name: "Cavaleiro",
     desc: "Armadura de placas, elmo com pluma e capa real.",
-    look: { body: 0, skin: 1, hair: 0, hairColor: 2, outfit: 2, armor: 3, boots: 1, cape: 2, helmet: 3 },
+    look: { body: 0, skin: 1, hair: 0, hairColor: 2, outfit: 2, armor: 3, boots: 1, cape: 2, helmet: 3, gun: 0, fx: 0 },
   },
   {
     name: "Soldado",
     desc: "Camuflado, colete tático e capacete.",
-    look: { body: 0, skin: 2, hair: 0, hairColor: 0, outfit: 3, armor: 1, boots: 1, cape: 0, helmet: 2 },
+    look: { body: 0, skin: 2, hair: 0, hairColor: 0, outfit: 3, armor: 1, boots: 1, cape: 0, helmet: 2, gun: 0, fx: 0 },
   },
   {
     name: "Neon",
     desc: "Armadura com linhas de energia e visor.",
-    look: { body: 0, skin: 3, hair: 6, hairColor: 6, outfit: 4, armor: 4, boots: 3, cape: 0, helmet: 8 },
+    look: { body: 0, skin: 3, hair: 6, hairColor: 6, outfit: 4, armor: 4, boots: 3, cape: 0, helmet: 8, gun: 0, fx: 0 },
   },
   {
     name: "Rei",
     desc: "Coroa, placas douradas e capa de ouro.",
-    look: { body: 0, skin: 1, hair: 2, hairColor: 4, outfit: 8, armor: 7, boots: 2, cape: 4, helmet: 7 },
+    look: { body: 0, skin: 1, hair: 2, hairColor: 4, outfit: 8, armor: 7, boots: 2, cape: 4, helmet: 7, gun: 0, fx: 0 },
   },
   {
     name: "Andarilho",
     desc: "Capuz, roupa de deserto e capa esfarrapada.",
-    look: { body: 0, skin: 2, hair: 2, hairColor: 2, outfit: 1, armor: 0, boots: 4, cape: 5, helmet: 6 },
+    look: { body: 0, skin: 2, hair: 2, hairColor: 2, outfit: 1, armor: 0, boots: 4, cape: 5, helmet: 6, gun: 0, fx: 0 },
   },
   {
     name: "Herói",
     desc: "Jaqueta carmim, placa de aço e capa heroica.",
-    look: { body: 0, skin: 0, hair: 6, hairColor: 3, outfit: 5, armor: 2, boots: 2, cape: 1, helmet: 0 },
+    look: { body: 0, skin: 0, hair: 6, hairColor: 3, outfit: 5, armor: 2, boots: 2, cape: 1, helmet: 0, gun: 0, fx: 0 },
   },
   {
     name: "Rascunho",
-    desc: "O boneco antigo (sprite) com os itens antigos.",
-    look: { ...DEFAULT_LOOK, body: 1 },
+    desc: "O boneco antigo (sprite) com os itens, armas e poderes antigos.",
+    look: { ...DEFAULT_LOOK, body: 1, gun: 1, fx: 1 },
   },
 ];
 
@@ -264,10 +278,10 @@ export function encodeLook(look: Look): number[] {
 }
 
 export function decodeLook(bytes: ArrayLike<number> | null | undefined): Look | null {
-  if (!bytes || bytes.length < LOOK_KEYS.length) return null;
+  if (!bytes || bytes.length < LOOK_MIN_BYTES) return null;
   const raw: Partial<Look> = {};
   LOOK_KEYS.forEach((k, i) => {
-    raw[k] = Number(bytes[i]);
+    if (i < bytes.length) raw[k] = Number(bytes[i]);
   });
   return sanitizeLook(raw);
 }
@@ -299,6 +313,8 @@ export function autoLookFor(id: number): Look {
     boots: pick("boots", 17) % (LOOK_SIZES.boots - 1),
     cape: hashId(id, 18) % 4 === 0 ? 1 + (hashId(id, 19) % (LOOK_SIZES.cape - 3)) : 0,
     helmet: hashId(id, 20) % 3 === 0 ? pick("helmet", 21) : 0,
+    gun: 0,
+    fx: 0,
   });
 }
 

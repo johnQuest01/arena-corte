@@ -4,6 +4,8 @@ import {
   BODIES,
   BOOTS,
   CAPES,
+  FX_STYLES,
+  GUN_STYLES,
   HAIR_COLORS,
   HAIR_STYLES,
   HELMETS,
@@ -33,6 +35,8 @@ const SLOTS: { key: LookKey; label: string; items: SlotItem[] }[] = [
   { key: "hair", label: "Cabelo", items: HAIR_STYLES },
   { key: "hairColor", label: "Cor do cabelo", items: HAIR_COLORS },
   { key: "skin", label: "Pele", items: SKIN_TONES },
+  { key: "gun", label: "Armas", items: GUN_STYLES },
+  { key: "fx", label: "Poderes", items: FX_STYLES },
   { key: "body", label: "Boneco", items: BODIES },
 ];
 
@@ -40,6 +44,8 @@ function randomLook(): Look {
   const out: Partial<Look> = {};
   for (const k of LOOK_KEYS) out[k] = Math.floor(Math.random() * LOOK_SIZES[k]);
   out.body = 0;
+  out.gun = 0;
+  out.fx = 0;
   // itens "Rascunho" (antigos) só se escolher de propósito
   if (out.boots === LOOK_SIZES.boots - 1) out.boots = 0;
   if ((out.cape ?? 0) >= LOOK_SIZES.cape - 2) out.cape = 1;
@@ -200,6 +206,16 @@ export function Wardrobe({ look, onSave, onClose }: Props) {
                 {slot.key === "body" && (
                   <p className="hint" style={{ width: "100%" }}>
                     "Rascunho" usa o boneco antigo (sprite) com as capas, botas e escudo antigos.
+                  </p>
+                )}
+                {slot.key === "gun" && (
+                  <p className="hint" style={{ width: "100%" }}>
+                    Só o desenho muda — dano, cadência, pente e alcance são os mesmos.
+                  </p>
+                )}
+                {slot.key === "fx" && (
+                  <p className="hint" style={{ width: "100%" }}>
+                    Todos veem os seus poderes neste estilo. Só visual: o efeito no jogo é igual.
                   </p>
                 )}
               </div>

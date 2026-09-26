@@ -56,6 +56,7 @@ import {
 } from "./art";
 import { drawRoofLayer, drawWorld, invalidateWorld } from "./world";
 import { BODY, BODY_K, CHAR_SCALE, LEGACY_K, capeAnchor, drawBody, facingOf, skinColorOf } from "./character";
+import { drawGunArt, drawGunHands, drawGunIcon, gunGeom } from "./guns";
 import { drawCape, RECOIL_CAPE_DEF, stepCape } from "./capes";
 import { drawShieldSparks, drawStarShield } from "./shield";
 import { drawPowersFx, drawThrownShield } from "./powers_fx";
@@ -346,6 +347,9 @@ function drawWeaponLayer(
   reloadProgress = 0,
   /** cor da pele (mãos) */
   skin = "#d4a574",
+  /** 0 = arma desenhada em código, 1 = sprite antigo ("Rascunho") */
+  gunStyle = 0,
+  tMs = 0,
 ) {
   const w = weaponOf(weaponId);
   const HAND = GUN_HAND_VISUAL;
@@ -368,7 +372,7 @@ function drawWeaponLayer(
   if (facingLeft) ctx.scale(1, -1);
   ctx.translate(-gunKick * 5, reloadDrop);
 
-  const gunImg = getGunImg(weaponId);
+  const gunImg = gunStyle === 1 ? getGunImg(weaponId) : null;
   const VISUAL_SCALE = GUN_VISUAL_SCALE;
   const grip = (w.gripInset ?? 4) * VISUAL_SCALE;
   const visualLen = w.length * VISUAL_SCALE;
@@ -383,12 +387,64 @@ function drawWeaponLayer(
     ctx.globalAlpha *= a;
     ctx.translate(ox, oy);
     ctx.rotate(rot);
-    ctx.fillStyle = "#2a2418";
+    ctx.fillStyle = "#26282c";
     ctx.fillRect(-magW / 2, 0, magW, magH);
-    ctx.fillStyle = "#5a4a28";
-    ctx.fillRect(-magW / 2 + 1, 1, magW - 2, 3);
+    ctx.strokeStyle = "#15110f";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-magW / 2, 0, magW, magH);
+    ctx.fillStyle = "#c9a44a";
+    ctx.fillRect(-magW / 2 + 0.8, 0.6, magW - 1.6, 1.4);
     ctx.restore();
   };
+
+  if (gunStyle !== 1) {
+    // arma em código: pente sai do desenho durante a recarga (o que cai/entra é o drawMag)
+    const magOut = reloading && rp > 0.01 && rp < 0.97;
+    drawGunArt(ctx, weaponId, { magOut, t: tMs });
+    if (gripHands) drawGunHands(ctx, weaponId, skin);
+    if (reloading) {
+      const G = gunGeom(weaponId);
+      const mx = G.x0 + G.len * (weaponId === 5 ? 0.13 : weaponId === 0 ? 0.2 : 0.33);
+      const my = weaponId === 5 ? G.tipY + 11 : G.tipY + 4;
+      if (rp < 0.18) {
+        const t = rp / 0.18;
+        drawMag(mx, my + t * t * 30, t * 1.4, 1 - t * 0.35);
+      } else if (rp > 0.78) {
+        const t = (rp - 0.78) / 0.22;
+        drawMag(mx, my + (1 - t) * 18, (1 - t) * -0.35, 0.55 + t * 0.45);
+      }
+    }
+    if (muzzleFlash) {
+      const G = gunGeom(weaponId);
+      const mx = G.tipX;
+      const my = G.tipY;
+      const R = 13;
+      const fl = ctx.createRadialGradient(mx, my, 0, mx, my, R);
+      fl.addColorStop(0, "rgba(255,250,200,1)");
+      fl.addColorStop(0.3, "rgba(255,205,90,0.85)");
+      fl.addColorStop(0.6, "rgba(255,110,30,0.4)");
+      fl.addColorStop(1, "rgba(255,60,0,0)");
+      ctx.fillStyle = fl;
+      ctx.beginPath();
+      ctx.arc(mx, my, R, 0, Math.PI * 2);
+      ctx.fill();
+      // estrela de 3 pontas (clarão)
+      ctx.fillStyle = "rgba(255,238,160,0.95)";
+      ctx.beginPath();
+      ctx.moveTo(mx - 1, my - 1.8);
+      ctx.lineTo(mx + 11, my);
+      ctx.lineTo(mx - 1, my + 1.8);
+      ctx.closePath();
+      ctx.moveTo(mx + 1, my);
+      ctx.lineTo(mx + 5, my - 5);
+      ctx.lineTo(mx + 3.5, my);
+      ctx.lineTo(mx + 5, my + 5);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+    return;
+  }
 
   if (gunImg) {
     const scale = visualLen / Math.max(1, gunImg.naturalWidth);
@@ -1340,7 +1396,7 @@ function drawPersonSide(
   name?: string,
 ) {
   if (look.body === 1) {
-    drawPersonLegacy(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
+    drawPersonLegacy(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look.gun);
     return;
   }
   drawPersonNew(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look, capeKey, name);
@@ -1504,7 +1560,7 @@ function drawPersonNew(
   ctx.translate(ox, oy);
   if (shieldOn && !shieldUp && p.alive && !f.back) drawBackShield(ctx, p.angle, tMs);
   if (gunBehind && p.alive) {
-    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin);
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin, look.gun, tMs);
   }
   drawBody(ctx, look, pose);
   if (shieldOn && !shieldUp && p.alive && f.back) drawBackShield(ctx, p.angle, tMs);
@@ -1520,7 +1576,7 @@ function drawPersonNew(
   ctx.save();
   ctx.translate(ox, oy);
   if (!gunBehind && p.alive) {
-    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin);
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin, look.gun, tMs);
   }
   ctx.restore();
   if (shieldUp && p.alive && !gunBehind) drawRaisedShield(ctx, ox, oy, p.angle, tMs, 1);
@@ -1580,21 +1636,35 @@ function drawPersonLegacy(
   muzzle: boolean,
   feel: FeelState,
   serverTime = 0,
+  gunStyle = 1,
 ) {
   // desenhado na escala antiga e encolhido a partir dos pés (mesma altura do boneco novo)
   ctx.save();
   ctx.translate(p.x, p.y);
   ctx.scale(LEGACY_K, LEGACY_K);
   ctx.translate(-p.x, -p.y);
+  legacyGunStyle = gunStyle;
   drawPersonLegacyAt(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
   ctx.restore();
 }
 
+/** estilo da arma do Rascunho sendo desenhado (evita passar por 2 níveis de assinatura) */
+let legacyGunStyle = 1;
+
 /** Arma do Rascunho: desfaz a escala do sprite (arma no tamanho do mundo). */
-function drawLegacyWeapon(ctx: CanvasRenderingContext2D, ...args: Parameters<typeof drawWeaponLayer> extends [unknown, ...infer R] ? R : never) {
+function drawLegacyWeapon(
+  ctx: CanvasRenderingContext2D,
+  weaponId: number,
+  aim: number,
+  gunKick: number,
+  muzzleFlash: boolean,
+  gripHands: boolean,
+  reloadProgress: number,
+) {
   ctx.save();
   ctx.scale(1 / LEGACY_K, 1 / LEGACY_K);
-  drawWeaponLayer(ctx, ...args);
+  // arma nova no Rascunho: o sprite antigo já tem mãos — não desenha as de elipse
+  drawWeaponLayer(ctx, weaponId, aim, gunKick, muzzleFlash, gripHands, reloadProgress, "#d4a574", legacyGunStyle);
   ctx.restore();
 }
 
@@ -2270,16 +2340,20 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   }
 
   // armas dropadas na morte
+  const dropStyle = view.lookFor?.(view.selfId)?.gun ?? 0;
   for (const d of view.weaponDrops) {
     const bob = Math.sin(tMs * 0.005 + d.id * 1.7) * 2.5;
-    const gun = getGunImg(d.weaponId);
+    const gun = dropStyle === 1 ? getGunImg(d.weaponId) : null;
     const w = weaponOf(d.weaponId);
+    const gw = gunGeom(d.weaponId).len * 0.95;
     ctx.fillStyle = LOSPEC.shadow;
     ctx.beginPath();
-    ctx.ellipse(d.x, d.y + 8, 26, 7, 0, 0, Math.PI * 2);
+    ctx.ellipse(d.x, d.y + 8, gw * 0.42, 6, 0, 0, Math.PI * 2);
     ctx.fill();
-    if (gun) {
-      const dw = Math.min(110, Math.max(64, w.length * 1.55));
+    if (dropStyle !== 1) {
+      drawGunIcon(ctx, d.weaponId, d.x, d.y + bob, gw, tMs);
+    } else if (gun) {
+      const dw = gw;
       const scale = dw / Math.max(1, gun.naturalWidth);
       const dh = gun.naturalHeight * scale;
       ctx.drawImage(gun, d.x - dw / 2, d.y - dh / 2 + bob, dw, dh);

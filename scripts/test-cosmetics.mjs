@@ -54,6 +54,11 @@ const bad = decodeLook([9, 99, 99, 99, 99, 99, 99, 99, 250]);
 check("sanitize fora do catálogo", LOOK_KEYS.every((k) => bad[k] >= 0 && bad[k] < LOOK_SIZES[k]));
 check("sanitize null", sanitizeLook(null).outfit === DEFAULT_LOOK.outfit);
 check("decode curto = null", decodeLook([1, 2]) === null);
+// visual de cliente antigo (9 bytes, sem armas/poderes) continua valendo
+const old9 = decodeLook([0, 2, 1, 3, 4, 2, 1, 2, 3]);
+check("visual antigo (9 bytes) aceito com armas/poderes novos", old9 && old9.outfit === 4 && old9.gun === 0 && old9.fx === 0);
+const rasc = PRESETS.find((p) => p.name === "Rascunho").look;
+check("skin Rascunho usa armas e poderes antigos", rasc.body === 1 && rasc.gun === 1 && rasc.fx === 1);
 
 // LOBBY leva o visual (JSON)
 const lobby = decodeLobby(
