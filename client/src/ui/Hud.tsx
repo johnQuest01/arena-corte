@@ -2,6 +2,7 @@ import { KILL_FEED_MS, playerTag, type KillFeedEntry } from "../game/feedback";
 import type { GraphicsQuality } from "../game/graphics";
 import type { GameHud } from "../game/loop";
 import { GraphicsToggle } from "./GraphicsToggle";
+import { abilityGlyph } from "./abilityGlyph";
 
 function pingClass(ms: number) {
   if (ms < 60) return "ok";
@@ -9,11 +10,11 @@ function pingClass(ms: number) {
   return "bad";
 }
 
-function killFeedLine(e: KillFeedEntry, selfId: number | undefined) {
-  const vic = playerTag(e.victimId);
+function killFeedLine(e: KillFeedEntry, selfId: number | undefined, tag: (id: number) => string) {
+  const vic = tag(e.victimId);
   if (e.solo) return { text: `${vic} morreu`, you: false, youVictim: e.victimId === selfId };
   if (e.youKill) return { text: `Você eliminou ${vic}`, you: true, youVictim: false };
-  const kil = playerTag(e.killerId);
+  const kil = tag(e.killerId);
   return {
     text: `${kil}  ${e.label}  ${vic}`,
     you: e.killerId === selfId,
@@ -59,6 +60,8 @@ export function Hud({
   })) ?? [];
 
   const self = hud.snapshot?.players.find((p) => p.id === hud.welcome?.selfId);
+  /** nome do lobby (ou P#) — placar, killfeed e resultado */
+  const tag = (id: number) => hud.lobby?.players.find((p) => p.id === id)?.name || playerTag(id);
   const selfId = hud.welcome?.selfId;
   const hp = Math.max(0, Math.min(100, self?.hp ?? hud.selfHp ?? 100));
   // qualquer um pode iniciar com 2+ na sala
@@ -77,7 +80,7 @@ export function Hud({
         <div className="scoreboard">
           {(hud.snapshot?.players ?? []).map((p) => (
             <span key={p.id} className={p.id === hud.welcome?.selfId ? "me" : ""}>
-              P{p.id + 1} {p.kills}
+              {tag(p.id)} {p.kills}
             </span>
           ))}
           {hud.phase === "playing" && (hud.mode ?? 0) === 1 && (
@@ -159,7 +162,9 @@ export function Hud({
               ))}
               {players.length === 0 && <li>Conectando…</li>}
             </ul>
-            <p className="hint">{players.length}/3 na sala</p>
+            <p className="hint">
+              {players.length > 3 ? `${players.length} na sala (com bots)` : `${players.length}/3 na sala`}
+            </p>
             {graphicsQuality && onGraphicsQuality && (
               <GraphicsToggle quality={graphicsQuality} onChange={onGraphicsQuality} />
             )}
@@ -197,7 +202,7 @@ export function Hud({
                 .map((p, i) => (
                   <li key={p.id}>
                     <span>
-                      #{i + 1} P{p.id + 1}
+                      #{i + 1} {tag(p.id)}
                     </span>
                     <span>{p.kills} kills</span>
                   </li>
@@ -220,7 +225,7 @@ export function Hud({
           {feed.map((e) => {
             const age = nowMs - e.at;
             const fade = Math.max(0, Math.min(1, 1 - age / KILL_FEED_MS));
-            const line = killFeedLine(e, selfId);
+            const line = killFeedLine(e, selfId, tag);
             return (
               <div
                 key={e.id}
@@ -234,11 +239,11 @@ export function Hud({
                 ) : (
                   <>
                     <span className={e.killerId === selfId ? "kf-you" : "kf-name"}>
-                      {playerTag(e.killerId)}
+                      {tag(e.killerId)}
                     </span>
                     <span className="kf-cause">{e.label}</span>
                     <span className={e.victimId === selfId ? "kf-victim" : "kf-name"}>
-                      {playerTag(e.victimId)}
+                      {tag(e.victimId)}
                     </span>
                   </>
                 )}
@@ -299,29 +304,11 @@ export function Hud({
                       className={`ability-icon${(hud.abilityCd ?? 1) < 1 ? " cooling" : ""}${hud.stunned || hud.frozen ? " stunned" : ""}`}
                       style={{ ["--cd" as string]: String(1 - (hud.abilityCd ?? 1)) }}
                     >
-                      <span className="ability-glyph">
-                        {(hud.abilityName ?? "").includes("Congelamento")
-                          ? "❄"
-                          : (hud.abilityName ?? "").includes("Espinhos")
-                          ? "E"
-                          : (hud.abilityName ?? "").includes("Bomba")
-                            ? "D"
-                            : (hud.abilityName ?? "").includes("Fenda")
-                              ? "F"
-                              : (hud.abilityName ?? "").includes("Recuo")
-                                ? "R"
-                                : (hud.abilityName ?? "").includes("Capa")
-                                  ? "C"
-                                  : (hud.abilityName ?? "").includes("Botas")
-                                    ? "B"
-                                    : (hud.abilityName ?? "").includes("Gigante")
-                                      ? "G"
-                                      : "W"}
-                      </span>
+                      <span className="ability-glyph">{abilityGlyph(hud.abilityId)}</span>
                       <span className="ability-key">Q</span>
                     </div>
                     <div className="ability-meta">
-                      {(hud.abilityName ?? "").includes("Recuo") && (
+                      {hud.abilityId === 3 && (
                         <div className="ability-pips" aria-label="cargas">
                           {[0, 1].map((i) => {
                             const charges = hud.dashCharges ?? 2;
@@ -343,7 +330,7 @@ export function Hud({
                       )}
                       <div className="ability-label mono">
                         {hud.abilityName ?? "Jato"}
-                        {(hud.abilityName ?? "").includes("Recuo")
+                        {hud.abilityId === 3
                           ? (hud.dashCharges ?? 0) > 0
                             ? ` ${hud.dashCharges}/2`
                             : ` ${Math.ceil(((1 - (hud.dashRecharge ?? 0)) * (hud.abilityCdMs ?? 8000)) / 1000)}s`
@@ -353,20 +340,20 @@ export function Hud({
                       </div>
                     </div>
                   </div>
-                  <div>1-7 arma · R reload · Q poder · T troca · shift sprint</div>
+                  <div>1-7 arma · R reload · Q poder · T troca poder · shift corre</div>
                 </>
               )}
               {mobile && (
                 <div className="ability-label mono" style={{ marginTop: 4 }}>
                   {hud.abilityName ?? "Jato"}
-                  {(hud.abilityName ?? "").includes("Recuo")
+                  {hud.abilityId === 3
                     ? (hud.dashCharges ?? 0) > 0
                       ? ` ${hud.dashCharges}/2`
                       : ` ${Math.ceil(((1 - (hud.dashRecharge ?? 0)) * (hud.abilityCdMs ?? 8000)) / 1000)}s`
                     : (hud.abilityCd ?? 1) < 1
                       ? ` ${Math.ceil(((1 - (hud.abilityCd ?? 1)) * (hud.abilityCdMs ?? 6000)) / 1000)}s`
                       : " pronta"}
-                  {(hud.abilityName ?? "").includes("Recuo") && (
+                  {hud.abilityId === 3 && (
                     <div className="ability-pips" style={{ marginTop: 4, justifyContent: "flex-end" }}>
                       {[0, 1].map((i) => {
                         const charges = hud.dashCharges ?? 2;

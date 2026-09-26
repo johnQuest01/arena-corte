@@ -45,6 +45,8 @@ export function causeLabel(cause: number): string {
   if (c === 102) return "fenda";
   if (c === 103) return "bomba";
   if (c === 104) return "totem";
+  if (c === 105) return "escudo";
+  if (c === 106) return "raio";
   if (c === 200) return "zumbi";
   if (c === 201) return "gigante";
   if (c >= 0 && c <= 6) {

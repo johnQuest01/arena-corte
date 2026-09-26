@@ -143,6 +143,8 @@ function damageFromHit(weaponId: number | undefined): number {
   const id = weaponId ?? 0;
   if (id === 100) return 55;
   if (id === 101) return 12;
+  if (id === 105) return 34;
+  if (id === 106) return 26;
   if (id >= 0 && id <= 6) return weaponOf(id).damage;
   return 20;
 }
@@ -222,8 +224,39 @@ export function stampShell(x: number, y: number) {
   stampDecal(x, y, 1.2, "#c8a060", 0.7);
 }
 
-function lookOf(id: number) {
-  return LOADOUTS[id % LOADOUTS.length]!;
+/** Cores do corpo caído — vêm do visual (cosméticos) de cada jogador. */
+export interface CorpseColors {
+  shirt: string;
+  pants: string;
+  skin: string;
+  hair: string;
+  shoes: string;
+  /** capacete/elmo cobre a cabeça */
+  helmet?: string;
+}
+
+let colorProvider: ((id: number) => CorpseColors) | null = null;
+
+export function setCorpseColorProvider(fn: (id: number) => CorpseColors) {
+  colorProvider = fn;
+}
+
+/** roundRect compatível (Safari < 16 não tem ctx.roundRect). */
+function rrect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function lookOf(id: number): CorpseColors {
+  if (colorProvider) return colorProvider(id);
+  const l = LOADOUTS[id % LOADOUTS.length]!;
+  return { shirt: l.shirt, pants: l.pants, skin: l.skin, hair: l.hair, shoes: l.shoes };
 }
 
 export function processGoreEvents(events: TickEvent[], now: number, selfId = -1) {
@@ -447,15 +480,56 @@ export function drawGoreActors(ctx: CanvasRenderingContext2D) {
     ctx.save();
     ctx.translate(c.x, c.y);
     ctx.rotate(c.angle);
-    ctx.globalAlpha = 0.9;
-    ctx.fillStyle = look.pants;
-    ctx.fillRect(-6, -3, 14, 5);
-    ctx.fillStyle = look.shirt;
-    ctx.fillRect(-8, -5, 12, 7);
-    ctx.fillStyle = look.skin;
+    ctx.globalAlpha = 0.92;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#1a1411";
+    ctx.lineWidth = 2;
+    // sombra
+    ctx.fillStyle = "rgba(12,8,10,0.3)";
     ctx.beginPath();
-    ctx.arc(-10, 0, 4, 0, Math.PI * 2);
+    ctx.ellipse(4, 3, 34, 13, 0, 0, Math.PI * 2);
     ctx.fill();
+    // pernas + sapatos
+    ctx.fillStyle = look.pants;
+    for (const ly of [-5, 5]) {
+      rrect(ctx, 8, ly - 4, 20, 8, 3);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.fillStyle = look.shoes;
+    for (const ly of [-5, 5]) {
+      rrect(ctx, 26, ly - 4.5, 8, 9, 3);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // tronco
+    ctx.fillStyle = look.shirt;
+    rrect(ctx, -12, -12, 24, 24, 6);
+    ctx.fill();
+    ctx.stroke();
+    // cabeça
+    ctx.fillStyle = look.helmet ?? look.skin;
+    ctx.beginPath();
+    ctx.arc(-22, 0, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    if (!look.helmet) {
+      ctx.fillStyle = look.hair;
+      ctx.beginPath();
+      ctx.arc(-24, 0, 10, Math.PI * 0.55, Math.PI * 1.45);
+      ctx.fill();
+      // olhos "X"
+      ctx.strokeStyle = "#1a1411";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (const ey of [-4, 4]) {
+        ctx.moveTo(-18, ey - 2);
+        ctx.lineTo(-15, ey + 2);
+        ctx.moveTo(-15, ey - 2);
+        ctx.lineTo(-18, ey + 2);
+      }
+      ctx.stroke();
+    }
     ctx.restore();
   }
   for (const g of gibs) {

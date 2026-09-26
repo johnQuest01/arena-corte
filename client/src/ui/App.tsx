@@ -409,6 +409,7 @@ export function App() {
             <TouchControls
               client={clientRef.current}
               abilityName={hud.abilityName}
+              abilityId={hud.abilityId}
               abilityCd={hud.abilityCd}
               stunned={hud.stunned}
               frozen={hud.frozen}

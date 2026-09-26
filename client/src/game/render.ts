@@ -58,6 +58,8 @@ import { drawRoofLayer, drawWorld, invalidateWorld } from "./world";
 import { BODY, CHAR_SCALE, capeAnchor, drawBody, facingOf, skinColorOf } from "./character";
 import { drawCape, RECOIL_CAPE_DEF, stepCape } from "./capes";
 import { drawShieldSparks, drawStarShield } from "./shield";
+import { drawPowersFx, drawThrownShield } from "./powers_fx";
+import { SHIELD_THROW_KIND } from "../../../shared/abilities";
 import { CAPES, autoLookFor, type Look } from "../../../shared/cosmetics";
 
 export const LOSPEC = {
@@ -1961,6 +1963,24 @@ export function tickRoofAlpha(
   return alphas;
 }
 
+let vignette: HTMLCanvasElement | null = null;
+/** Vinheta pré-renderizada (256×170) — esticada na janela da câmera. */
+function vignetteCanvas(): HTMLCanvasElement {
+  if (vignette) return vignette;
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 170;
+  const g = c.getContext("2d")!;
+  const grd = g.createRadialGradient(128, 85, 40, 128, 85, 150);
+  grd.addColorStop(0, "rgba(0,0,0,0)");
+  grd.addColorStop(0.62, "rgba(6,8,12,0.06)");
+  grd.addColorStop(1, "rgba(6,8,12,0.42)");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 256, 170);
+  vignette = c;
+  return c;
+}
+
 export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: number) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const cw = ctx.canvas.width;
@@ -2065,22 +2085,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     ctx.beginPath();
     ctx.ellipse(d.x, d.y + 8, 12, 5, 0, 0, Math.PI * 2);
     ctx.fill();
-    if (d.abilityId === 4) {
-      ctx.fillStyle = `rgba(120,170,210,${0.28 * pulse})`;
-      ctx.beginPath();
-      ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#3a4a58";
-      ctx.beginPath();
-      ctx.moveTo(d.x - 8, d.y - 2 + bob);
-      ctx.quadraticCurveTo(d.x - 14, d.y + 14 + bob, d.x - 4, d.y + 16 + bob);
-      ctx.lineTo(d.x + 4, d.y + 16 + bob);
-      ctx.quadraticCurveTo(d.x + 14, d.y + 14 + bob, d.x + 8, d.y - 2 + bob);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = "#8ab0c8";
-      ctx.fillRect(d.x - 5, d.y - 4 + bob, 10, 6);
-    } else if (d.abilityId === 3) {
+    if (d.abilityId === 3) {
       ctx.fillStyle = `rgba(180,60,100,${0.28 * pulse})`;
       ctx.beginPath();
       ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
@@ -2197,6 +2202,54 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       ctx.moveTo(d.x - 4, by - 8);
       ctx.lineTo(d.x + 2, by + 4);
       ctx.stroke();
+    } else if (d.abilityId === 4 || d.abilityId === 9) {
+      // Escudo Estelar / Escudo Bumerangue
+      ctx.fillStyle = `rgba(120,170,255,${0.3 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y + bob, 17, 0, Math.PI * 2);
+      ctx.fill();
+      drawStarShield(ctx, d.x, d.y + bob, 11, {
+        squash: d.abilityId === 9 ? 0.6 + 0.4 * Math.abs(Math.sin(tMs * 0.004)) : 1,
+        spin: d.abilityId === 9 ? tMs * 0.004 : 0,
+        t: tMs,
+      });
+    } else if (d.abilityId === 10) {
+      // Raio em Cadeia — orbe elétrico
+      const by = d.y + bob;
+      ctx.fillStyle = `rgba(120,180,255,${0.32 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, by, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1d2c52";
+      ctx.beginPath();
+      ctx.arc(d.x, by, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(210,235,255,${0.7 + 0.3 * pulse})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(d.x - 2, by - 8);
+      ctx.lineTo(d.x + 3, by - 1);
+      ctx.lineTo(d.x - 2, by + 1);
+      ctx.lineTo(d.x + 2, by + 8);
+      ctx.stroke();
+    } else if (d.abilityId === 11) {
+      // Passo Sombrio — névoa roxa
+      const by = d.y + bob;
+      ctx.fillStyle = `rgba(110,60,170,${0.35 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, by, 16, 0, Math.PI * 2);
+      ctx.fill();
+      for (let i = 0; i < 3; i++) {
+        const a = tMs * 0.003 + (i * Math.PI * 2) / 3;
+        ctx.fillStyle = "rgba(60,30,90,0.75)";
+        ctx.beginPath();
+        ctx.arc(d.x + Math.cos(a) * 6, by + Math.sin(a) * 4, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#e6d6ff";
+      ctx.beginPath();
+      ctx.arc(d.x, by, 2.5, 0, Math.PI * 2);
+      ctx.fill();
     } else {
       ctx.fillStyle = `rgba(240,160,60,${0.25 * pulse})`;
       ctx.beginPath();
@@ -2214,6 +2267,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   // throwables
   for (const t of view.throwables) {
+    if (t.kind === SHIELD_THROW_KIND) continue; // desenhado na camada "ar"
     if (t.kind === 5) {
       // Bomba Devastadora — pavio pisca mais rápido perto do fim
       const fuseLeft = Math.max(0, t.fuse);
@@ -2357,35 +2411,53 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   // massa de água / spray por cima dos personagens
   view.drawAbilityWater(ctx);
 
-  // balas — rastro
+  // Escudo Bumerangue em voo + raios / teleporte
+  for (const t of view.throwables) {
+    if (t.kind === SHIELD_THROW_KIND) drawThrownShield(ctx, t, tMs);
+  }
+  drawPowersFx(ctx);
+
+  // balas — rastro na altura da arma (3/4: a bala voa no nível das mãos)
+  const EL = GUN_HAND_BODY_Y;
+  ctx.lineCap = "round";
   for (const b of view.bullets) {
     const sniper = b.weapon === 6;
-    ctx.strokeStyle = sniper ? "rgba(255,240,200,0.85)" : "rgba(255,220,120,0.75)";
-    ctx.lineWidth = sniper ? 1 : 2;
+    const dx = b.x - b.px;
+    const dy = b.y - b.py;
+    const tailX = b.px - dx * (sniper ? 1.5 : 0.6);
+    const tailY = b.py - dy * (sniper ? 1.5 : 0.6);
+    const headX = sniper ? b.x + dx * 2 : b.x;
+    const headY = sniper ? b.y + dy * 2 : b.y;
+    // brilho largo + núcleo claro
+    ctx.strokeStyle = sniper ? "rgba(255,230,170,0.22)" : "rgba(255,190,90,0.22)";
+    ctx.lineWidth = sniper ? 4 : 5;
     ctx.beginPath();
-    ctx.moveTo(b.px, b.py);
-    ctx.lineTo(b.x, b.y);
-    if (sniper) {
-      const dx = b.x - b.px;
-      const dy = b.y - b.py;
-      ctx.lineTo(b.x + dx * 2, b.y + dy * 2);
-    }
+    ctx.moveTo(tailX, tailY + EL);
+    ctx.lineTo(headX, headY + EL);
+    ctx.stroke();
+    ctx.strokeStyle = sniper ? "rgba(255,248,220,0.95)" : "rgba(255,232,150,0.9)";
+    ctx.lineWidth = sniper ? 1.3 : 2;
+    ctx.beginPath();
+    ctx.moveTo(b.px, b.py + EL);
+    ctx.lineTo(headX, headY + EL);
     ctx.stroke();
   }
+  ctx.lineCap = "butt";
 
   for (const f of view.flashes) {
-    const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, 16);
+    const fy = f.y + EL;
+    const g = ctx.createRadialGradient(f.x, fy, 0, f.x, fy, 16);
     g.addColorStop(0, "rgba(255,230,120,0.9)");
     g.addColorStop(1, "rgba(255,80,0,0)");
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(f.x, f.y, 16, 0, Math.PI * 2);
+    ctx.arc(f.x, fy, 16, 0, Math.PI * 2);
     ctx.fill();
     for (const s of f.sparks ?? []) {
       ctx.strokeStyle = `rgba(255,200,80,${s.life / 80})`;
       ctx.beginPath();
-      ctx.moveTo(f.x, f.y);
-      ctx.lineTo(f.x + s.dx, f.y + s.dy);
+      ctx.moveTo(f.x, fy);
+      ctx.lineTo(f.x + s.dx, fy + s.dy);
       ctx.stroke();
     }
   }
@@ -2424,6 +2496,11 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   // telhados por cima
   drawRoofLayer(ctx, view.roofAlpha, camX, camY, viewW, viewH);
+
+  // vinheta suave (canvas pequeno em cache, 1 drawImage)
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(vignetteCanvas(), camX, camY, viewW, viewH);
+  ctx.imageSmoothingEnabled = false;
 
   if (view.local) {
     drawVisionMask(ctx, view.local.x, view.local.y, view.doorsBits);

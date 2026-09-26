@@ -3,6 +3,9 @@
  */
 import {
   abilityOf,
+  CHAIN_SEGMENT_BASE,
+  performBlink,
+  SHIELD_THROW_KIND,
   DASH_BURST_DT,
   DASH_MAX_CHARGES,
   DASH_RECHARGE_MS,
@@ -15,8 +18,13 @@ import {
 } from "../../../shared/abilities";
 import { ARENA_H, ARENA_W, INPUT_HZ, MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
 import { WEAPONS, muzzlePoint, weaponOf } from "../../../shared/gear";
-import { moveAndSlide } from "../../../shared/map";
+import { hitsSolid, moveAndSlide } from "../../../shared/map";
 import {
+  BOOTS,
+  HAIR_COLORS,
+  HELMETS,
+  OUTFITS,
+  SKIN_TONES,
   autoLookFor,
   decodeLook,
   encodeLook,
@@ -64,6 +72,13 @@ import { loadMyLook } from "./lookStore";
 import { pruneCapes } from "./capes";
 import { spawnShieldSparks, tickShieldSparks } from "./shield";
 import {
+  clearPowersFx,
+  spawnBlinkFx,
+  spawnCastSparkle,
+  spawnLightningBolt,
+  tickPowersFx,
+} from "./powers_fx";
+import {
   clearAbilityFx,
   drawAbilityGround,
   drawAbilityWater,
@@ -98,6 +113,7 @@ import {
   hitFlashActive,
   initDecals,
   processGoreEvents,
+  setCorpseColorProvider,
   spawnDust,
   spawnGiantStepDust,
   stampBulletMark,
@@ -149,6 +165,8 @@ export interface GameHud {
   reserve: number;
   reloadProgress: number;
   abilityName: string;
+  /** id da habilidade equipada (ícone no HUD) */
+  abilityId?: number;
   abilityCd: number; // 0..1 remaining fraction (1 = ready)
   abilityCdMs: number;
   /** Capa de Recuo: cargas atuais */
@@ -379,6 +397,7 @@ export class GameClient {
       reserve,
       reloadProgress: Math.max(0, Math.min(1, reloadProgress)),
       abilityName: ab.name,
+      abilityId: ab.id,
       abilityCd,
       abilityCdMs: ab.id === 3 ? DASH_RECHARGE_MS : ab.cooldownMs,
       dashCharges,
@@ -402,6 +421,20 @@ export class GameClient {
 
     resizeCanvas(this.canvas);
     initDecals(ARENA_W, ARENA_H);
+    setCorpseColorProvider((id) => {
+      const l = this.lookFor(id);
+      const o = OUTFITS[l.outfit] ?? OUTFITS[0]!;
+      const h = HELMETS[l.helmet] ?? HELMETS[0]!;
+      const full = h.style === "knight" || h.style === "darkLord" || h.style === "army" || h.style === "hood";
+      return {
+        shirt: o.top,
+        pants: o.pants,
+        skin: (SKIN_TONES[l.skin] ?? SKIN_TONES[1]!).color,
+        hair: (HAIR_COLORS[l.hairColor] ?? HAIR_COLORS[0]!).color,
+        shoes: (BOOTS[l.boots] ?? BOOTS[0]!).main,
+        helmet: full ? h.main : undefined,
+      };
+    });
     window.addEventListener("resize", this.onResize);
     this.input.attach(this.canvas);
     const unlock = () => {
@@ -503,6 +536,7 @@ export class GameClient {
       this.weaponDrops = [];
       this.abilityDrops = [];
       clearAbilityFx();
+      clearPowersFx();
       resizeCanvas(this.canvas);
       this.emit(true);
       return;
@@ -578,8 +612,9 @@ export class GameClient {
         if (e.kind === "hit" && e.b === 255) {
           stampBulletMark(e.x, e.y);
         } else if (e.kind === "hit" && e.b === 253) {
-          // Escudo Estelar bloqueou — faísca metálica, sem sangue
-          spawnShieldSparks(e.x, e.y, 12);
+          // Escudo Estelar bloqueou / ricocheteou — faísca metálica, sem sangue
+          spawnShieldSparks(e.x, e.y - ((e.weaponId ?? 0) === 9 ? 26 : 0), 12);
+          if ((e.weaponId ?? 0) === 9) playSfx("clang", e.x, e.y, listener);
           this.fx.push({
             x: e.x,
             y: e.y,
@@ -713,7 +748,29 @@ export class GameClient {
             this.input.setAbility(aid);
           }
         }
-        if (e.kind === "ability") {
+        if (e.kind === "ability" && (e.b === 9 || e.b === 10 || e.b === 11)) {
+          const wid = e.weaponId ?? 0;
+          if (e.b === 10 && wid >= CHAIN_SEGMENT_BASE) {
+            const hop = wid - CHAIN_SEGMENT_BASE;
+            spawnLightningBolt(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y, hop);
+            if (hop === 0) playSfx("zap", e.x, e.y, listener);
+            else playSfx("zap", e.x2 ?? e.x, e.y2 ?? e.y, listener, { volumeMul: 0.55 });
+          } else if (e.b === 11) {
+            if (e.a !== this.selfId) {
+              spawnBlinkFx(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y);
+              playSfx("blink", e.x2 ?? e.x, e.y2 ?? e.y, listener);
+            }
+          } else if (e.b === 9) {
+            if (wid === 9001) {
+              playSfx("clang", e.x, e.y, listener, { volumeMul: 0.7 });
+              spawnShieldSparks(e.x, e.y - 26, 5);
+            } else if (wid === 9002) {
+              spawnBlinkFx(e.x, e.y + 26, e.x, e.y + 26);
+            } else if (e.a !== this.selfId) {
+              playSfx("boost", e.x, e.y, listener);
+            }
+          }
+        } else if (e.kind === "ability") {
           const hitId = e.weaponId ?? 0;
           // impacto em alvo específico (knockback real / freeze)
           if (hitId >= 1000) {
@@ -1060,7 +1117,27 @@ export class GameClient {
         const cdUntil = pred.abilityCdUntil ?? 0;
         const cdReady = ab.id === 3 || cdUntil <= nowSrv;
         if (cdReady && raw.cast) {
-          if (ab.id === 3) {
+          if (ab.id === 11) {
+            // Passo Sombrio: teleporte previsto (replay da reconciliação repete igual)
+            const r = performBlink(
+              pred,
+              nowSrv,
+              raw.aim,
+              this.prediction.doorBits,
+              hitsSolid,
+              this.prediction.spikeTotems,
+            );
+            if (r) {
+              spawnBlinkFx(r.fromX, r.fromY, r.x, r.y);
+              playSfx("blink", r.x, r.y, { x: r.x, y: r.y });
+              this.feel.shake = Math.max(this.feel.shake, 0.6);
+              if (this.smooth) {
+                this.smooth.errX = 0;
+                this.smooth.errY = 0;
+                this.smooth.t = 0;
+              }
+            }
+          } else if (ab.id === 3) {
             // Manual: arremessa NA direção da mira
             if (
               performRecoilDash(
@@ -1127,6 +1204,16 @@ export class GameClient {
               playSfx("boost", plant.x, plant.y, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.3);
               this.feel.shake = Math.max(this.feel.shake, 0.4);
+            } else if (ab.id === 9) {
+              // arremesso: o disco vem do host (throwable kind 7)
+              spawnCastSparkle(pred.x + Math.cos(raw.aim) * 24, pred.y - 30 + Math.sin(raw.aim) * 16);
+              playSfx("boost", pred.x, pred.y, { x: pred.x, y: pred.y });
+              this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.45);
+            } else if (ab.id === 10) {
+              // raio: os saltos vêm do host (eventos com x2/y2)
+              spawnCastSparkle(pred.x + Math.cos(raw.aim) * 26, pred.y - 26 + Math.sin(raw.aim) * 18);
+              this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.4);
+              this.feel.shake = Math.max(this.feel.shake, 0.5);
             } else if (ab.id === 8) {
               spawnFrostCastFx(pred.x, pred.y, raw.aim);
               playSfx("freeze", pred.x, pred.y, { x: pred.x, y: pred.y });
@@ -1215,6 +1302,7 @@ export class GameClient {
     tickGore(dtMs, now);
     tickAbilityFx(dtMs, this.feel);
     tickShieldSparks(dtMs);
+    tickPowersFx(dtMs);
     if (now - this.lastCapePrune > 2000) {
       this.lastCapePrune = now;
       pruneCapes(now);
@@ -1501,7 +1589,12 @@ export class GameClient {
       giantTargets: this.giantTargets,
       giantVis: this.giantVis,
       bullets,
-      throwables: this.lastSnap?.throwables ?? [],
+      throwables: (this.lastSnap?.throwables ?? []).map((t) => {
+        if (t.kind !== SHIELD_THROW_KIND) return t;
+        // disco rápido: extrapola entre snapshots (30 Hz) pra não "pular"
+        const k = Math.min(0.06, Math.max(0, (now - (this.lastSnapAt || now)) / 1000));
+        return { ...t, x: t.x + t.vx * k, y: t.y + t.vy * k };
+      }),
       flashes: this.flashes,
       fx: this.fx,
       flashBlind: this.flashBlind,

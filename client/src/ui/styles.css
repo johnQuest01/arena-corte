@@ -1378,3 +1378,74 @@ body.game-fullscreen {
     padding: 0.7rem;
   }
 }
+
+/* HUD inferior sobreposto à arena no desktop (não empurra a página pra baixo) */
+.game-shell:not(.mobile) .hud-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(8, 16, 13, 0.82));
+}
+
+/* overlays roláveis quando o card é mais alto que a tela (celular deitado) */
+.lobby-overlay {
+  overflow-y: auto;
+  align-items: flex-start;
+}
+.lobby-overlay > * {
+  margin: auto;
+}
+
+/* guarda-roupa: a lista rola dentro do card (não empurra os botões) */
+.ward-body {
+  grid-template-rows: minmax(0, 1fr);
+}
+.ward-items,
+.ward-presets {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-height: 560px) {
+  .wardrobe {
+    padding: 0.55rem 0.7rem;
+    gap: 0.45rem;
+    height: calc(100vh - 16px);
+  }
+  .ward-head h2 {
+    font-size: 1.05rem;
+  }
+  .ward-head .hint {
+    display: none;
+  }
+  .ward-body {
+    grid-template-columns: 170px 1fr;
+    gap: 0.6rem;
+  }
+  .ward-preview {
+    aspect-ratio: auto;
+    flex: 1;
+    min-height: 0;
+    height: auto;
+  }
+  .ward-stage {
+    min-height: 0;
+  }
+  .ward-stage-ctl button,
+  .ward-actions button {
+    padding: 0.35rem 0.55rem;
+    font-size: 0.8rem;
+  }
+  .ward-tabs button {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.75rem;
+  }
+  .ward-presets {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+  .ward-preset-desc {
+    display: none;
+  }
+}

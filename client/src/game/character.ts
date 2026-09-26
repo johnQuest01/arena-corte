@@ -950,8 +950,8 @@ function drawHead(ctx: CanvasRenderingContext2D, look: Look, f: Facing, t: numbe
   const hy = BODY.headY;
   const r = BODY.headR;
   const covered = fullHelmet(helm);
-  // pescoço
-  ctx.fillStyle = skin.shade;
+  // pescoço (coberto pelo elmo fechado)
+  ctx.fillStyle = covered ? helm.shade : skin.shade;
   ctx.fillRect(-3.5, BODY.neck - 1, 7, 5);
   if (!covered && helm.style !== "hood" && f.back) drawHairBack(ctx, look.hair, hairCol, f);
   if (!covered) {
