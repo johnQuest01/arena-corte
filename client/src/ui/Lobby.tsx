@@ -21,6 +21,8 @@ interface Props {
   hostInfoUrl?: string | null;
   graphicsQuality?: GraphicsQuality;
   onGraphicsQuality?: (q: GraphicsQuality) => void;
+  /** abre o guarda-roupa (cosméticos) */
+  onOpenWardrobe?: () => void;
 }
 
 export function Lobby({
@@ -32,6 +34,7 @@ export function Lobby({
   hostInfoUrl,
   graphicsQuality,
   onGraphicsQuality,
+  onOpenWardrobe,
 }: Props) {
   const [name, setName] = useState(() => `p${Math.floor(Math.random() * 90 + 10)}`);
   const [code, setCode] = useState("");
@@ -115,6 +118,14 @@ export function Lobby({
               <span className="hint">Seu nome</span>
               <input value={name} maxLength={16} onChange={(e) => setName(e.target.value)} />
             </label>
+
+            {onOpenWardrobe && (
+              <div className="row">
+                <button type="button" className="secondary look-button" onClick={onOpenWardrobe}>
+                  Guarda-roupa · skins, armaduras, capas
+                </button>
+              </div>
+            )}
 
             {graphicsQuality && onGraphicsQuality && (
               <GraphicsToggle quality={graphicsQuality} onChange={onGraphicsQuality} />

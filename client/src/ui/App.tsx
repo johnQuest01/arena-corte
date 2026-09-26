@@ -26,6 +26,9 @@ import {
   type GraphicsQuality,
 } from "../game/graphics";
 import { preloadArt } from "../game/art";
+import { loadMyLook, saveMyLook } from "../game/lookStore";
+import type { Look } from "../../../shared/cosmetics";
+import { Wardrobe } from "./Wardrobe";
 import { preloadSfx, unlockAudio } from "../game/audio";
 
 /** Host do Party: env, senão o mesmo IP da página (celular na LAN), senão localhost. */
@@ -77,6 +80,15 @@ export function App() {
   const [loadProgress, setLoadProgress] = useState(0);
   const [assetsReady, setAssetsReady] = useState(false);
   const [entered, setEntered] = useState(false);
+  const [look, setLook] = useState<Look>(() => loadMyLook());
+  const [wardrobeOpen, setWardrobeOpen] = useState(false);
+
+  const saveLook = useCallback((l: Look) => {
+    const clean = saveMyLook(l);
+    setLook(clean);
+    clientRef.current?.setLook(clean);
+    setWardrobeOpen(false);
+  }, []);
 
   // Preload real (art 70% + sfx 30%) antes do menu — elimina hitch de estreia
   useEffect(() => {
@@ -338,7 +350,12 @@ export function App() {
           hostInfoUrl={hostInfoUrl}
           graphicsQuality={graphicsQuality}
           onGraphicsQuality={changeGraphics}
+          onOpenWardrobe={() => setWardrobeOpen(true)}
         />
+      )}
+
+      {wardrobeOpen && (
+        <Wardrobe look={look} onSave={saveLook} onClose={() => setWardrobeOpen(false)} />
       )}
 
       <div
@@ -379,6 +396,7 @@ export function App() {
             }}
             graphicsQuality={graphicsQuality}
             onGraphicsQuality={changeGraphics}
+            onOpenWardrobe={() => setWardrobeOpen(true)}
           />
         )}
         <div className="arena-wrap">

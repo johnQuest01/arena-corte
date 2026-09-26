@@ -33,6 +33,7 @@ interface Props {
   mobile?: boolean;
   graphicsQuality?: GraphicsQuality;
   onGraphicsQuality?: (q: GraphicsQuality) => void;
+  onOpenWardrobe?: () => void;
 }
 
 export function Hud({
@@ -47,6 +48,7 @@ export function Hud({
   mobile = false,
   graphicsQuality,
   onGraphicsQuality,
+  onOpenWardrobe,
 }: Props) {
   const players = hud.lobby?.players ?? hud.snapshot?.players.map((p) => ({
     id: p.id,
@@ -160,6 +162,11 @@ export function Hud({
             <p className="hint">{players.length}/3 na sala</p>
             {graphicsQuality && onGraphicsQuality && (
               <GraphicsToggle quality={graphicsQuality} onChange={onGraphicsQuality} />
+            )}
+            {onOpenWardrobe && (
+              <button type="button" className="secondary" onClick={onOpenWardrobe}>
+                Guarda-roupa
+              </button>
             )}
             <button type="button" disabled={!canStart} onClick={onStart}>
               {canStart ? "Iniciar" : "Aguardando 2+ jogadores"}

@@ -15,6 +15,8 @@ export const MSG = {
   LOBBY: 11,
   RESULT: 12,
   RESYNC: 13,
+  /** cliente → host: trocou o visual (cosméticos); host repassa no LOBBY */
+  LOOK: 14,
 } as const;
 export type MsgType = (typeof MSG)[keyof typeof MSG];
 export interface PlayerInput {
@@ -187,7 +189,14 @@ export interface WelcomeMsg {
   mode?: number;
 }
 export interface LobbyMsg {
-  players: { id: number; name: string; ready: boolean; ping: number }[];
+  players: {
+    id: number;
+    name: string;
+    ready: boolean;
+    ping: number;
+    /** visual (bytes de shared/cosmetics encodeLook); ausente = automático */
+    look?: number[];
+  }[];
   hostId: number;
   canStart: boolean;
   mode?: number;
@@ -752,14 +761,21 @@ export function decodeSnapshot(buf: ArrayBuffer): Snapshot | null {
     waveLeft,
   };
 }
-export function encodeHello(name: string): ArrayBuffer {
+/** HELLO = [tipo, len, nome…, lookLen, look…] — look é opcional (compatível). */
+export function encodeHello(name: string, look?: number[]): ArrayBuffer {
   const enc = new TextEncoder();
   const nameBytes = enc.encode(name.slice(0, 16));
-  const buf = new ArrayBuffer(2 + nameBytes.length);
+  const lookBytes = (look ?? []).slice(0, 32);
+  const buf = new ArrayBuffer(2 + nameBytes.length + (lookBytes.length ? 1 + lookBytes.length : 0));
   const v = new DataView(buf);
   v.setUint8(0, MSG.HELLO);
   v.setUint8(1, nameBytes.length);
   new Uint8Array(buf, 2).set(nameBytes);
+  if (lookBytes.length) {
+    const o = 2 + nameBytes.length;
+    v.setUint8(o, lookBytes.length);
+    lookBytes.forEach((b, i) => v.setUint8(o + 1 + i, b & 0xff));
+  }
   return buf;
 }
 export function decodeHello(buf: ArrayBuffer): string | null {
@@ -767,6 +783,33 @@ export function decodeHello(buf: ArrayBuffer): string | null {
   if (v.getUint8(0) !== MSG.HELLO) return null;
   const len = v.getUint8(1);
   return new TextDecoder().decode(new Uint8Array(buf, 2, len));
+}
+/** Bytes de visual anexados ao HELLO (null se cliente antigo). */
+export function decodeHelloLook(buf: ArrayBuffer): number[] | null {
+  if (buf.byteLength < 2) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== MSG.HELLO) return null;
+  const o = 2 + v.getUint8(1);
+  if (o >= buf.byteLength) return null;
+  const n = Math.min(v.getUint8(o), buf.byteLength - o - 1);
+  if (n <= 0) return null;
+  return Array.from(new Uint8Array(buf, o + 1, n));
+}
+export function encodeLookMsg(look: number[]): ArrayBuffer {
+  const bytes = look.slice(0, 32);
+  const buf = new ArrayBuffer(2 + bytes.length);
+  const v = new DataView(buf);
+  v.setUint8(0, MSG.LOOK);
+  v.setUint8(1, bytes.length);
+  bytes.forEach((b, i) => v.setUint8(2 + i, b & 0xff));
+  return buf;
+}
+export function decodeLookMsg(buf: ArrayBuffer): number[] | null {
+  if (buf.byteLength < 2) return null;
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== MSG.LOOK) return null;
+  const n = Math.min(v.getUint8(1), buf.byteLength - 2);
+  return Array.from(new Uint8Array(buf, 2, n));
 }
 export function encodeWelcome(w: WelcomeMsg): ArrayBuffer {
   const enc = new TextEncoder();

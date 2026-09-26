@@ -17,6 +17,12 @@ import { ARENA_H, ARENA_W, INPUT_HZ, MOVE_SPEED, PLAYER_R } from "../../../share
 import { WEAPONS, muzzlePoint, weaponOf } from "../../../shared/gear";
 import { moveAndSlide } from "../../../shared/map";
 import {
+  autoLookFor,
+  decodeLook,
+  encodeLook,
+  type Look,
+} from "../../../shared/cosmetics";
+import {
   MSG,
   decodeLobby,
   decodePingTime,
@@ -24,6 +30,7 @@ import {
   decodeWelcome,
   encodeHello,
   encodeInput,
+  encodeLookMsg,
   encodePing,
   encodeCtrl,
   msgType,
@@ -53,6 +60,9 @@ import {
   unlockAudio,
 } from "./audio";
 import { preloadArt } from "./art";
+import { loadMyLook } from "./lookStore";
+import { pruneCapes } from "./capes";
+import { spawnShieldSparks, tickShieldSparks } from "./shield";
 import {
   clearAbilityFx,
   drawAbilityGround,
@@ -231,12 +241,29 @@ export class GameClient {
   private giantPosPrev = new Map<number, { x: number; y: number }>();
   private giantWindupAt = new Map<number, number>();
   private giantVis = new Map<number, { facing: number; skew: number; windupFlash: number }>();
+  /** visual (cosméticos) de cada jogador — vem do LOBBY */
+  private looks = new Map<number, Look>();
+  private myLook: Look = loadMyLook();
+  private names = new Map<number, string>();
+  private lastCapePrune = 0;
+  private readonly lookFor = (id: number): Look =>
+    id === this.selfId ? this.myLook : this.looks.get(id) ?? autoLookFor(id);
+  private readonly nameFor = (id: number): string | undefined => this.names.get(id);
 
   setMuted(m: boolean) {
     setMuted(m);
   }
   setVolume(v: number) {
     setMasterVolume(v);
+  }
+  /** Troca o visual (guarda-roupa) — avisa o host, que repassa pra sala. */
+  setLook(look: Look) {
+    this.myLook = look;
+    if (this.selfId >= 0) this.looks.set(this.selfId, look);
+    if (this.running) this.transport.send(encodeLookMsg(encodeLook(look)));
+  }
+  getLook(): Look {
+    return this.myLook;
   }
   /** Troca Leve/Full e reaplica cache/DPR na hora. */
   setGraphicsQuality(q: GraphicsQuality) {
@@ -258,6 +285,23 @@ export class GameClient {
     this.canvas = opts.canvas;
     this.ctx = opts.canvas.getContext("2d")!;
     this.name = opts.name;
+    // gancho de teste (só no `npm run dev`): posição do jogador na tela
+    if (import.meta.env.DEV) {
+      (window as unknown as { __arenaClient?: GameClient }).__arenaClient = this;
+    }
+  }
+
+  /** DEV: posição (px CSS, relativa ao canvas) do próprio jogador. */
+  debugSelfScreen(): { x: number; y: number; scale: number } | null {
+    const me = this.prediction.predicted;
+    if (!me) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const { scale, ox, oy, z } = cameraScreenLayout(rect.width, rect.height, this.camZoom || 1);
+    return {
+      x: rect.left + ox + (me.x - this.camX) * scale * z,
+      y: rect.top + oy + (me.y - this.camY) * scale * z,
+      scale: scale * z,
+    };
   }
 
   onHud(cb: HudListener) {
@@ -379,7 +423,7 @@ export class GameClient {
     });
 
     await this.transport.connect();
-    this.transport.send(encodeHello(this.name));
+    this.transport.send(encodeHello(this.name, encodeLook(this.myLook)));
     this.phase = "lobby";
     this.running = true;
     this.lastFrame = performance.now();
@@ -439,6 +483,11 @@ export class GameClient {
     }
     if (type === MSG.LOBBY) {
       this.lobby = decodeLobby(data);
+      for (const pl of this.lobby?.players ?? []) {
+        this.names.set(pl.id, pl.name);
+        const look = decodeLook(pl.look);
+        if (look && pl.id !== this.selfId) this.looks.set(pl.id, look);
+      }
       this.emit(true);
       return;
     }
@@ -529,7 +578,8 @@ export class GameClient {
         if (e.kind === "hit" && e.b === 255) {
           stampBulletMark(e.x, e.y);
         } else if (e.kind === "hit" && e.b === 253) {
-          // Capa-Escudo bloqueou — faísca metálica, sem sangue
+          // Escudo Estelar bloqueou — faísca metálica, sem sangue
+          spawnShieldSparks(e.x, e.y, 12);
           this.fx.push({
             x: e.x,
             y: e.y,
@@ -1164,6 +1214,11 @@ export class GameClient {
     this.fx = tickFx(this.fx, dtMs);
     tickGore(dtMs, now);
     tickAbilityFx(dtMs, this.feel);
+    tickShieldSparks(dtMs);
+    if (now - this.lastCapePrune > 2000) {
+      this.lastCapePrune = now;
+      pruneCapes(now);
+    }
     // Fim do gelo → estilhaço (detecção client-side a partir de frozenUntil autoritativo)
     {
       const nowSrvFrost =
@@ -1478,6 +1533,8 @@ export class GameClient {
       serverTime:
         (this.lastSnap?.serverTime ?? 0) +
         Math.max(0, now - (this.lastSnapAt || now)),
+      lookFor: this.lookFor,
+      nameFor: this.nameFor,
     };
 
     try {

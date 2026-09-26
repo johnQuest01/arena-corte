@@ -2,11 +2,14 @@
  * LoopbackTransport — host autoritativo na própria aba (treino PvP / co-op).
  */
 import { TICK_MS, MAX_PLAYERS } from "../../../shared/constants";
+import { autoLookFor, decodeLook, encodeLook } from "../../../shared/cosmetics";
 import { LagHistory } from "../../../shared/laghistory";
 import {
   MSG,
   decodeHello,
+  decodeHelloLook,
   decodeInput,
+  decodeLookMsg,
   decodePingTime,
   encodeCtrl,
   encodeLobby,
@@ -37,6 +40,8 @@ export class LoopbackTransport implements Transport {
   private lag = new LagHistory();
   private timer: ReturnType<typeof setInterval> | null = null;
   private name = "player";
+  /** visual por jogador (bytes) — bots ganham visual automático variado */
+  private looks = new Map<number, number[]>();
   private bots = true;
   /** 0 pvp, 1 coop */
   private mode = 0;
@@ -68,9 +73,12 @@ export class LoopbackTransport implements Transport {
         return;
       }
       this.selfId = String(p.id);
+      const selfLook = decodeLook(decodeHelloLook(data));
+      if (selfLook) this.looks.set(p.id, encodeLook(selfLook));
       if (this.bots) {
         while (this.sim.players.length < MAX_PLAYERS) {
-          addPlayer(this.sim, `bot${this.sim.players.length}`);
+          const bot = addPlayer(this.sim, `bot${this.sim.players.length}`);
+          if (bot) this.looks.set(bot.id, encodeLook(autoLookFor(bot.id)));
         }
       }
       this.handlers?.onMessage(
@@ -98,6 +106,15 @@ export class LoopbackTransport implements Transport {
       return;
     }
 
+    if (type === MSG.LOOK) {
+      const look = decodeLook(decodeLookMsg(data));
+      if (look) {
+        this.looks.set(Number(this.selfId), encodeLook(look));
+        this.emitLobby();
+      }
+      return;
+    }
+
     if (type === MSG.START) {
       clearBotMemory();
       this.sim.mode = this.mode;
@@ -113,12 +130,16 @@ export class LoopbackTransport implements Transport {
   }
 
   private emitLobby() {
-    const players = this.sim.players.map((p) => ({
-      id: p.id,
-      name: p.name,
-      ready: true,
-      ping: 0,
-    }));
+    const players = this.sim.players.map((p) => {
+      const look = this.looks.get(p.id);
+      return {
+        id: p.id,
+        name: p.name,
+        ready: true,
+        ping: 0,
+        ...(look ? { look } : {}),
+      };
+    });
     const min = this.mode === 1 ? 1 : 2;
     this.handlers?.onMessage(
       encodeLobby({

@@ -1,7 +1,7 @@
 /**
  * render.ts — mapa deserto tilemap, personagens estilo Gungeon (em pé), arma, feel.
  */
-import { ARENA_H, ARENA_W, CAM_VIEW_H, CAM_VIEW_W } from "../../../shared/constants";
+import { ARENA_H, ARENA_W, CAM_VIEW_H, CAM_VIEW_W, PLAYER_COLORS } from "../../../shared/constants";
 import {
   LOADOUTS,
   MAX_STAMINA,
@@ -55,6 +55,10 @@ import {
   getTileImg,
 } from "./art";
 import { drawRoofLayer, drawWorld, invalidateWorld } from "./world";
+import { BODY, CHAR_SCALE, capeAnchor, drawBody, facingOf, skinColorOf } from "./character";
+import { drawCape, RECOIL_CAPE_DEF, stepCape } from "./capes";
+import { drawShieldSparks, drawStarShield } from "./shield";
+import { CAPES, autoLookFor, type Look } from "../../../shared/cosmetics";
 
 export const LOSPEC = {
   sand: "#c8a35a",
@@ -196,6 +200,10 @@ export interface RenderView {
   drawAbilityWater: (ctx: CanvasRenderingContext2D) => void;
   /** serverTime do snapshot (para stun UI) */
   serverTime: number;
+  /** visual (cosméticos) por jogador */
+  lookFor?: (id: number) => Look;
+  /** nome do lobby (tag acima dos outros jogadores) */
+  nameFor?: (id: number) => string | undefined;
 }
 
 /**
@@ -304,26 +312,24 @@ function drawDoors(
  * Arma em silhueta lateral (Gungeon): gira pela mira contínua.
  * Pivô na mão; tip = muzzleForward - HAND (casa com muzzlePoint do shared).
  */
-function drawGripHands(ctx: CanvasRenderingContext2D, gunLen: number, skin = "#d4a574") {
-  ctx.fillStyle = skin;
-  // mão traseira (punho) — colada na origem/ombro com GUN_HAND_VISUAL
-  ctx.beginPath();
-  ctx.ellipse(1, 2.5, 5, 4, 0.15, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
-  ctx.beginPath();
-  ctx.ellipse(1, 3.5, 4, 2.5, 0.15, 0, Math.PI * 2);
-  ctx.fill();
-  // mão dianteira (guarda-mão) — ~55% do comprimento da arma
-  const fx = gunLen * 0.55;
-  ctx.fillStyle = skin;
-  ctx.beginPath();
-  ctx.ellipse(fx, 4, 5.5, 4.2, -0.1, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
-  ctx.beginPath();
-  ctx.ellipse(fx, 5, 4.5, 2.8, -0.1, 0, Math.PI * 2);
-  ctx.fill();
+function drawGripHands(ctx: CanvasRenderingContext2D, gunLen: number, skin = "#d4a574", weaponId = 1) {
+  // mão de apoio: pistola quase junto do punho; SMG no meio; fuzis no guarda-mão
+  const frontK = weaponId === 0 ? 0.2 : weaponId === 5 ? 0.42 : 0.55;
+  const hand = (x: number, y: number, rx: number, ry: number, rot: number) => {
+    ctx.beginPath();
+    ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2);
+    ctx.fillStyle = skin;
+    ctx.fill();
+    ctx.strokeStyle = "#1a1411";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    ctx.beginPath();
+    ctx.ellipse(x, y + ry * 0.35, rx * 0.8, ry * 0.5, rot, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  hand(1, 2.5, 5, 4, 0.15);
+  hand(gunLen * frontK, 4, 5.2, 4, -0.1);
 }
 
 function drawWeaponLayer(
@@ -336,6 +342,8 @@ function drawWeaponLayer(
   gripHands = true,
   /** 0 = idle; 0..1 durante reload (client-side) */
   reloadProgress = 0,
+  /** cor da pele (mãos) */
+  skin = "#d4a574",
 ) {
   const w = weaponOf(weaponId);
   const HAND = GUN_HAND_VISUAL;
@@ -389,7 +397,7 @@ function drawWeaponLayer(
     ctx.drawImage(gunImg, -grip, -dh / 2, dw, dh);
 
     // só fallback procedural — no sheet do designer as mãos já estão no corpo
-    if (gripHands) drawGripHands(ctx, visualLen);
+    if (gripHands) drawGripHands(ctx, visualLen, skin, weaponId);
 
     if (reloading) {
       if (rp < 0.18) {
@@ -500,7 +508,7 @@ function drawWeaponLayer(
     ctx.fillRect(T * 0.7, -2.5 * th, T * 0.32, 5 * th);
   }
 
-  if (gripHands) drawGripHands(ctx, T);
+  if (gripHands) drawGripHands(ctx, T, skin, weaponId);
 
   if (reloading) {
     if (rp < 0.18) {
@@ -1069,38 +1077,43 @@ function drawBoostTrail(
   }
 }
 
+type PersonDraw = {
+  id: number;
+  x: number;
+  y: number;
+  angle: number;
+  alive: boolean;
+  weapon: number;
+  hp?: number;
+  stamina?: number;
+  reloadProgress?: number;
+  stunnedUntil?: number;
+  frozenUntil?: number;
+  speedBoostUntil?: number;
+  shieldUntil?: number;
+  dashUntil?: number;
+  ability?: number;
+  flashUntil?: number;
+  vx?: number;
+  vy?: number;
+};
+
 /** Desenha o boneco — se estiver caindo na Fenda, anima giro/encolhe no buraco. */
 function drawPersonMaybeSink(
   ctx: CanvasRenderingContext2D,
-  p: {
-    id: number;
-    x: number;
-    y: number;
-    angle: number;
-    alive: boolean;
-    weapon: number;
-    stamina?: number;
-    reloadProgress?: number;
-    stunnedUntil?: number;
-    frozenUntil?: number;
-    speedBoostUntil?: number;
-    shieldUntil?: number;
-    dashUntil?: number;
-    ability?: number;
-    flashUntil?: number;
-    vx?: number;
-    vy?: number;
-  },
+  p: PersonDraw,
   tMs: number,
   isSelf: boolean,
   muzzle: boolean,
   feel: FeelState,
-  serverTime = 0,
+  serverTime: number,
+  look: Look,
+  name?: string,
 ) {
   if (riftSinkHidden(p.id)) return;
   const sink = riftSinkPose(p.id);
   if (!sink) {
-    drawPersonSide(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
+    drawPersonSide(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look, `p${p.id}`, name);
     return;
   }
   ctx.save();
@@ -1121,11 +1134,255 @@ function drawPersonMaybeSink(
     false,
     feel,
     serverTime,
+    look,
+    `sink${p.id}`,
   );
   ctx.restore();
 }
 
+/** Boneco novo (código + cosméticos) ou o antigo ("Rascunho"). */
 function drawPersonSide(
+  ctx: CanvasRenderingContext2D,
+  p: PersonDraw,
+  tMs: number,
+  isSelf: boolean,
+  muzzle: boolean,
+  feel: FeelState,
+  serverTime: number,
+  look: Look,
+  capeKey: string,
+  name?: string,
+) {
+  if (look.body === 1) {
+    drawPersonLegacy(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
+    return;
+  }
+  drawPersonNew(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look, capeKey, name);
+}
+
+/** Anel no chão com a cor do jogador (+ marcador da mira no próprio). */
+function drawPlayerRing(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  id: number,
+  isSelf: boolean,
+  aim: number,
+) {
+  const col = PLAYER_COLORS[id % PLAYER_COLORS.length]!;
+  ctx.save();
+  ctx.translate(x, y + 7);
+  ctx.strokeStyle = col;
+  ctx.globalAlpha *= isSelf ? 0.9 : 0.55;
+  ctx.lineWidth = isSelf ? 2.6 : 1.8;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 27, 10, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  if (isSelf) {
+    const ax = Math.cos(aim) * 27;
+    const ay = Math.sin(aim) * 10;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(ax + Math.cos(aim) * 7, ay + Math.sin(aim) * 3);
+    ctx.lineTo(ax - Math.sin(aim) * 4, ay + Math.cos(aim) * 2);
+    ctx.lineTo(ax + Math.sin(aim) * 4, ay - Math.cos(aim) * 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Escudo Estelar pendurado nas costas (habilidade equipada, inativa). */
+function drawBackShield(ctx: CanvasRenderingContext2D, aim: number, tMs: number) {
+  const f = facingOf(aim);
+  const backSign = Math.cos(aim) >= 0 ? -1 : 1;
+  const x = backSign * f.turn * 9 * CHAR_SCALE;
+  const y = (BODY.shoulder + 15) * CHAR_SCALE;
+  drawStarShield(ctx, x, y, 14 * CHAR_SCALE, {
+    squash: Math.max(0.32, 1 - f.turn * 0.72),
+    t: tMs,
+  });
+}
+
+/** Escudo Estelar erguido na frente (ativo) — maior que o tronco. */
+function drawRaisedShield(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  aim: number,
+  tMs: number,
+  glow: number,
+) {
+  const fx = Math.cos(aim);
+  const fy = Math.sin(aim);
+  const cx = x + fx * 24;
+  const cy = y + (BODY.shoulder + 19) * CHAR_SCALE + fy * 10;
+  drawStarShield(ctx, cx, cy, 30, {
+    squash: 0.46 + 0.54 * Math.abs(fy),
+    rot: Math.abs(fy) > 0.98 ? 0 : Math.atan2(fy, fx),
+    back: fy < -0.25,
+    glow,
+    t: tMs,
+  });
+}
+
+function drawPersonNew(
+  ctx: CanvasRenderingContext2D,
+  p: PersonDraw,
+  tMs: number,
+  isSelf: boolean,
+  muzzle: boolean,
+  feel: FeelState,
+  serverTime: number,
+  look: Look,
+  capeKey: string,
+  name?: string,
+) {
+  const frozen = p.alive && (p.frozenUntil ?? 0) > serverTime;
+  const vx = p.vx ?? 0;
+  const vy = p.vy ?? 0;
+  const speed = frozen ? 0 : Math.hypot(vx, vy);
+  const gunBehind = Math.sin(p.angle) < -0.3;
+  const bodyKick = isSelf ? feel.bodyKick * 1.5 : 0;
+  const gunKick = isSelf ? feel.gunKick : 0;
+  const ox = p.x - Math.cos(p.angle) * bodyKick;
+  const oy = p.y - Math.sin(p.angle) * bodyKick;
+  const ab = p.ability ?? 0;
+  const bootsOn = ab === 2;
+  const recoilCapeOn = ab === 3;
+  const shieldOn = ab === 4;
+  const boosted = bootsOn && (p.speedBoostUntil ?? 0) > serverTime;
+  const shieldUp = shieldOn && (p.shieldUntil ?? 0) > serverTime;
+  const dashing = recoilCapeOn && (p.dashUntil ?? 0) > serverTime;
+  const f = facingOf(p.angle);
+  const skin = skinColorOf(look);
+  const baseA = p.alive ? 1 : 0.35;
+  const pose = {
+    aim: p.angle,
+    speed,
+    leanX: Math.max(-1, Math.min(1, vx / 260)),
+    t: tMs,
+    frozen,
+    seed: p.id,
+    impulseBoots: bootsOn,
+    boosted,
+  };
+
+  // rastro fantasma (dash da capa / botas ativas)
+  if (p.alive && (dashing || boosted) && speed > 60) {
+    const bx = -(vx / speed) * 13;
+    const by = -(vy / speed) * 13;
+    for (let g = 3; g >= 1; g--) {
+      ctx.save();
+      ctx.globalAlpha = baseA * (dashing ? 0.13 : 0.09) * (4 - g);
+      ctx.translate(ox + bx * g, oy + by * g);
+      drawBody(ctx, look, { ...pose, t: tMs - g * 40 });
+      ctx.restore();
+    }
+    if (boosted) drawBoostTrail(ctx, ox, oy, vx, vy, tMs);
+  }
+
+  ctx.globalAlpha = baseA;
+  // sombra + anel
+  ctx.fillStyle = "rgba(18,14,22,0.32)";
+  ctx.beginPath();
+  ctx.ellipse(ox + 3, oy + 10, 23, 7.5, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (p.alive) drawPlayerRing(ctx, ox, oy + 3, p.id, isSelf, p.angle);
+
+  // capa (física) — atrás do corpo, ou por cima quando de costas
+  const capeDef = recoilCapeOn ? RECOIL_CAPE_DEF : look.cape > 0 ? CAPES[look.cape] ?? null : null;
+  const anchor = capeAnchor(p.angle);
+  const capeFront = !!capeDef && f.back;
+  if (capeDef && p.alive) {
+    stepCape(capeKey, ox + anchor.x, oy + anchor.y, p.angle, tMs, {
+      dash: dashing,
+      frozen,
+      floorY: oy + 8,
+      scale: CHAR_SCALE,
+    });
+    if (!capeFront) {
+      drawCape(ctx, capeKey, capeDef, {
+        width: anchor.w,
+        glow: dashing ? "rgba(255,120,190,0.95)" : undefined,
+      });
+    }
+  }
+
+  if (shieldUp && p.alive && gunBehind) drawRaisedShield(ctx, ox, oy, p.angle, tMs, 1);
+
+  ctx.save();
+  ctx.translate(ox, oy);
+  if (shieldOn && !shieldUp && p.alive && !f.back) drawBackShield(ctx, p.angle, tMs);
+  if (gunBehind && p.alive) {
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin);
+  }
+  drawBody(ctx, look, pose);
+  if (shieldOn && !shieldUp && p.alive && f.back) drawBackShield(ctx, p.angle, tMs);
+  ctx.restore();
+
+  if (capeDef && p.alive && capeFront) {
+    drawCape(ctx, capeKey, capeDef, {
+      width: anchor.w,
+      glow: dashing ? "rgba(255,120,190,0.95)" : undefined,
+    });
+  }
+
+  ctx.save();
+  ctx.translate(ox, oy);
+  if (!gunBehind && p.alive) {
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin);
+  }
+  ctx.restore();
+  if (shieldUp && p.alive && !gunBehind) drawRaisedShield(ctx, ox, oy, p.angle, tMs, 1);
+
+  const topY = oy + BODY.top * CHAR_SCALE;
+  if (isSelf && p.alive) {
+    drawHeadBars(ctx, ox, topY - 16, p.stamina ?? MAX_STAMINA, p.reloadProgress ?? 0);
+  } else if (!isSelf && p.alive) {
+    // nome + vida dos outros jogadores
+    const hp = Math.max(0, Math.min(100, p.hp ?? 100));
+    const bw = 34;
+    ctx.fillStyle = "rgba(8,10,12,0.72)";
+    ctx.fillRect(ox - bw / 2 - 1, topY - 12, bw + 2, 5);
+    ctx.fillStyle = hp > 55 ? "#6ecf5a" : hp > 25 ? "#e8b838" : "#e04a3a";
+    ctx.fillRect(ox - bw / 2, topY - 11, (bw * hp) / 100, 3);
+    if (name) {
+      ctx.font = "bold 11px 'Martian Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.75)";
+      ctx.strokeText(name, ox, topY - 16);
+      ctx.fillStyle = PLAYER_COLORS[p.id % PLAYER_COLORS.length]!;
+      ctx.fillText(name, ox, topY - 16);
+    }
+  }
+
+  if (p.alive && (p.stunnedUntil ?? 0) > serverTime) {
+    drawSilenceIcon(ctx, ox, topY - 26);
+  }
+
+  if (frozen) {
+    ctx.fillStyle = "rgba(100,180,230,0.3)";
+    ctx.beginPath();
+    ctx.ellipse(ox, oy - 34, 32, 52, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawFrostBlock(ctx, ox, oy, tMs, 1.15, p.id * 1.37);
+  }
+
+  if (p.alive && !isSelf && (p.flashUntil ?? 0) > serverTime) {
+    const left = (p.flashUntil! - serverTime) / 2800;
+    const a = Math.min(0.85, 0.35 + left * 0.55);
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.beginPath();
+    ctx.ellipse(ox, oy - 38, 32, 50, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+/** Boneco antigo (sprite) + capas/botas/escudo antigos — preservado como "Rascunho". */
+function drawPersonLegacy(
   ctx: CanvasRenderingContext2D,
   p: {
     id: number;
@@ -2069,27 +2326,31 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     (f) => f.t > 30 && (f.owner === undefined || f.owner === view.selfId),
   );
 
+  const lookOf = view.lookFor ?? autoLookFor;
+  // ordem por profundidade (y): quem está mais embaixo na tela fica na frente
+  const people: { p: PersonDraw; self: boolean; muzzle: boolean }[] = [];
   if (view.local) {
-    drawPersonMaybeSink(
-      ctx,
-      { ...view.local, id: view.selfId },
-      tMs,
-      true,
-      selfMuzzle,
-      view.feel,
-      view.serverTime,
-    );
+    people.push({ p: { ...view.local, id: view.selfId }, self: true, muzzle: selfMuzzle });
   }
   for (const r of view.remotes) {
-    const muzzle = view.events.some((e) => e.kind === "shot" && e.a === r.id);
+    people.push({
+      p: { ...r, weapon: r.weapon ?? 0 },
+      self: false,
+      muzzle: view.events.some((e) => e.kind === "shot" && e.a === r.id),
+    });
+  }
+  people.sort((a, b) => a.p.y - b.p.y);
+  for (const it of people) {
     drawPersonMaybeSink(
       ctx,
-      { ...r, weapon: r.weapon ?? 0 },
+      it.p,
       tMs,
-      false,
-      muzzle,
+      it.self,
+      it.muzzle,
       view.feel,
       view.serverTime,
+      lookOf(it.p.id),
+      it.self ? undefined : view.nameFor?.(it.p.id),
     );
   }
 
@@ -2128,6 +2389,8 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       ctx.stroke();
     }
   }
+
+  drawShieldSparks(ctx);
 
   for (const s of view.feel.shells) {
     ctx.fillStyle = "#c8a060";
