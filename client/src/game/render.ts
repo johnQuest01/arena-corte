@@ -57,10 +57,19 @@ import {
 import { drawRoofLayer, drawWorld, invalidateWorld } from "./world";
 import { BODY, BODY_K, CHAR_SCALE, LEGACY_K, capeAnchor, drawBody, facingOf, skinColorOf } from "./character";
 import { drawGunArt, drawGunHands, drawGunIcon, gunGeom } from "./guns";
-import { drawCape, RECOIL_CAPE_DEF, stepCape } from "./capes";
+import { drawCape, RECOIL_CAPE2_DEF, RECOIL_CAPE_DEF, RECOIL_DARK_DEF, stepCape } from "./capes";
 import { drawShieldSparks, drawStarShield } from "./shield";
 import { drawPowersFx, drawThrownShield } from "./powers_fx";
-import { drawBomb2, drawFx2Air, drawFx2Ground, drawIceBlock2, drawShieldBarrier2, drawThrownShield2 } from "./fx2";
+import {
+  drawBomb2,
+  drawDarkAura2,
+  drawFx2Air,
+  drawFx2Ground,
+  drawIceBlock2,
+  drawShieldBarrier2,
+  drawThrownShield2,
+  emitCapeFx2,
+} from "./fx2";
 import { setFx2View } from "./fx2_core";
 import { drawGiant2, GIANT2_TOP } from "./giant2";
 import { frostIsOld, fxOld, giantIsOld } from "./fxstyle";
@@ -1545,8 +1554,11 @@ function drawPersonNew(
     boosted,
   };
 
-  // rastro fantasma (dash da capa / botas ativas)
-  if (p.alive && (dashing || boosted) && speed > 60) {
+  const fxNew = !fxOld(p.id);
+  const cosmeticCape = look.cape > 0 ? CAPES[look.cape] ?? null : null;
+  const darkCape = cosmeticCape?.style === "dark";
+  // rastro fantasma (dash da capa / botas ativas) — no visual novo o dash vira clones (fx2)
+  if (p.alive && ((dashing && !fxNew) || boosted) && speed > 60) {
     const bx = -(vx / speed) * 13 * BODY_K;
     const by = -(vy / speed) * 13 * BODY_K;
     for (let g = 3; g >= 1; g--) {
@@ -1560,6 +1572,8 @@ function drawPersonNew(
   }
 
   ctx.globalAlpha = baseA;
+  // aura das trevas (capa Sombria, visual novo)
+  if (p.alive && fxNew && darkCape) drawDarkAura2(ctx, ox, oy, tMs);
   // sombra + anel
   ctx.fillStyle = "rgba(18,14,22,0.32)";
   ctx.beginPath();
@@ -1568,7 +1582,13 @@ function drawPersonNew(
   if (p.alive) drawPlayerRing(ctx, ox, oy + 3 * BODY_K, p.id, isSelf, p.angle);
 
   // capa (física) — atrás do corpo, ou por cima quando de costas
-  const capeDef = recoilCapeOn ? RECOIL_CAPE_DEF : look.cape > 0 ? CAPES[look.cape] ?? null : null;
+  const capeDef = recoilCapeOn
+    ? fxNew
+      ? darkCape
+        ? RECOIL_DARK_DEF
+        : RECOIL_CAPE2_DEF
+      : RECOIL_CAPE_DEF
+    : cosmeticCape;
   const anchor = capeAnchor(p.angle);
   const capeFront = !!capeDef && f.back;
   if (capeDef && p.alive) {
@@ -1581,7 +1601,7 @@ function drawPersonNew(
     if (!capeFront) {
       drawCape(ctx, capeKey, capeDef, {
         width: anchor.w,
-        glow: dashing ? "rgba(255,120,190,0.95)" : undefined,
+        glow: dashing ? (capeDef.style === "recoilDark" ? "rgba(255,50,80,0.95)" : "rgba(255,120,190,0.95)") : undefined,
       });
     }
   }
@@ -1603,8 +1623,12 @@ function drawPersonNew(
   if (capeDef && p.alive && capeFront) {
     drawCape(ctx, capeKey, capeDef, {
       width: anchor.w,
-      glow: dashing ? "rgba(255,120,190,0.95)" : undefined,
+      glow: dashing ? (capeDef.style === "recoilDark" ? "rgba(255,50,80,0.95)" : "rgba(255,120,190,0.95)") : undefined,
     });
+  }
+  // partículas da capa (fumaça das trevas, brilhos…) — só no mundo, não no afundar da Fenda
+  if (capeDef && p.alive && fxNew && !frozen && capeKey.charCodeAt(0) === 112) {
+    emitCapeFx2(capeKey, capeDef.style, speed, vx, vy, tMs);
   }
 
   ctx.save();

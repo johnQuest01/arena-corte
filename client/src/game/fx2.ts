@@ -17,6 +17,7 @@ import {
 import type { Look } from "../../../shared/cosmetics";
 import type { SpikeTotemSnap, ThrowableState } from "../../../shared/protocol";
 import { riftScarsForFx2, riftsForFx2, type RiftFx, type RiftScar } from "./abilities_fx";
+import { capeHem } from "./capes";
 import { BODY_K, drawBody } from "./character";
 import {
   anim,
@@ -1255,10 +1256,19 @@ export function spawnBootsCast2(x: number, y: number) {
   dustRing(x, y + 6, 8, 120, "170,150,120", 18);
 }
 
-export function spawnDash2(x: number, y: number, dirAngle: number) {
+const DARK_RED = "255,40,64";
+const DARK_VIOLET = "150,80,230";
+
+export function spawnDash2(x: number, y: number, dirAngle: number, dark = false) {
   const dx = Math.cos(dirAngle);
   const dy = Math.sin(dirAngle);
-  ring(x, y + 6, { r0: 8, r1: 64, w0: 4, w1: 1, max: 360, rgb: PINK, a: 0.8, sq: 0.5 });
+  const cA = dark ? DARK_RED : PINK;
+  const cB = dark ? DARK_VIOLET : PINK_L;
+  ring(x, y + 6, { r0: 8, r1: 64, w0: 4, w1: 1, max: 360, rgb: cA, a: 0.8, sq: 0.5 });
+  if (dark) {
+    // estouro de trevas: anel escuro que "suga" a luz
+    ring(x, y + 6, { r0: 4, r1: 54, w0: 12, w1: 2, max: 420, rgb: "10,4,16", a: 0.55, sq: 0.5, add: false });
+  }
   // estouro sônico à frente
   anim({
     layer: 1,
@@ -1271,7 +1281,7 @@ export function spawnDash2(x: number, y: number, dirAngle: number) {
         const r = 18 + k * 9 + u * 40;
         const cx = x + dx * (10 + u * 50);
         const cy = y - 30 * BODY_K + dy * (10 + u * 50) * 0.8;
-        ctx.strokeStyle = `rgba(${k === 0 ? PINK_L : PINK},${0.7 * a * (1 - k * 0.25)})`;
+        ctx.strokeStyle = `rgba(${k === 0 ? cB : cA},${0.7 * a * (1 - k * 0.25)})`;
         ctx.lineWidth = 3 - k * 0.7;
         ctx.beginPath();
         ctx.arc(cx, cy, r, dirAngle - 0.9, dirAngle + 0.9);
@@ -1290,24 +1300,317 @@ export function spawnDash2(x: number, y: number, dirAngle: number) {
       life: rnd(200, 360),
       r0: rnd(1.6, 2.6),
       r1: 0.6,
-      rgb: pick([PINK, PINK_L, "255,255,255"]),
+      rgb: dark ? pick([DARK_RED, DARK_VIOLET, "255,150,160"]) : pick([PINK, PINK_L, "255,255,255"]),
       add: true,
     });
   }
-  for (let i = 0; i < qty(6); i++) {
+  for (let i = 0; i < qty(dark ? 10 : 6); i++) {
     const a = dirAngle + Math.PI + rnd(-0.7, 0.7);
     emit(SMOKE, x, y + 6, {
-      z: 2,
+      z: dark ? rnd(4, 40) : 2,
       vx: Math.cos(a) * rnd(80, 180),
       vy: Math.sin(a) * rnd(50, 110),
       vz: rnd(4, 20),
       drag: 3,
       life: rnd(500, 800),
       r0: 8,
-      r1: 22,
-      rgb: "196,184,176",
-      a: 0.45,
+      r1: dark ? 26 : 22,
+      rgb: dark ? pick(["16,8,22", "34,14,44", "8,4,10"]) : "196,184,176",
+      a: dark ? 0.6 : 0.45,
       fin: 0.05,
+    });
+  }
+}
+
+/* ═══════════════════════ capas: efeitos por estilo ═══════════════════════ */
+
+const RAINBOW_RGB = ["255,80,80", "255,160,60", "255,230,80", "90,220,110", "80,150,255", "170,110,255"];
+const capeAcc = new Map<string, { t: number; acc: number; ember: number }>();
+
+/**
+ * Partículas saindo da barra da capa (visual novo). Chamar a cada frame depois
+ * de desenhar a capa `key`. `speed` em px/s; (vx, vy) = velocidade do corpo.
+ */
+export function emitCapeFx2(key: string, style: string, speed: number, vx: number, vy: number, tMs: number) {
+  const hem = capeHem(key);
+  if (!hem) return;
+  let st = capeAcc.get(key);
+  if (!st) {
+    st = { t: tMs, acc: 0, ember: 0 };
+    capeAcc.set(key, st);
+    if (capeAcc.size > 64) capeAcc.clear();
+  }
+  const dt = Math.max(0, Math.min(50, tMs - st.t));
+  st.t = tMs;
+  if (dt <= 0) return;
+  const moving = speed > 40;
+  const lite = FX2_LITE ? 0.4 : 1;
+  let rate = 0;
+  let emberRate = 0;
+  switch (style) {
+    case "dark":
+    case "recoilDark":
+      rate = moving ? 26 : 11;
+      emberRate = moving ? 4 : 1.6;
+      break;
+    case "gold":
+      rate = moving ? 7 : 3;
+      break;
+    case "emerald":
+      rate = moving ? 6 : 3;
+      break;
+    case "rainbow":
+      rate = moving ? 20 : 2;
+      break;
+    case "royal":
+      rate = moving ? 3 : 2;
+      break;
+    case "tattered":
+      rate = moving ? 5 : 0;
+      break;
+    case "recoil":
+      rate = moving ? 5 : 2.5;
+      break;
+    default:
+      return;
+  }
+  st.acc += (dt * rate * lite) / 1000;
+  st.ember += (dt * emberRate * lite) / 1000;
+  const pickHem = () => {
+    const u = Math.random();
+    return [hem.x0 + (hem.x1 - hem.x0) * u, hem.y0 + (hem.y1 - hem.y0) * u] as const;
+  };
+  const trailX = -vx * 0.12;
+  const trailY = -vy * 0.12;
+  while (st.acc >= 1) {
+    st.acc -= 1;
+    const [px, py] = pickHem();
+    switch (style) {
+      case "dark":
+      case "recoilDark":
+        emit(SMOKE, px + hem.dx * rnd(0, 6), py + hem.dy * rnd(0, 6), {
+          z: rnd(2, 10),
+          vx: trailX + hem.dx * rnd(6, 20) + rnd(-10, 10),
+          vy: trailY + hem.dy * rnd(6, 20) + rnd(-6, 6),
+          vz: rnd(8, 26),
+          drag: 1.4,
+          life: rnd(700, 1150),
+          r0: rnd(4, 6),
+          r1: rnd(14, 22),
+          rgb: pick(["18,10,26", "36,16,52", "10,6,14", "52,20,64"]),
+          a: 0.4,
+          fin: 0.15,
+          fout: 0.3,
+        });
+        break;
+      case "gold":
+        emit(TWINKLE, px, py, {
+          z: rnd(4, 14),
+          vx: trailX * 0.5 + rnd(-8, 8),
+          vy: trailY * 0.5 + rnd(-4, 4),
+          vz: rnd(-6, 10),
+          g: 24,
+          life: rnd(500, 800),
+          r0: rnd(5, 8),
+          r1: 2,
+          rgb: "255,214,110",
+          add: true,
+        });
+        break;
+      case "emerald":
+        emit(EMBER, px, py, {
+          z: rnd(2, 10),
+          vx: trailX * 0.4 + rnd(-8, 8),
+          vy: trailY * 0.4,
+          vz: rnd(20, 50),
+          drag: 0.8,
+          life: rnd(700, 1100),
+          r0: rnd(2, 3.2),
+          r1: 0.8,
+          rgb: pick(["80,240,150", "170,255,200"]),
+          add: true,
+        });
+        break;
+      case "rainbow":
+        emit(GLOW, px, py, {
+          z: rnd(2, 12),
+          vx: trailX + rnd(-10, 10),
+          vy: trailY + rnd(-6, 6),
+          vz: rnd(0, 14),
+          drag: 1.5,
+          life: rnd(420, 700),
+          r0: rnd(3, 4.5),
+          r1: 1,
+          rgb: pick(RAINBOW_RGB),
+          add: true,
+          a: 0.85,
+        });
+        break;
+      case "royal":
+        emit(TWINKLE, px, py, {
+          z: rnd(2, 8),
+          vz: rnd(4, 12),
+          life: rnd(360, 600),
+          r0: rnd(5, 7),
+          r1: 2,
+          rgb: "220,232,255",
+          add: true,
+        });
+        break;
+      case "tattered":
+        emit(SMOKE, px, py, {
+          z: rnd(0, 4),
+          vx: trailX * 0.6 + rnd(-8, 8),
+          vy: trailY * 0.6,
+          vz: rnd(2, 10),
+          drag: 1.8,
+          life: rnd(500, 800),
+          r0: 3,
+          r1: rnd(8, 12),
+          rgb: "150,130,105",
+          a: 0.3,
+          fin: 0.1,
+        });
+        break;
+      case "recoil":
+        emit(GLOW, px, py, {
+          z: rnd(2, 10),
+          vx: trailX * 0.6 + rnd(-6, 6),
+          vy: trailY * 0.6,
+          vz: rnd(4, 18),
+          drag: 1.5,
+          life: rnd(380, 620),
+          r0: rnd(3, 4.5),
+          r1: 1,
+          rgb: pick([PINK, PINK_L]),
+          add: true,
+          a: 0.8,
+        });
+        break;
+    }
+  }
+  while (st.ember >= 1) {
+    st.ember -= 1;
+    const [px, py] = pickHem();
+    emit(EMBER, px, py, {
+      z: rnd(2, 10),
+      vx: trailX * 0.5 + rnd(-12, 12),
+      vy: trailY * 0.5 + rnd(-6, 6),
+      vz: rnd(20, 46),
+      drag: 0.9,
+      life: rnd(600, 1000),
+      r0: rnd(1.8, 2.8),
+      r1: 0.6,
+      rgb: Math.random() < 0.6 ? DARK_RED : DARK_VIOLET,
+      add: true,
+    });
+  }
+}
+
+/** Aura das trevas no chão (quem veste a capa Sombria, visual novo). */
+export function drawDarkAura2(ctx: CanvasRenderingContext2D, x: number, y: number, tMs: number) {
+  const pulse = 0.5 + 0.5 * Math.sin(tMs * 0.004 + x * 0.01);
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.globalAlpha = 0.72 + 0.15 * pulse;
+  ctx.drawImage(glowSprite("10,4,18"), x - 48, y - 10, 96, 36);
+  // garras de sombra rastejando em volta dos pés
+  ctx.globalAlpha = 0.55;
+  ctx.strokeStyle = "rgb(12,6,18)";
+  ctx.lineCap = "round";
+  for (let i = 0; i < 5; i++) {
+    const a0 = tMs * 0.0006 + (i * TAU) / 5;
+    const reach = 26 + 6 * Math.sin(tMs * 0.003 + i * 1.7);
+    const bend = 0.6 + 0.2 * Math.sin(tMs * 0.002 + i);
+    const sx = x + Math.cos(a0) * 10;
+    const sy = y + 7 + Math.sin(a0) * 4;
+    const ex = x + Math.cos(a0 + bend) * reach;
+    const ey = y + 7 + Math.sin(a0 + bend) * reach * 0.38;
+    const cx = x + Math.cos(a0 + bend * 0.4) * reach * 0.75;
+    const cy = y + 7 + Math.sin(a0 + bend * 0.4) * reach * 0.3;
+    ctx.lineWidth = 3.2;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.quadraticCurveTo(cx, cy, ex, ey);
+    ctx.stroke();
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.moveTo(ex, ey);
+    ctx.lineTo(ex + Math.cos(a0 + bend + 0.9) * 4, ey + Math.sin(a0 + bend + 0.9) * 1.6);
+    ctx.stroke();
+  }
+  ctx.globalCompositeOperation = "lighter";
+  ctx.globalAlpha = 0.12 + 0.1 * pulse;
+  ctx.strokeStyle = `rgb(${DARK_VIOLET})`;
+  ctx.lineWidth = 1.2;
+  ctx.setLineDash([4, 6]);
+  ctx.lineDashOffset = -tMs * 0.012;
+  ctx.beginPath();
+  ctx.ellipse(x, y + 7, 26, 9, 0, 0, TAU);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** Explosão de sombra ao conjurar qualquer poder vestindo a capa Sombria. */
+export function spawnShadowBurst2(x: number, y: number) {
+  const seed = (Math.random() * 1e9) | 0;
+  anim({
+    layer: 0,
+    dur: 520,
+    draw: (ctx, u) => {
+      const grow = easeOut(u / 0.4);
+      ctx.globalAlpha = 0.75 * (1 - u);
+      ctx.strokeStyle = "rgb(10,4,16)";
+      ctx.lineCap = "round";
+      for (let i = 0; i < 7; i++) {
+        const a = (i / 7) * TAU + hash01(seed, i) * 0.5;
+        const reach = (34 + hash01(seed, i + 9) * 26) * grow;
+        const bend = (hash01(seed, i + 20) - 0.5) * 0.9;
+        ctx.lineWidth = 4 * (1 - u * 0.5);
+        ctx.beginPath();
+        ctx.moveTo(x + Math.cos(a) * 8, y + 7 + Math.sin(a) * 3);
+        ctx.quadraticCurveTo(
+          x + Math.cos(a + bend * 0.5) * reach * 0.6,
+          y + 7 + Math.sin(a + bend * 0.5) * reach * 0.24,
+          x + Math.cos(a + bend) * reach,
+          y + 7 + Math.sin(a + bend) * reach * 0.4,
+        );
+        ctx.stroke();
+      }
+    },
+  });
+  ring(x, y + 6, { r0: 6, r1: 60, w0: 10, w1: 2, max: 420, rgb: "12,4,18", a: 0.6, sq: 0.5, add: false });
+  ring(x, y + 6, { r0: 4, r1: 48, w0: 3, w1: 1, max: 320, rgb: DARK_RED, a: 0.8, sq: 0.5 });
+  for (let i = 0; i < qty(12); i++) {
+    const a = (i / 12) * TAU + rnd(-0.2, 0.2);
+    emit(SMOKE, x + Math.cos(a) * 8, y + Math.sin(a) * 4, {
+      z: rnd(4, 40),
+      vx: Math.cos(a) * rnd(60, 140),
+      vy: Math.sin(a) * rnd(30, 70),
+      vz: rnd(10, 40),
+      drag: 2.4,
+      life: rnd(500, 850),
+      r0: 6,
+      r1: rnd(16, 24),
+      rgb: pick(["14,6,20", "34,12,46", "8,4,10"]),
+      a: 0.6,
+      fin: 0.05,
+      fout: 0.35,
+    });
+  }
+  for (let i = 0; i < qty(8); i++) {
+    const a = Math.random() * TAU;
+    emit(EMBER, x + Math.cos(a) * 12, y + Math.sin(a) * 6, {
+      z: rnd(10, 50),
+      vx: Math.cos(a) * rnd(20, 60),
+      vy: Math.sin(a) * rnd(10, 30),
+      vz: rnd(30, 70),
+      drag: 1,
+      life: rnd(600, 900),
+      r0: rnd(2, 3),
+      r1: 0.8,
+      rgb: Math.random() < 0.6 ? DARK_RED : DARK_VIOLET,
+      add: true,
     });
   }
 }
@@ -2799,8 +3102,13 @@ let silNext = 0;
 const SIL_W = 96;
 const SIL_H = 112;
 
-function silhouette(look: Look, aim: number): HTMLCanvasElement {
-  if (silPool.length < 4) silPool.push(makeCanvas(SIL_W, SIL_H));
+type SilPal = readonly [string, string, string];
+const SIL_VIOLET: SilPal = ["rgba(190,140,255,0.95)", "rgba(88,40,160,0.95)", "rgba(30,10,60,0.95)"];
+const SIL_PINK: SilPal = ["rgba(255,190,230,0.9)", "rgba(230,70,160,0.9)", "rgba(110,16,70,0.9)"];
+const SIL_DARK: SilPal = ["rgba(150,30,50,0.9)", "rgba(40,8,24,0.95)", "rgba(8,4,10,0.95)"];
+
+function silhouette(look: Look, aim: number, pal: SilPal = SIL_VIOLET): HTMLCanvasElement {
+  if (silPool.length < 10) silPool.push(makeCanvas(SIL_W, SIL_H));
   const c = silPool[silNext % silPool.length]!;
   silNext++;
   const g = c.getContext("2d")!;
@@ -2811,9 +3119,9 @@ function silhouette(look: Look, aim: number): HTMLCanvasElement {
   g.setTransform(1, 0, 0, 1, 0, 0);
   g.globalCompositeOperation = "source-atop";
   const lg = g.createLinearGradient(0, 0, 0, SIL_H);
-  lg.addColorStop(0, "rgba(190,140,255,0.95)");
-  lg.addColorStop(0.35, "rgba(88,40,160,0.95)");
-  lg.addColorStop(1, "rgba(30,10,60,0.95)");
+  lg.addColorStop(0, pal[0]);
+  lg.addColorStop(0.35, pal[1]);
+  lg.addColorStop(1, pal[2]);
   g.fillStyle = lg;
   g.fillRect(0, 0, SIL_W, SIL_H);
   g.globalCompositeOperation = "source-over";
@@ -2946,16 +3254,37 @@ export interface AuraActor {
   vy: number;
   boost: boolean;
   dash: boolean;
+  /** mira (clones do dash) */
+  aim?: number;
+  /** visual do jogador (clones do dash) */
+  look?: Look | null;
+  /** veste a capa Sombria: dash "das trevas" */
+  dark?: boolean;
 }
 
-const auraAcc = new Map<number, { boost: number; dash: number; dust: number; dashOn: boolean }>();
+const auraAcc = new Map<number, { boost: number; dash: number; dust: number; dashOn: boolean; clone: number }>();
+
+/** Clone-silhueta que fica pra trás e some (dash da Capa de Recuo). */
+function spawnDashClone(x: number, y: number, look: Look, aim: number, dark: boolean) {
+  const img = silhouette(look, aim, dark ? SIL_DARK : SIL_PINK);
+  const dx0 = x - SIL_W / 2;
+  const dy0 = y - (SIL_H - 12);
+  anim({
+    layer: 1,
+    dur: 300,
+    draw: (ctx, u) => {
+      ctx.globalAlpha = (dark ? 0.6 : 0.5) * (1 - u) * (1 - u);
+      ctx.drawImage(img, dx0, dy0);
+    },
+  });
+}
 
 /** Chamas nos calcanhares (Botas) e vento rosa (Capa) enquanto ativos. */
 export function tickAuras2(actors: readonly AuraActor[], dtMs: number) {
   for (const p of actors) {
     let acc = auraAcc.get(p.id);
     if (!acc) {
-      acc = { boost: 0, dash: 0, dust: 0, dashOn: false };
+      acc = { boost: 0, dash: 0, dust: 0, dashOn: false, clone: 0 };
       auraAcc.set(p.id, acc);
     }
     const sp = Math.hypot(p.vx, p.vy);
@@ -3033,11 +3362,53 @@ export function tickAuras2(actors: readonly AuraActor[], dtMs: number) {
       acc.boost = 0;
     }
     if (p.dash) {
-      if (!acc.dashOn && sp > 30) spawnDash2(p.x, p.y, Math.atan2(p.vy, p.vx));
+      const dark = !!p.dark;
+      if (!acc.dashOn && sp > 30) {
+        spawnDash2(p.x, p.y, Math.atan2(p.vy, p.vx), dark);
+        acc.clone = 0;
+      }
       acc.dashOn = true;
+      // clones-silhueta ao longo do caminho
+      if (p.look && sp > 60) {
+        acc.clone -= dtMs;
+        if (acc.clone <= 0) {
+          acc.clone = FX2_LITE ? 90 : 45;
+          spawnDashClone(p.x, p.y, p.look, p.aim ?? Math.atan2(p.vy, p.vx), dark);
+        }
+      }
       acc.dash += dtMs;
       while (acc.dash > (FX2_LITE ? 40 : 18)) {
         acc.dash -= FX2_LITE ? 40 : 18;
+        if (dark) {
+          emit(SMOKE, p.x + rnd(-8, 8), p.y, {
+            z: rnd(8, 60) * BODY_K,
+            vx: -ux * rnd(20, 80),
+            vy: -uy * rnd(20, 80),
+            drag: 2.6,
+            life: rnd(320, 520),
+            r0: 8,
+            r1: rnd(18, 26),
+            rgb: pick(["14,6,20", "34,12,46", "8,4,10"]),
+            a: 0.6,
+            fin: 0,
+            fout: 0.3,
+          });
+          if (Math.random() < 0.5) {
+            emit(EMBER, p.x + rnd(-10, 10), p.y, {
+              z: rnd(10, 60) * BODY_K,
+              vx: -ux * rnd(60, 160),
+              vy: -uy * rnd(60, 160),
+              vz: rnd(10, 40),
+              drag: 2,
+              life: rnd(300, 500),
+              r0: 2.4,
+              r1: 0.6,
+              rgb: Math.random() < 0.7 ? DARK_RED : DARK_VIOLET,
+              add: true,
+            });
+          }
+          continue;
+        }
         emit(GLOW, p.x + rnd(-8, 8), p.y, {
           z: rnd(8, 60) * BODY_K,
           vx: -ux * rnd(40, 120),
@@ -3081,6 +3452,7 @@ export function tickAuras2(actors: readonly AuraActor[], dtMs: number) {
     } else {
       acc.dashOn = false;
       acc.dash = 0;
+      acc.clone = 0;
     }
   }
   if (auraAcc.size > 64) auraAcc.clear();
@@ -3101,6 +3473,7 @@ export function tickFx2(dtMs: number, feel?: FeelState) {
 
 export function clearFx2() {
   clearFx2Core();
+  capeAcc.clear();
   booms2.length = 0;
   totemBorn2.clear();
   totemLayouts.clear();

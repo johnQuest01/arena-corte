@@ -142,7 +142,19 @@ export const BOOTS: BootsDef[] = [
 ];
 
 export interface CapeDef extends NamedItem {
-  style: "none" | "hero" | "royal" | "dark" | "gold" | "tattered" | "emerald" | "rainbow" | "draftRecoil" | "draftShield";
+  style:
+    | "none"
+    | "hero"
+    | "royal"
+    | "dark"
+    | "gold"
+    | "tattered"
+    | "emerald"
+    | "rainbow"
+    | "draftRecoil"
+    | "draftShield"
+    | "recoil"
+    | "recoilDark";
   main: string;
   inner: string;
   trim: string;
@@ -152,7 +164,7 @@ export const CAPES: CapeDef[] = [
   { name: "Nenhuma", style: "none", main: "", inner: "", trim: "" },
   { name: "Heroica", style: "hero", main: "#c0282c", inner: "#7e1519", trim: "#f0c040" },
   { name: "Real", style: "royal", main: "#27448f", inner: "#172b5c", trim: "#f2f0ea" },
-  { name: "Sombria", style: "dark", main: "#141418", inner: "#07070a", trim: "#34363d" },
+  { name: "Sombria", style: "dark", main: "#141418", inner: "#4a0c16", trim: "#34363d" },
   { name: "Dourada", style: "gold", main: "#d4a634", inner: "#9c2a26", trim: "#fff2b8" },
   { name: "Esfarrapada", style: "tattered", main: "#6e5a44", inner: "#4a3b2c", trim: "#8a7458" },
   { name: "Esmeralda", style: "emerald", main: "#1f7a4d", inner: "#11492d", trim: "#e2c25a" },

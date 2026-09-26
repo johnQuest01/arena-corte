@@ -23,6 +23,7 @@ import { GUN_HAND_BODY_Y, WEAPONS, muzzlePoint, weaponOf } from "../../../shared
 import { hitsSolid, moveAndSlide } from "../../../shared/map";
 import {
   BOOTS,
+  CAPES,
   HAIR_COLORS,
   HELMETS,
   OUTFITS,
@@ -130,6 +131,7 @@ import {
   spawnGiantHit2,
   spawnGiantSummon2,
   spawnRiftStomp2,
+  spawnShadowBurst2,
   spawnShatter2,
   spawnShieldCast2,
   spawnShieldRipple2,
@@ -341,6 +343,14 @@ export class GameClient {
   private readonly lookFor = (id: number): Look =>
     id === this.selfId ? this.myLook : this.looks.get(id) ?? autoLookFor(id);
   private readonly nameFor = (id: number): string | undefined => this.names.get(id);
+
+  /** Quem veste a capa Sombria (visual novo) solta uma explosão de sombra ao conjurar. */
+  private darkCastFx(id: number, x: number, y: number) {
+    if (fxOld(id)) return;
+    const lk = this.lookFor(id);
+    if (lk.body !== 0 || CAPES[lk.cape]?.style !== "dark") return;
+    spawnShadowBurst2(x, y);
+  }
 
   setMuted(m: boolean) {
     setMuted(m);
@@ -851,12 +861,16 @@ export class GameClient {
             const hop = wid - CHAIN_SEGMENT_BASE;
             if (fxOld(e.a)) spawnLightningBolt(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y, hop);
             else spawnBolt2(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y, hop);
-            if (hop === 0) playSfx("zap", e.x, e.y, listener);
+            if (hop === 0) {
+              playSfx("zap", e.x, e.y, listener);
+              if (e.a !== this.selfId) this.darkCastFx(e.a, e.x, e.y);
+            }
             else playSfx("zap", e.x2 ?? e.x, e.y2 ?? e.y, listener, { volumeMul: 0.55 });
           } else if (e.b === 11) {
             if (e.a !== this.selfId) {
               if (fxOld(e.a)) spawnBlinkFx(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y);
               else spawnBlink2(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y, this.lookFor(e.a));
+              this.darkCastFx(e.a, e.x, e.y);
               playSfx("blink", e.x2 ?? e.x, e.y2 ?? e.y, listener);
             }
           } else if (e.b === 9) {
@@ -869,6 +883,7 @@ export class GameClient {
               else spawnDiscCatch2(e.x, e.y);
             } else if (e.a !== this.selfId) {
               playSfx("boost", e.x, e.y, listener);
+              this.darkCastFx(e.a, e.x, e.y);
               if (!fxOld(e.a)) {
                 const ang = e.angle ?? 0;
                 spawnCastGlint2(
@@ -936,6 +951,7 @@ export class GameClient {
               newFx,
             );
             if (newFx) spawnRemoteCast2(e);
+            if (e.b !== 3) this.darkCastFx(e.a, e.x, e.y);
           }
         }
         if (e.kind === "totemSpawn") {
@@ -1271,6 +1287,7 @@ export class GameClient {
             if (r) {
               if (fxOld(this.selfId)) spawnBlinkFx(r.fromX, r.fromY, r.x, r.y);
               else spawnBlink2(r.fromX, r.fromY, r.x, r.y, this.myLook);
+              this.darkCastFx(this.selfId, r.fromX, r.fromY);
               playSfx("blink", r.x, r.y, { x: r.x, y: r.y });
               this.feel.shake = Math.max(this.feel.shake, 0.6);
               if (this.smooth) {
@@ -1296,6 +1313,7 @@ export class GameClient {
           } else {
             pred.abilityCdUntil = nowSrv + ab.cooldownMs;
             const oldFx = fxOld(this.selfId);
+            this.darkCastFx(this.selfId, pred.x, pred.y);
             if (ab.id === 0) {
               if (oldFx) spawnWaterJetFx(pred.x, pred.y, raw.aim);
               else spawnWaterJet2(pred.x, pred.y, raw.aim);
@@ -1733,10 +1751,21 @@ export class GameClient {
       const actors: AuraActor[] = [];
       const add = (
         id: number,
-        p: { x: number; y: number; vx?: number; vy?: number; alive: boolean; ability?: number; speedBoostUntil?: number; dashUntil?: number },
+        p: {
+          x: number;
+          y: number;
+          vx?: number;
+          vy?: number;
+          angle?: number;
+          alive: boolean;
+          ability?: number;
+          speedBoostUntil?: number;
+          dashUntil?: number;
+        },
       ) => {
         const ab = p.ability ?? 0;
         if (!p.alive || (ab !== 2 && ab !== 3) || fxOld(id)) return;
+        const lk = this.lookFor(id);
         actors.push({
           id,
           x: p.x,
@@ -1745,6 +1774,9 @@ export class GameClient {
           vy: p.vy ?? 0,
           boost: ab === 2 && (p.speedBoostUntil ?? 0) > srvT,
           dash: ab === 3 && (p.dashUntil ?? 0) > srvT,
+          aim: p.angle,
+          look: lk.body === 0 ? lk : null,
+          dark: CAPES[lk.cape]?.style === "dark",
         });
       };
       if (local) add(this.selfId, local);

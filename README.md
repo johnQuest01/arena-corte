@@ -48,6 +48,11 @@ Sprites/base: Kenney.nl · paleta: Lospec · efeitos (muzzle, trail, bob, sombra
 - **Proporção**: boneco com ~76 px de altura (`CHAR_SCALE` 0.95), carros de 4×2 tiles estacionados numa faixa, casas de 8–11 tiles. A câmera aproxima um pouco (zoom base 1.12, 1.25 no celular) pra compensar o boneco menor.
 - **Boneco** (`character.ts`): 8 direções, idle/caminhada, com camadas de pele, cabelo, roupa, armadura, calçado e capacete. O boneco antigo (sprite) continua como corpo **"Rascunho"**, com as capas, as botas e o escudo antigos.
 - **Capas** (`capes.ts`): física de pano (verlet, 7 pontos) em todas as capas, cosméticas e de habilidade.
+  - O desenho é de tecido: dobras que ondulam com o vento, brilho de seda, gola com forro e barras bordadas (arminho na Real, pedras na Dourada e na Esmeralda).
+  - A **Sombria** é a capa das trevas: forro carmesim, símbolo rubro nas costas e uma barra que se desfaz em sombra. No visual Novo de poderes ela solta fumaça das trevas, deixa uma aura com garras de sombra no chão e explode em sombra quando o dono lança um poder.
+  - As outras capas também soltam efeitos próprios: brilhos dourados, faíscas verdes, rastro de arco-íris e poeira na esfarrapada.
+  - A **Capa de Recuo** (poder) ganhou costuras de energia que acendem no dash e clones-silhueta pelo caminho. Em quem veste a Sombria, ela vira a versão das trevas: preta com costuras rubras e fumaça escura.
+  - As capas "Rascunho" continuam com o desenho antigo.
 - **Escudo Estelar** (`shield.ts`): inspirado no escudo do Capitão América. Fica nas costas quando equipado e é erguido na frente quando ativo.
 - **Armas** (`guns.ts`): as 7 armas desenhadas em código (pistola, M4, M16, AK, escopeta, SMG e sniper). Os sprites antigos continuam como estilo **"Rascunho"**. Só o desenho muda: dano, cadência, pente e alcance são os mesmos.
 - **Poderes** (`fx2.ts` + `fx2_core.ts`, Gigante em `giant2.ts`): visual novo dos 12 poderes, com partículas com altura e gravidade, brilho aditivo com sprites em cache, anéis de choque e marcas no chão:
