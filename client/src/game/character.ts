@@ -477,8 +477,10 @@ function drawArmor(ctx: CanvasRenderingContext2D, a: ArmorDef, f: Facing, t: num
     case "neon": {
       plate(a.main, a.shade, 1.5, 22);
       const pulse = 0.65 + 0.35 * Math.sin(t * 0.006);
+      // relativo: corpo pode vir translúcido (morto, rastro, afundando na fenda)
+      const a0 = ctx.globalAlpha;
       ctx.strokeStyle = a.glow!;
-      ctx.globalAlpha = pulse;
+      ctx.globalAlpha = a0 * pulse;
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       ctx.moveTo(-tw / 2 + 4, y0 + 5);
@@ -487,10 +489,10 @@ function drawArmor(ctx: CanvasRenderingContext2D, a: ArmorDef, f: Facing, t: num
       ctx.moveTo(-tw / 2 + 4, y0 + 19);
       ctx.lineTo(tw / 2 - 4, y0 + 19);
       ctx.stroke();
-      ctx.globalAlpha = pulse * 0.35;
+      ctx.globalAlpha = a0 * pulse * 0.35;
       ctx.lineWidth = 4;
       ctx.stroke();
-      ctx.globalAlpha = 1;
+      ctx.globalAlpha = a0;
       pauldron(-tw / 2 + 1, 6, a.trim);
       if (f.turn < 0.6) pauldron(tw / 2 - 1, 6, a.trim);
       break;
@@ -924,14 +926,15 @@ function drawHelmet(ctx: CanvasRenderingContext2D, h: HelmetDef, f: Facing, t: n
       fillStroke(ctx, h.main);
       if (!f.back) {
         const pulse = 0.7 + 0.3 * Math.sin(t * 0.008);
+        const a0 = ctx.globalAlpha;
         ctx.fillStyle = h.accent;
-        ctx.globalAlpha = pulse;
+        ctx.globalAlpha = a0 * pulse;
         capsule(ctx, shift - 10 + f.turn * 3, hy - 3, 20 - f.turn * 5, 5, 2.5);
         ctx.fill();
-        ctx.globalAlpha = pulse * 0.3;
+        ctx.globalAlpha = a0 * pulse * 0.3;
         capsule(ctx, shift - 12 + f.turn * 3, hy - 5, 24 - f.turn * 5, 9, 4);
         ctx.fill();
-        ctx.globalAlpha = 1;
+        ctx.globalAlpha = a0;
       } else {
         ctx.fillStyle = h.accent;
         ctx.fillRect(-2, hy - r, 4, r - 2);

@@ -89,6 +89,7 @@ export function App() {
     clientRef.current?.setLook(clean);
     setWardrobeOpen(false);
   }, []);
+  const closeWardrobe = useCallback(() => setWardrobeOpen(false), []);
 
   // Preload real (art 70% + sfx 30%) antes do menu — elimina hitch de estreia
   useEffect(() => {
@@ -148,6 +149,11 @@ export function App() {
     c.dataset.fill = mobileUi && hud?.phase === "playing" ? "1" : "0";
     window.dispatchEvent(new Event("resize"));
   }, [mobileUi, hud?.phase, screen]);
+
+  // partida começou com o guarda-roupa aberto (host iniciou): fecha pra não tapar o jogo
+  useEffect(() => {
+    if (hud?.phase === "playing") setWardrobeOpen(false);
+  }, [hud?.phase]);
 
   const goFullscreen = useCallback(async () => {
     if (!isMobileViewport()) return;
@@ -354,8 +360,10 @@ export function App() {
         />
       )}
 
-      {wardrobeOpen && (
-        <Wardrobe look={look} onSave={saveLook} onClose={() => setWardrobeOpen(false)} />
+      {/* na sala o guarda-roupa vai DENTRO do shell: no celular o shell está em
+          tela cheia e o que fica fora dele não aparece */}
+      {wardrobeOpen && screen !== "game" && (
+        <Wardrobe look={look} onSave={saveLook} onClose={closeWardrobe} />
       )}
 
       <div
@@ -430,6 +438,9 @@ export function App() {
               </button>
             </div>
           </div>
+        )}
+        {wardrobeOpen && screen === "game" && (
+          <Wardrobe look={look} onSave={saveLook} onClose={closeWardrobe} />
         )}
       </div>
     </div>

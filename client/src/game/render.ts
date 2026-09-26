@@ -1442,7 +1442,9 @@ function drawPersonNew(
   const dashing = recoilCapeOn && (p.dashUntil ?? 0) > serverTime;
   const f = facingOf(p.angle);
   const skin = skinColorOf(look);
-  const baseA = p.alive ? 1 : 0.35;
+  // alpha de fora (ex.: afundando na Fenda) multiplica tudo e volta no fim
+  const inA = ctx.globalAlpha;
+  const baseA = (p.alive ? 1 : 0.35) * inA;
   const pose = {
     aim: p.angle,
     speed,
@@ -1564,7 +1566,7 @@ function drawPersonNew(
     ctx.ellipse(ox, oy - 38, 32, 50, 0, 0, Math.PI * 2);
     ctx.fill();
   }
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha = inA;
 }
 
 /** Boneco antigo (sprite) + capas/botas/escudo antigos — preservado como "Rascunho". */
