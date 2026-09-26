@@ -172,9 +172,16 @@ function setup(n) {
   const p = { x: 60, y: 900, vx: 0, vy: 0, angle: Math.PI, abilityCdUntil: 0 };
   const r = performBlink(p, 1000, Math.PI, 0, hitsSolid);
   check("sem espaço = não teleporta (não gasta CD)", r === null && p.abilityCdUntil === 0);
-  const q = { x: 400, y: 900, vx: 0, vy: 0, angle: Math.PI, abilityCdUntil: 0 };
+  // linha livre do x=300 até a borda esquerda (muro em x<32)
+  let qy = -1;
+  for (let y = 40; y < MAP_H * TILE - 40 && qy < 0; y += 8) {
+    let free = true;
+    for (let x = 300; x >= 50 && free; x -= 6) if (hitsSolid(x, y, 15, 0)) free = false;
+    if (free) qy = y;
+  }
+  const q = { x: 300, y: qy, vx: 0, vy: 0, angle: Math.PI, abilityCdUntil: 0 };
   const r2 = performBlink(q, 1000, Math.PI, 0, hitsSolid);
-  check("para antes do muro", r2 && q.x > 32 && !hitsSolid(q.x, q.y, 14, 0), { x: q.x });
+  check("para antes do muro", qy > 0 && r2 && q.x > 32 && q.x < 60 && !hitsSolid(q.x, q.y, 13.5, 0), { x: q.x, y: qy });
 }
 
 /**

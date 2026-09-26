@@ -371,22 +371,22 @@ interface CarRect {
   seed: number;
 }
 const CARS: CarRect[] = (() => {
+  // cada carro é um retângulo de tiles CAR (4×2 na faixa); o gerador deixa folga entre eles
   const out: CarRect[] = [];
   const used = new Uint8Array(MAP_W * MAP_H);
   for (let y = 0; y < MAP_H; y++) {
     for (let x = 0; x < MAP_W; x++) {
       const k = y * MAP_W + x;
       if (used[k] || SOLID[y]![x] !== T.CAR) continue;
-      used[k] = 1;
-      if (x + 1 < MAP_W && SOLID[y]![x + 1] === T.CAR && !used[k + 1]) {
-        used[k + 1] = 1;
-        out.push({ x: x * TILE, y: y * TILE, w: TILE * 2, h: TILE, seed: k });
-      } else if (y + 1 < MAP_H && SOLID[y + 1]![x] === T.CAR && !used[k + MAP_W]) {
-        used[k + MAP_W] = 1;
-        out.push({ x: x * TILE, y: y * TILE, w: TILE, h: TILE * 2, seed: k });
-      } else {
-        out.push({ x: x * TILE, y: y * TILE, w: TILE, h: TILE, seed: k });
+      let w = 1;
+      while (x + w < MAP_W && SOLID[y]![x + w] === T.CAR && !used[k + w]) w++;
+      let h = 1;
+      grow: while (y + h < MAP_H) {
+        for (let i = 0; i < w; i++) if (SOLID[y + h]![x + i] !== T.CAR) break grow;
+        h++;
       }
+      for (let yy = y; yy < y + h; yy++) for (let xx = x; xx < x + w; xx++) used[yy * MAP_W + xx] = 1;
+      out.push({ x: x * TILE, y: y * TILE, w: w * TILE, h: h * TILE, seed: k });
     }
   }
   return out;
@@ -1607,17 +1607,16 @@ const CAR_COLS: RGB[] = [
 
 function paintCar(g: CanvasRenderingContext2D, c: CarRect) {
   const horiz = c.w >= c.h;
-  const L = Math.max(c.w, c.h) - 6;
-  const W = Math.min(c.w, c.h) - 7;
+  const L = Math.max(c.w, c.h) - 8;
+  const W = Math.min(c.w, c.h) - 10;
   const col = CAR_COLS[Math.floor(h2(c.seed, 0, 841) * CAR_COLS.length)]!;
   const flip = h2(c.seed, 1, 842) < 0.5 ? -1 : 1;
   const wreck = h2(c.seed, 2, 843);
-  const small = Math.max(c.w, c.h) <= TILE;
   g.save();
   g.translate(c.x + c.w / 2, c.y + c.h / 2);
   if (!horiz) g.rotate(Math.PI / 2);
   g.scale(flip, 1);
-  if (small) {
+  if (Math.max(c.w, c.h) <= TILE) {
     // sucata (tile isolado)
     g.fillStyle = "#3a3632";
     roundRectPath(g, -12, -10, 24, 20, 4);
@@ -1628,99 +1627,130 @@ function paintCar(g: CanvasRenderingContext2D, c: CarRect) {
     g.restore();
     return;
   }
-  // rodas
-  g.fillStyle = "#151517";
+  const OUT = "#15110f";
+  const body = shade(col, wreck > 0.82 ? 0.5 : 1);
+  const r = Math.min(W * 0.28, 12);
+  // rodas (aparecem pelos lados) — uma murcha nos carros mais detonados
+  const wl = L * 0.15;
+  const ww = W * 0.13;
   for (const sx of [-1, 1]) {
     for (const sy of [-1, 1]) {
-      g.fillRect(sx * L * 0.3 - 5, sy * (W / 2) - 2.5 + (sy > 0 ? 0 : 0), 10, 5);
+      const flat = wreck > 0.7 && sx < 0 && sy > 0;
+      g.fillStyle = OUT;
+      roundRectPath(g, sx * L * 0.3 - wl / 2, sy * W * 0.5 - ww / 2 + (flat ? sy * 1.5 : 0), wl, ww, 2.5);
+      g.fill();
+      g.fillStyle = "#3a3a3e";
+      g.fillRect(sx * L * 0.3 - wl * 0.18, sy * W * 0.5 - ww * 0.2, wl * 0.36, ww * 0.4);
     }
   }
-  // carroceria
-  const body = shade(col, wreck > 0.8 ? 0.55 : 1);
-  g.fillStyle = rgb(shade(body, 0.7));
-  roundRectPath(g, -L / 2, -W / 2, L, W, 6);
+  // carroceria: contorno + lateral escura + tampa clara (volume 3/4)
+  g.fillStyle = OUT;
+  roundRectPath(g, -L / 2 - 1.5, -W / 2 - 1.5, L + 3, W + 3, r + 1.5);
   g.fill();
-  g.fillStyle = rgb(body);
-  roundRectPath(g, -L / 2 + 1, -W / 2 + 1, L - 2, W - 3, 5);
+  g.fillStyle = rgb(shade(body, 0.62));
+  roundRectPath(g, -L / 2, -W / 2, L, W, r);
   g.fill();
-  // capô e porta-malas (linhas)
-  g.strokeStyle = "rgba(0,0,0,0.25)";
-  g.lineWidth = 1;
+  const top = g.createLinearGradient(0, -W / 2, 0, W / 2);
+  top.addColorStop(0, rgb(shade(body, 1.18)));
+  top.addColorStop(0.55, rgb(body));
+  top.addColorStop(1, rgb(shade(body, 0.86)));
+  g.fillStyle = top;
+  roundRectPath(g, -L / 2 + 1.5, -W / 2 + 1.5, L - 3, W - 4.5, r - 1);
+  g.fill();
+  // capô / porta-malas (vincos)
+  g.strokeStyle = "rgba(0,0,0,0.28)";
+  g.lineWidth = 1.2;
   g.beginPath();
-  g.moveTo(L * 0.3, -W / 2 + 3);
-  g.lineTo(L * 0.3, W / 2 - 3);
-  g.moveTo(-L * 0.36, -W / 2 + 3);
-  g.lineTo(-L * 0.36, W / 2 - 3);
+  g.moveTo(L * 0.27, -W / 2 + 4);
+  g.lineTo(L * 0.27, W / 2 - 5);
+  g.moveTo(-L * 0.33, -W / 2 + 4);
+  g.lineTo(-L * 0.33, W / 2 - 5);
+  g.moveTo(L * 0.4, -W * 0.18);
+  g.lineTo(L * 0.46, -W * 0.18);
+  g.moveTo(L * 0.4, W * 0.14);
+  g.lineTo(L * 0.46, W * 0.14);
   g.stroke();
-  // para-brisa
-  g.fillStyle = "#1c2830";
+  // cabine: vidros laterais + teto
+  const glass = wreck > 0.82 ? "#161616" : "#1d2a34";
+  g.fillStyle = glass;
+  roundRectPath(g, -L * 0.3, -W / 2 + 3.5, L * 0.56, W - 8, 5);
+  g.fill();
+  // para-brisa (frente) e vidro traseiro
   g.beginPath();
-  g.moveTo(L * 0.28, -W / 2 + 3);
-  g.lineTo(L * 0.12, -W / 2 + 4.5);
-  g.lineTo(L * 0.12, W / 2 - 4.5);
-  g.lineTo(L * 0.28, W / 2 - 3);
+  g.moveTo(L * 0.27, -W / 2 + 4.5);
+  g.lineTo(L * 0.13, -W / 2 + 6.5);
+  g.lineTo(L * 0.13, W / 2 - 7.5);
+  g.lineTo(L * 0.27, W / 2 - 5.5);
   g.closePath();
   g.fill();
-  // teto
-  g.fillStyle = rgb(shade(body, 1.12));
-  roundRectPath(g, -L * 0.22, -W / 2 + 4, L * 0.34, W - 8, 3);
+  g.fillStyle = rgb(shade(body, 1.08));
+  roundRectPath(g, -L * 0.2, -W / 2 + 7, L * 0.32, W - 15, 4);
   g.fill();
-  // vidro traseiro
-  g.fillStyle = "#1c2830";
+  g.fillStyle = "rgba(255,255,255,0.16)";
+  g.fillRect(-L * 0.18, -W / 2 + 8, L * 0.28, 2);
+  // reflexos no vidro
+  g.strokeStyle = "rgba(200,225,245,0.4)";
+  g.lineWidth = 1.2;
   g.beginPath();
-  g.moveTo(-L * 0.22, -W / 2 + 4.5);
-  g.lineTo(-L * 0.33, -W / 2 + 3.5);
-  g.lineTo(-L * 0.33, W / 2 - 3.5);
-  g.lineTo(-L * 0.22, W / 2 - 4.5);
-  g.closePath();
-  g.fill();
-  // reflexo
-  g.strokeStyle = "rgba(190,215,235,0.35)";
-  g.lineWidth = 1;
-  g.beginPath();
-  g.moveTo(L * 0.25, -W / 2 + 5);
-  g.lineTo(L * 0.16, W / 2 - 7);
+  g.moveTo(L * 0.24, -W / 2 + 7);
+  g.lineTo(L * 0.17, W / 2 - 10);
+  g.moveTo(-L * 0.25, -W / 2 + 5);
+  g.lineTo(-L * 0.28, W / 2 - 8);
   g.stroke();
-  // faróis / lanternas
-  g.fillStyle = wreck > 0.7 ? "#6b6a5a" : "#f2e7b0";
-  g.fillRect(L / 2 - 3, -W / 2 + 2.5, 2, 4);
-  g.fillRect(L / 2 - 3, W / 2 - 7, 2, 4);
-  g.fillStyle = "#a02a22";
-  g.fillRect(-L / 2 + 1, -W / 2 + 2.5, 2, 4);
-  g.fillRect(-L / 2 + 1, W / 2 - 7, 2, 4);
+  // faróis e lanternas
+  g.fillStyle = wreck > 0.7 ? "#6b6a5a" : "#f4ecc0";
+  roundRectPath(g, L / 2 - 4, -W / 2 + 3, 3, W * 0.2, 1);
+  g.fill();
+  roundRectPath(g, L / 2 - 4, W / 2 - 3 - W * 0.2, 3, W * 0.2, 1);
+  g.fill();
+  g.fillStyle = "#b02a24";
+  roundRectPath(g, -L / 2 + 1, -W / 2 + 3, 3, W * 0.18, 1);
+  g.fill();
+  roundRectPath(g, -L / 2 + 1, W / 2 - 3 - W * 0.18, 3, W * 0.18, 1);
+  g.fill();
   // retrovisores
-  g.fillStyle = rgb(shade(body, 0.75));
-  g.fillRect(L * 0.1, -W / 2 - 1.5, 3, 2);
-  g.fillRect(L * 0.1, W / 2 - 0.5, 3, 2);
-  // brilho de laca no topo
-  g.fillStyle = "rgba(255,255,255,0.12)";
-  g.fillRect(-L / 2 + 5, -W / 2 + 2, L - 10, 1.5);
-  // desgaste: ferrugem / queimado / vidro quebrado
+  g.fillStyle = OUT;
+  g.fillRect(L * 0.09, -W / 2 - 3, 5, 3.5);
+  g.fillRect(L * 0.09, W / 2 - 0.5, 5, 3.5);
+  // desgaste: ferrugem / queimado / vidro quebrado / amassado
   if (wreck > 0.45) {
     g.fillStyle = "rgba(118,62,30,0.5)";
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 6; i++) {
       g.beginPath();
-      g.arc((h2(c.seed, i, 844) - 0.5) * L * 0.8, (h2(c.seed, i, 845) - 0.5) * W * 0.7, 2 + h2(c.seed, i, 846) * 3, 0, Math.PI * 2);
+      g.arc(
+        (h2(c.seed, i, 844) - 0.5) * L * 0.85,
+        (h2(c.seed, i, 845) - 0.5) * W * 0.75,
+        2 + h2(c.seed, i, 846) * 4,
+        0,
+        Math.PI * 2,
+      );
       g.fill();
     }
   }
-  if (wreck > 0.8) {
+  if (wreck > 0.82) {
     const sc = g.createRadialGradient(0, 0, 2, 0, 0, L * 0.5);
-    sc.addColorStop(0, "rgba(10,8,8,0.55)");
+    sc.addColorStop(0, "rgba(10,8,8,0.6)");
     sc.addColorStop(1, "rgba(10,8,8,0)");
     g.fillStyle = sc;
     g.fillRect(-L / 2, -W / 2, L, W);
   }
   if (wreck > 0.6) {
-    g.strokeStyle = "rgba(210,225,235,0.45)";
-    g.lineWidth = 0.8;
+    g.strokeStyle = "rgba(210,225,235,0.5)";
+    g.lineWidth = 0.9;
     g.beginPath();
-    g.moveTo(L * 0.2, 0);
-    g.lineTo(L * 0.26, -4);
-    g.moveTo(L * 0.2, 0);
-    g.lineTo(L * 0.14, 3);
-    g.moveTo(L * 0.2, 0);
-    g.lineTo(L * 0.25, 5);
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2 + h2(c.seed, i, 847);
+      g.moveTo(L * 0.2, 0);
+      g.lineTo(L * 0.2 + Math.cos(a) * 7, Math.sin(a) * 9);
+    }
+    g.stroke();
+  }
+  if (wreck > 0.3 && wreck < 0.5) {
+    // amassado na lateral
+    g.strokeStyle = "rgba(0,0,0,0.3)";
+    g.lineWidth = 1.5;
+    g.beginPath();
+    g.arc(-L * 0.05, W / 2 + 2, W * 0.22, Math.PI * 1.15, Math.PI * 1.85);
     g.stroke();
   }
   g.restore();

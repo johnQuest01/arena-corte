@@ -45,6 +45,7 @@ Sprites/base: Kenney.nl · paleta: Lospec · efeitos (muzzle, trail, bob, sombra
 ## Visual (tudo desenhado por código)
 
 - **Mapa** (`client/src/game/world.ts`): ruas com faixas e zebras, meio-fio, calçadas, terrenos, praças, pisos internos, paredes, carros, caixas, barris e postes. É pintado em blocos de 256 px com cache LRU (≈30 MB no Full, ≈10 MB no Leve). Por frame só copia os blocos visíveis. Bloco novo tem orçamento de ~6 ms por frame (renascer longe não trava): o que falta aparece por alguns frames como uma prévia borrada do mapa.
+- **Proporção**: boneco com ~76 px de altura (`CHAR_SCALE` 0.95), carros de 4×2 tiles estacionados numa faixa, casas de 8–11 tiles. A câmera aproxima um pouco (zoom base 1.12, 1.25 no celular) pra compensar o boneco menor.
 - **Boneco** (`character.ts`): 8 direções, idle/caminhada, com camadas de pele, cabelo, roupa, armadura, calçado e capacete. O boneco antigo (sprite) continua como corpo **"Rascunho"**, com as capas, as botas e o escudo antigos.
 - **Capas** (`capes.ts`): física de pano (verlet, 7 pontos) em todas as capas, cosméticas e de habilidade.
 - **Escudo Estelar** (`shield.ts`): inspirado no escudo do Capitão América. Fica nas costas quando equipado e é erguido na frente quando ativo.

@@ -3,7 +3,7 @@
  */
 import { CAPES, type Look } from "../../../shared/cosmetics";
 import { aimToDir8, drawDirFrame, getCharDirs } from "./art";
-import { capeAnchor, CHAR_SCALE, drawBody, facingOf } from "./character";
+import { BODY_K, capeAnchor, CHAR_SCALE, drawBody, facingOf, LEGACY_K } from "./character";
 import { drawCape, stepCape } from "./capes";
 
 export interface PreviewState {
@@ -32,7 +32,8 @@ export function renderLookPreview(
   g.fillStyle = floor;
   g.fillRect(0, 0, w, h);
 
-  const z = Math.min(w / 150, h / 190);
+  // enquadramento igual ao de antes da escala nova (boneco menor no mundo)
+  const z = Math.min(w / 150, h / 190) / BODY_K;
   const px = w / 2;
   const py = h * 0.8;
   g.save();
@@ -48,7 +49,7 @@ export function renderLookPreview(
     const dirs = getCharDirs(0);
     if (dirs) {
       const d = aimToDir8(st.aim);
-      const S = 112;
+      const S = 112 * LEGACY_K;
       g.imageSmoothingEnabled = false;
       drawDirFrame(g, dirs, 0, d, -S / 2, -S * 0.62, S, S);
     } else {

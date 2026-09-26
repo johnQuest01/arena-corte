@@ -229,16 +229,17 @@ export function weaponOf(id: number): WeaponDef {
 /** Offset autoritativo da mão → muzzlePoint (hitscan). NÃO alterar. */
 export const GUN_HAND = 18;
 /**
- * Desenho da arma no personagem (CHAR_PX≈112):
+ * Desenho da arma no personagem (boneco ~76 px; antes sprite ~112 px com
+ * arma 2.15× — rifle maior que um carro):
  * - BODY_Y: altura das mãos do sprite (não o pé/centro)
  * - HAND_VISUAL: avanço na mira — punho na mão traseira do personagem
  * Tamanho da arma = GUN_VISUAL_SCALE (igual ao de antes). Hitscan: GUN_HAND.
  */
-export const GUN_HAND_BODY_Y = -16;
+export const GUN_HAND_BODY_Y = -11;
 /** Punho na mão traseira do sprite; cano passa pela dianteira (rifle 2 mãos). */
-export const GUN_HAND_VISUAL = 5;
+export const GUN_HAND_VISUAL = 3.5;
 /** Usado no desenho E em muzzlePoint / gunBarrelLocal. */
-export const GUN_VISUAL_SCALE = 2.15;
+export const GUN_VISUAL_SCALE = 1.4;
 
 /**
  * Ponta do cano no PNG (px): tipX/tipY medidos nos assets.

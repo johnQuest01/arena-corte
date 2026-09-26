@@ -55,7 +55,7 @@ import {
   getTileImg,
 } from "./art";
 import { drawRoofLayer, drawWorld, invalidateWorld } from "./world";
-import { BODY, CHAR_SCALE, capeAnchor, drawBody, facingOf, skinColorOf } from "./character";
+import { BODY, BODY_K, CHAR_SCALE, LEGACY_K, capeAnchor, drawBody, facingOf, skinColorOf } from "./character";
 import { drawCape, RECOIL_CAPE_DEF, stepCape } from "./capes";
 import { drawShieldSparks, drawStarShield } from "./shield";
 import { drawPowersFx, drawThrownShield } from "./powers_fx";
@@ -1250,7 +1250,7 @@ function drawBoostTrail(
   const n = Math.min(5, 2 + Math.floor(spd / 120));
   for (let i = 0; i < n; i++) {
     const jitter = ((tMs * 0.02 + i * 17) % 7) - 3;
-    const dist = 10 + i * 9 + (tMs * 0.04 + i * 5) % 6;
+    const dist = (10 + i * 9 + ((tMs * 0.04 + i * 5) % 6)) * BODY_K;
     const px = x + ux * dist + uy * jitter;
     const py = y + uy * dist - ux * jitter;
     const a = 0.45 - i * 0.07;
@@ -1356,22 +1356,23 @@ function drawPlayerRing(
   aim: number,
 ) {
   const col = PLAYER_COLORS[id % PLAYER_COLORS.length]!;
+  const k = BODY_K;
   ctx.save();
-  ctx.translate(x, y + 7);
+  ctx.translate(x, y + 7 * k);
   ctx.strokeStyle = col;
   ctx.globalAlpha *= isSelf ? 0.9 : 0.55;
-  ctx.lineWidth = isSelf ? 2.6 : 1.8;
+  ctx.lineWidth = isSelf ? 2.4 : 1.7;
   ctx.beginPath();
-  ctx.ellipse(0, 0, 27, 10, 0, 0, Math.PI * 2);
+  ctx.ellipse(0, 0, 27 * k, 10 * k, 0, 0, Math.PI * 2);
   ctx.stroke();
   if (isSelf) {
-    const ax = Math.cos(aim) * 27;
-    const ay = Math.sin(aim) * 10;
+    const ax = Math.cos(aim) * 27 * k;
+    const ay = Math.sin(aim) * 10 * k;
     ctx.fillStyle = col;
     ctx.beginPath();
-    ctx.moveTo(ax + Math.cos(aim) * 7, ay + Math.sin(aim) * 3);
-    ctx.lineTo(ax - Math.sin(aim) * 4, ay + Math.cos(aim) * 2);
-    ctx.lineTo(ax + Math.sin(aim) * 4, ay - Math.cos(aim) * 2);
+    ctx.moveTo(ax + Math.cos(aim) * 7 * k, ay + Math.sin(aim) * 3 * k);
+    ctx.lineTo(ax - Math.sin(aim) * 4 * k, ay + Math.cos(aim) * 2 * k);
+    ctx.lineTo(ax + Math.sin(aim) * 4 * k, ay - Math.cos(aim) * 2 * k);
     ctx.closePath();
     ctx.fill();
   }
@@ -1401,9 +1402,9 @@ function drawRaisedShield(
 ) {
   const fx = Math.cos(aim);
   const fy = Math.sin(aim);
-  const cx = x + fx * 24;
-  const cy = y + (BODY.shoulder + 19) * CHAR_SCALE + fy * 10;
-  drawStarShield(ctx, cx, cy, 30, {
+  const cx = x + fx * 24 * BODY_K;
+  const cy = y + (BODY.shoulder + 19) * CHAR_SCALE + fy * 10 * BODY_K;
+  drawStarShield(ctx, cx, cy, 30 * BODY_K, {
     squash: 0.46 + 0.54 * Math.abs(fy),
     rot: Math.abs(fy) > 0.98 ? 0 : Math.atan2(fy, fx),
     back: fy < -0.25,
@@ -1458,8 +1459,8 @@ function drawPersonNew(
 
   // rastro fantasma (dash da capa / botas ativas)
   if (p.alive && (dashing || boosted) && speed > 60) {
-    const bx = -(vx / speed) * 13;
-    const by = -(vy / speed) * 13;
+    const bx = -(vx / speed) * 13 * BODY_K;
+    const by = -(vy / speed) * 13 * BODY_K;
     for (let g = 3; g >= 1; g--) {
       ctx.save();
       ctx.globalAlpha = baseA * (dashing ? 0.13 : 0.09) * (4 - g);
@@ -1474,9 +1475,9 @@ function drawPersonNew(
   // sombra + anel
   ctx.fillStyle = "rgba(18,14,22,0.32)";
   ctx.beginPath();
-  ctx.ellipse(ox + 3, oy + 10, 23, 7.5, 0, 0, Math.PI * 2);
+  ctx.ellipse(ox + 3 * BODY_K, oy + 10 * BODY_K, 23 * BODY_K, 7.5 * BODY_K, 0, 0, Math.PI * 2);
   ctx.fill();
-  if (p.alive) drawPlayerRing(ctx, ox, oy + 3, p.id, isSelf, p.angle);
+  if (p.alive) drawPlayerRing(ctx, ox, oy + 3 * BODY_K, p.id, isSelf, p.angle);
 
   // capa (física) — atrás do corpo, ou por cima quando de costas
   const capeDef = recoilCapeOn ? RECOIL_CAPE_DEF : look.cape > 0 ? CAPES[look.cape] ?? null : null;
@@ -1554,9 +1555,9 @@ function drawPersonNew(
   if (frozen) {
     ctx.fillStyle = "rgba(100,180,230,0.3)";
     ctx.beginPath();
-    ctx.ellipse(ox, oy - 34, 32, 52, 0, 0, Math.PI * 2);
+    ctx.ellipse(ox, oy - 34 * BODY_K, 32 * BODY_K, 52 * BODY_K, 0, 0, Math.PI * 2);
     ctx.fill();
-    drawFrostBlock(ctx, ox, oy, tMs, 1.15, p.id * 1.37);
+    drawFrostBlock(ctx, ox, oy, tMs, 1.15 * BODY_K, p.id * 1.37);
   }
 
   if (p.alive && !isSelf && (p.flashUntil ?? 0) > serverTime) {
@@ -1564,7 +1565,7 @@ function drawPersonNew(
     const a = Math.min(0.85, 0.35 + left * 0.55);
     ctx.fillStyle = `rgba(255,255,255,${a})`;
     ctx.beginPath();
-    ctx.ellipse(ox, oy - 38, 32, 50, 0, 0, Math.PI * 2);
+    ctx.ellipse(ox, oy - 38 * BODY_K, 32 * BODY_K, 50 * BODY_K, 0, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = inA;
@@ -1572,6 +1573,32 @@ function drawPersonNew(
 
 /** Boneco antigo (sprite) + capas/botas/escudo antigos — preservado como "Rascunho". */
 function drawPersonLegacy(
+  ctx: CanvasRenderingContext2D,
+  p: Parameters<typeof drawPersonLegacyAt>[1],
+  tMs: number,
+  isSelf: boolean,
+  muzzle: boolean,
+  feel: FeelState,
+  serverTime = 0,
+) {
+  // desenhado na escala antiga e encolhido a partir dos pés (mesma altura do boneco novo)
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.scale(LEGACY_K, LEGACY_K);
+  ctx.translate(-p.x, -p.y);
+  drawPersonLegacyAt(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
+  ctx.restore();
+}
+
+/** Arma do Rascunho: desfaz a escala do sprite (arma no tamanho do mundo). */
+function drawLegacyWeapon(ctx: CanvasRenderingContext2D, ...args: Parameters<typeof drawWeaponLayer> extends [unknown, ...infer R] ? R : never) {
+  ctx.save();
+  ctx.scale(1 / LEGACY_K, 1 / LEGACY_K);
+  drawWeaponLayer(ctx, ...args);
+  ctx.restore();
+}
+
+function drawPersonLegacyAt(
   ctx: CanvasRenderingContext2D,
   p: {
     id: number;
@@ -1752,7 +1779,7 @@ function drawPersonLegacy(
   const showGripHands = !dirs;
 
   if (gunBehind) {
-    drawWeaponLayer(
+    drawLegacyWeapon(
       ctx,
       p.weapon,
       p.angle,
@@ -1873,7 +1900,7 @@ function drawPersonLegacy(
   }
 
   if (!gunBehind) {
-    drawWeaponLayer(
+    drawLegacyWeapon(
       ctx,
       p.weapon,
       p.angle,

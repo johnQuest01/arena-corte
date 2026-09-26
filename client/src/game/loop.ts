@@ -1,6 +1,8 @@
 /**
  * loop.ts — requestAnimationFrame + netcode (prediction / reconciliação / interp).
  */
+import { isTouchPrimary } from "./fullscreen";
+import { BODY_K } from "./character";
 import {
   abilityOf,
   CHAIN_SEGMENT_BASE,
@@ -246,7 +248,12 @@ export class GameClient {
   private killFeed: KillFeedEntry[] = [];
   private dmgArrows: DmgArrow[] = [];
   private hitMarkerUntil = 0;
-  private camZoom = 1;
+  /**
+   * Zoom base: o boneco ficou menor no mundo (proporção com casas/carros);
+   * aproxima um pouco a câmera pra ele continuar legível — mais no celular.
+   */
+  private baseZoom = isTouchPrimary() ? 1.25 : 1.12;
+  private camZoom = this.baseZoom;
   private camX = 0;
   private camY = 0;
   private prevVx = 0;
@@ -589,7 +596,7 @@ export class GameClient {
           const self = e.a === this.selfId;
           pulseShotFeel(this.feel, e.weaponId ?? e.b, self);
           playWeaponShot(e.weaponId ?? e.b, e.x, e.y, listener);
-          if (self) this.camZoom = 1.015;
+          if (self) this.camZoom = this.baseZoom * 1.015;
         }
         if (e.kind === "reloadStart") {
           if (e.a === this.selfId) {
@@ -617,7 +624,7 @@ export class GameClient {
           stampBulletMark(e.x, e.y);
         } else if (e.kind === "hit" && e.b === 253) {
           // Escudo Estelar bloqueou / ricocheteou — faísca metálica, sem sangue
-          spawnShieldSparks(e.x, e.y - ((e.weaponId ?? 0) === 9 ? 26 : 0), 12);
+          spawnShieldSparks(e.x, e.y - ((e.weaponId ?? 0) === 9 ? 26 * BODY_K : 0), 12);
           if ((e.weaponId ?? 0) === 9) playSfx("clang", e.x, e.y, listener);
           this.fx.push({
             x: e.x,
@@ -769,7 +776,7 @@ export class GameClient {
           } else if (e.b === 9) {
             if (wid === 9001) {
               playSfx("clang", e.x, e.y, listener, { volumeMul: 0.7 });
-              spawnShieldSparks(e.x, e.y - 26, 5);
+              spawnShieldSparks(e.x, e.y - 26 * BODY_K, 5);
             } else if (wid === 9002) {
               spawnBlinkFx(e.x, e.y + 26, e.x, e.y + 26);
             } else if (e.a !== this.selfId) {
@@ -1099,7 +1106,7 @@ export class GameClient {
           }
           this.prediction.predictFire(raw.aim, raw.weapon);
           pulseShotFeel(this.feel, raw.weapon, true);
-          this.camZoom = 1.015;
+          this.camZoom = this.baseZoom * 1.015;
           const muzz = muzzlePoint(pred.x, pred.y, raw.aim, wpn);
           playWeaponShot(raw.weapon, muzz.x, muzz.y, { x: pred.x, y: pred.y });
           pushFlashesFromEvents(this.flashes, [
@@ -1212,12 +1219,18 @@ export class GameClient {
               this.feel.shake = Math.max(this.feel.shake, 0.4);
             } else if (ab.id === 9) {
               // arremesso: o disco vem do host (throwable kind 7)
-              spawnCastSparkle(pred.x + Math.cos(raw.aim) * 24, pred.y - 30 + Math.sin(raw.aim) * 16);
+              spawnCastSparkle(
+                pred.x + Math.cos(raw.aim) * 24 * BODY_K,
+                pred.y + (-30 + Math.sin(raw.aim) * 16) * BODY_K,
+              );
               playSfx("boost", pred.x, pred.y, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.45);
             } else if (ab.id === 10) {
               // raio: os saltos vêm do host (eventos com x2/y2)
-              spawnCastSparkle(pred.x + Math.cos(raw.aim) * 26, pred.y - 26 + Math.sin(raw.aim) * 18);
+              spawnCastSparkle(
+                pred.x + Math.cos(raw.aim) * 26 * BODY_K,
+                pred.y + (-26 + Math.sin(raw.aim) * 18) * BODY_K,
+              );
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.4);
               this.feel.shake = Math.max(this.feel.shake, 0.5);
             } else if (ab.id === 8) {
@@ -1359,7 +1372,7 @@ export class GameClient {
         this.feel.shake = Math.max(this.feel.shake, 0.35);
       });
     }
-    this.camZoom += (1 - this.camZoom) * Math.min(1, dtMs / 80);
+    this.camZoom += (this.baseZoom - this.camZoom) * Math.min(1, dtMs / 80);
     this.damageFlash = Math.max(0, this.damageFlash - dtMs / 120);
     this.killFeed = pruneKillFeed(this.killFeed, now);
     this.dmgArrows = pruneDmgArrows(this.dmgArrows, now);

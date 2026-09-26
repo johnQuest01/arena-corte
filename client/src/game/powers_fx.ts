@@ -4,6 +4,7 @@
  * e Escudo Bumerangue (disco girando com rastro).
  */
 import type { ThrowableState } from "../../../shared/protocol";
+import { BODY_K } from "./character";
 import { drawStarShield } from "./shield";
 
 interface Bolt {
@@ -74,7 +75,7 @@ export function spawnLightningBolt(x1: number, y1: number, x2: number, y2: numbe
 }
 
 export function spawnBlinkFx(fromX: number, fromY: number, toX: number, toY: number) {
-  streaks.push({ x1: fromX, y1: fromY - 34, x2: toX, y2: toY - 34, t: 320, max: 320 });
+  streaks.push({ x1: fromX, y1: fromY - 34 * BODY_K, x2: toX, y2: toY - 34 * BODY_K, t: 320, max: 320 });
   for (const [x, y, n] of [
     [fromX, fromY, 14],
     [toX, toY, 10],
@@ -83,11 +84,11 @@ export function spawnBlinkFx(fromX: number, fromY: number, toX: number, toY: num
       const a = Math.random() * Math.PI * 2;
       const s = 20 + Math.random() * 70;
       puffs.push({
-        x: x + Math.cos(a) * 8,
-        y: y - 30 + Math.sin(a) * 18,
+        x: x + Math.cos(a) * 8 * BODY_K,
+        y: y + (-30 + Math.sin(a) * 18) * BODY_K,
         vx: Math.cos(a) * s,
         vy: Math.sin(a) * s * 0.6 - 25,
-        r: 7 + Math.random() * 9,
+        r: (7 + Math.random() * 9) * BODY_K,
         life: 420 + Math.random() * 240,
         max: 660,
       });
@@ -203,7 +204,9 @@ export function drawPowersFx(ctx: CanvasRenderingContext2D) {
 }
 
 /** Altura visual do disco em voo (px acima do chão). */
-const SHIELD_FLY_Y = -26;
+const SHIELD_FLY_Y = -26 * BODY_K;
+/** Raio visual do disco em voo. */
+const SHIELD_FLY_R = 17 * BODY_K;
 
 /** Escudo Bumerangue em voo (throwable kind 7). fuse: 1 voltando, 2 voltando por dentro de parede. */
 export function drawThrownShield(ctx: CanvasRenderingContext2D, t: ThrowableState, tMs: number) {
@@ -218,16 +221,16 @@ export function drawThrownShield(ctx: CanvasRenderingContext2D, t: ThrowableStat
   // sombra no chão (posição lógica)
   ctx.fillStyle = "rgba(10,10,14,0.3)";
   ctx.beginPath();
-  ctx.ellipse(t.x + 3, t.y + 4, 16, 5.5, 0, 0, Math.PI * 2);
+  ctx.ellipse(t.x + 3, t.y + 4, 16 * BODY_K, 5.5 * BODY_K, 0, 0, Math.PI * 2);
   ctx.fill();
   // rastro
   for (let i = 3; i >= 1; i--) {
     ctx.save();
     ctx.globalAlpha *= 0.12 * (4 - i);
-    drawStarShield(ctx, t.x - ux * i * 11, y - uy * i * 11, 17, { squash: 0.62, spin: tMs * 0.03 - i * 0.4, t: tMs });
+    drawStarShield(ctx, t.x - ux * i * 11 * BODY_K, y - uy * i * 11 * BODY_K, SHIELD_FLY_R, { squash: 0.62, spin: tMs * 0.03 - i * 0.4, t: tMs });
     ctx.restore();
   }
-  drawStarShield(ctx, t.x, y, 17, {
+  drawStarShield(ctx, t.x, y, SHIELD_FLY_R, {
     squash: 0.62,
     spin: tMs * 0.03,
     glow: ghost ? 0 : t.fuse > 0 ? 0.35 : 0.6,

@@ -81,7 +81,8 @@ export const ENEMY_DEFS: Record<EnemyType, EnemyDef> = {
     attackDamage: 62,
     windupMs: 340,
     cooldownMs: 400,
-    visualScale: 3.1,
+    // 2.6: grande, mas não metade de uma casa (boneco ficou menor no mundo)
+    visualScale: 2.6,
   },
   2: {
     type: 2,

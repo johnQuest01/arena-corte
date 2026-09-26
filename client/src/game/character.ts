@@ -25,7 +25,16 @@ import {
 export const OUTLINE = "#1a1411";
 const LW = 2;
 /** Escala do corpo em relação ao desenho base (proporção com as armas/hitbox). */
-export const CHAR_SCALE = 1.3;
+/**
+ * Escala do boneco no mundo. 0.95 ≈ 76 px de altura: menor que um carro
+ * (4×2 tiles) e bem menor que as casas (8–11 tiles). Antes 1.3 — o boneco
+ * ficava maior que carros e casas.
+ */
+export const CHAR_SCALE = 0.95;
+/** Tamanhos fixos (sombra, anel, escudo erguido…) foram afinados com CHAR_SCALE 1.3. */
+export const BODY_K = CHAR_SCALE / 1.3;
+/** Boneco antigo (sprite, "Rascunho") na mesma altura do novo. */
+export const LEGACY_K = 0.84;
 
 /** Alturas do corpo (px mundo, relativas ao pivô). */
 export const BODY = {
