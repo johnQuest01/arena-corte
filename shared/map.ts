@@ -87,11 +87,14 @@ function hxy(x: number, y: number, n: number): number {
 
 const PITCH = 20;
 const ROAD_W = 4;
+/** Malha urbana (tiles): a cada ROAD_PITCH começa uma rua de ROAD_WIDTH tiles. */
+export const ROAD_PITCH = PITCH;
+export const ROAD_WIDTH = ROAD_W;
 
-function isRoadX(x: number): boolean {
+export function isRoadX(x: number): boolean {
   return x % PITCH < ROAD_W;
 }
-function isRoadY(y: number): boolean {
+export function isRoadY(y: number): boolean {
   return y % PITCH < ROAD_W;
 }
 

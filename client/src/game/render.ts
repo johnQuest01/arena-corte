@@ -54,6 +54,7 @@ import {
   getThrowImg,
   getTileImg,
 } from "./art";
+import { drawRoofLayer, drawWorld, invalidateWorld } from "./world";
 
 export const LOSPEC = {
   sand: "#c8a35a",
@@ -218,29 +219,9 @@ export function computeCamera(
 
 const LIGHT_DIR = { x: 0.35, y: 0.55 };
 
-/** Chão estático pré-renderizado (não redesenha tile a tile por frame). */
-let groundCache: HTMLCanvasElement | null = null;
-/** Escala do cache (0.5 no mobile = bem menos VRAM/RAM). */
-let groundCacheScale = 1;
-
+/** Chão/props são pintados por chunks em world.ts — força repintura (troca Leve/Full). */
 export function invalidateGroundCache() {
-  groundCache = null;
-}
-
-function ensureGroundCache() {
-  if (groundCache) return groundCache;
-  // Só o perfil "Leve" (FX_MOBILE) usa meia resolução — Full = nítido
-  const scale = FX_MOBILE ? 0.5 : 1;
-  groundCacheScale = scale;
-  const c = document.createElement("canvas");
-  c.width = Math.max(1, Math.floor(ARENA_W * scale));
-  c.height = Math.max(1, Math.floor(ARENA_H * scale));
-  const g = c.getContext("2d")!;
-  g.imageSmoothingEnabled = false;
-  if (scale !== 1) g.scale(scale, scale);
-  paintGround(g);
-  groundCache = c;
-  return c;
+  invalidateWorld();
 }
 
 /** Layout tela↔câmera: encaixa a janela (contain), sem esticar o campo. */
@@ -281,212 +262,6 @@ export function resizeCanvas(canvas: HTMLCanvasElement) {
   }
 }
 
-function tileColor(t: number, shade: number): string {
-  const base =
-    t === T.DIRT
-      ? LOSPEC.dirt
-      : t === T.WOOD
-        ? LOSPEC.wood
-        : t === T.CONCRETE
-          ? LOSPEC.concrete
-          : t === T.ROAD
-            ? shade
-              ? LOSPEC.roadDark
-              : LOSPEC.road
-            : t === T.ROAD_LINE
-              ? LOSPEC.roadLine
-              : t === T.SIDEWALK
-                ? shade
-                  ? LOSPEC.sidewalkDark
-                  : LOSPEC.sidewalk
-                : t === T.GRASS
-                  ? shade
-                    ? LOSPEC.grassDark
-                    : LOSPEC.grass
-                  : t === T.GRASS_TALL
-                    ? LOSPEC.grassTall
-                    : t === T.WALL
-                      ? LOSPEC.wall
-                      : t === T.METAL
-                        ? LOSPEC.metal
-                        : t === T.CRATE
-                          ? "#8a7040"
-                          : t === T.BARREL
-                            ? "#4a5a30"
-                            : t === T.CAR
-                              ? "#3a4048"
-                              : shade
-                                ? LOSPEC.sandDark
-                                : LOSPEC.sand;
-  return base;
-}
-
-function paintGround(ctx: CanvasRenderingContext2D) {
-  for (let ty = 0; ty < GROUND.length; ty++) {
-    for (let tx = 0; tx < GROUND[0]!.length; tx++) {
-      const t = GROUND[ty]![tx]!;
-      const shade = (tx * 3 + ty * 5) % 2;
-      const x = tx * TILE;
-      const y = ty * TILE;
-      const h = (tx * 17 + ty * 31) >>> 0;
-      let img: HTMLImageElement | null = null;
-      if (t === T.SAND || t === T.DIRT) img = getTileImg("sand", tx, ty);
-      else if (t === T.WOOD) img = getTileImg("floorWood", tx, ty);
-      else if (t === T.CONCRETE) img = getTileImg("floorConcrete", tx, ty);
-
-      if (img) {
-        ctx.drawImage(img, x, y, TILE, TILE);
-      } else {
-        ctx.fillStyle = tileColor(t, shade);
-        ctx.fillRect(x, y, TILE, TILE);
-
-        if (t === T.ROAD || t === T.ROAD_LINE) {
-          // asfalto rachado + poeira
-          ctx.fillStyle = "rgba(0,0,0,0.22)";
-          if (h % 5 === 0) {
-            ctx.fillRect(x + (h % 18), y + ((h >> 3) % 20), 8 + (h % 6), 1);
-            ctx.fillRect(x + ((h >> 2) % 22), y + 6 + (h % 14), 1, 7);
-          }
-          if (t === T.ROAD_LINE) {
-            // faixa desbotada
-            ctx.fillStyle = "rgba(184,160,90,0.55)";
-            ctx.fillRect(x + 12, y + 2, 8, TILE - 4);
-            ctx.fillStyle = "rgba(40,36,28,0.35)";
-            ctx.fillRect(x + 13, y + 8, 6, 3);
-          } else {
-            ctx.fillStyle = "rgba(90,90,80,0.12)";
-            ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
-          }
-        } else if (t === T.SIDEWALK) {
-          // juntas da calçada
-          ctx.strokeStyle = "rgba(30,28,24,0.35)";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1);
-          ctx.fillStyle = "rgba(0,0,0,0.12)";
-          if (h % 7 === 0) ctx.fillRect(x + 4, y + 10, 6, 2);
-          if (h % 11 === 0) ctx.fillRect(x + 18, y + 20, 5, 2);
-        } else if (t === T.GRASS || t === T.GRASS_TALL) {
-          // tufos de mato (2–3 tons)
-          const tufts = t === T.GRASS_TALL ? 5 : 3;
-          for (let i = 0; i < tufts; i++) {
-            const px = x + 3 + ((h + i * 13) % 24);
-            const py = y + 4 + ((h + i * 7) % 22);
-            ctx.fillStyle =
-              i % 3 === 0
-                ? LOSPEC.grassDark
-                : i % 3 === 1
-                  ? LOSPEC.grass
-                  : LOSPEC.grassTall;
-            const hh = t === T.GRASS_TALL ? 5 + (i % 3) : 3 + (i % 2);
-            ctx.fillRect(px, py, 2, hh);
-          }
-        } else if (t === T.SAND || t === T.DIRT) {
-          ctx.fillStyle = "rgba(0,0,0,0.06)";
-          ctx.fillRect(x + 4, y + 8, 3, 2);
-          ctx.fillRect(x + 18, y + 20, 4, 2);
-        }
-        if ((tx * 17 + ty * 31) % 8 === 0 && t !== T.ROAD && t !== T.ROAD_LINE) {
-          ctx.fillStyle = "rgba(60,40,20,0.18)";
-          ctx.fillRect(x + ((tx * 3) % 20), y + ((ty * 5) % 22), 3, 2);
-          ctx.fillRect(x + 10, y + 14, 5, 1);
-        }
-      }
-    }
-  }
-}
-
-function drawGround(
-  ctx: CanvasRenderingContext2D,
-  camX: number,
-  camY: number,
-  viewW: number,
-  viewH: number,
-) {
-  const cache = ensureGroundCache();
-  const s = groundCacheScale;
-  // Só a janela da câmera — evita blit de 5120×3840 no mobile
-  const pad = 2;
-  const wx = Math.max(0, camX - pad);
-  const wy = Math.max(0, camY - pad);
-  const ww = Math.min(ARENA_W - wx, viewW + pad * 2);
-  const wh = Math.min(ARENA_H - wy, viewH + pad * 2);
-  if (ww <= 0 || wh <= 0) return;
-  const sx = wx * s;
-  const sy = wy * s;
-  const sw = ww * s;
-  const sh = wh * s;
-  ctx.imageSmoothingEnabled = s < 1;
-  ctx.drawImage(cache, sx, sy, sw, sh, wx, wy, ww, wh);
-  ctx.imageSmoothingEnabled = false;
-}
-
-function drawSolids(
-  ctx: CanvasRenderingContext2D,
-  camX: number,
-  camY: number,
-  viewW: number,
-  viewH: number,
-) {
-  const tx0 = Math.max(0, Math.floor(camX / TILE) - 1);
-  const ty0 = Math.max(0, Math.floor(camY / TILE) - 1);
-  const tx1 = Math.min(SOLID[0]!.length, Math.ceil((camX + viewW) / TILE) + 1);
-  const ty1 = Math.min(SOLID.length, Math.ceil((camY + viewH) / TILE) + 1);
-  for (let ty = ty0; ty < ty1; ty++) {
-    for (let tx = tx0; tx < tx1; tx++) {
-      const t = SOLID[ty]![tx]!;
-      if (t < 10) continue;
-      const x = tx * TILE;
-      const y = ty * TILE;
-      ctx.fillStyle = LOSPEC.shadow;
-      ctx.fillRect(x + LIGHT_DIR.x * 6, y + LIGHT_DIR.y * 6, TILE, TILE);
-
-      if (t === T.CRATE) {
-        const prop = getPropImg("crate");
-        if (prop) {
-          ctx.drawImage(prop, x, y, TILE, TILE);
-          continue;
-        }
-      } else if (t === T.BARREL) {
-        const prop = getPropImg("barrel");
-        if (prop) {
-          ctx.drawImage(prop, x, y, TILE, TILE);
-          continue;
-        }
-      } else if (t === T.CAR) {
-        const prop = getPropImg("car");
-        if (prop) {
-          // carcaça pode ser 96×48 — encaixa no tile atual (vizinho também CAR)
-          ctx.drawImage(prop, x, y, TILE, TILE);
-          continue;
-        }
-      } else if (t === T.WALL || t === T.METAL) {
-        const wall = getTileImg("wall", tx, ty);
-        if (wall) {
-          ctx.drawImage(wall, x, y, TILE, TILE);
-          continue;
-        }
-      }
-
-      ctx.fillStyle = tileColor(t, 0);
-      ctx.fillRect(x, y, TILE, TILE);
-      ctx.fillStyle = "rgba(255,255,255,0.08)";
-      ctx.fillRect(x, y, TILE, 4);
-      if (t === T.CRATE) {
-        ctx.strokeStyle = "rgba(0,0,0,0.35)";
-        ctx.strokeRect(x + 4, y + 4, TILE - 8, TILE - 8);
-      } else if (t === T.CAR) {
-        ctx.fillStyle = "#1a2228";
-        ctx.fillRect(x + 4, y + 8, TILE - 8, TILE - 14);
-      } else if (t === T.BARREL) {
-        ctx.fillStyle = "#2a3a20";
-        ctx.beginPath();
-        ctx.ellipse(x + 16, y + 16, 10, 12, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
-}
-
 function drawDoors(
   ctx: CanvasRenderingContext2D,
   doorsBits: number,
@@ -502,20 +277,24 @@ function drawDoors(
     ctx.translate(hingeX, hingeY);
     const ang = openT * (Math.PI / 2) * (d.orient === "h" ? -1 : 1);
     ctx.rotate(ang);
+    if (d.orient === "v") ctx.rotate(Math.PI / 2);
     if (doorImg) {
-      if (d.orient === "h") ctx.drawImage(doorImg, 0, -6, TILE, 12);
-      else {
-        ctx.save();
-        ctx.rotate(Math.PI / 2);
-        ctx.drawImage(doorImg, 0, -6, TILE, 12);
-        ctx.restore();
-      }
+      ctx.drawImage(doorImg, 0, -6, TILE, 12);
     } else {
-      ctx.fillStyle = "#5a3a28";
-      if (d.orient === "h") ctx.fillRect(0, -6, TILE, 12);
-      else ctx.fillRect(-6, 0, 12, TILE);
-      ctx.fillStyle = "#c8a35a";
-      ctx.fillRect(d.orient === "h" ? TILE - 6 : -2, d.orient === "h" ? -2 : TILE - 6, 4, 4);
+      // folha de madeira: sombra, tábuas, moldura e maçaneta
+      ctx.fillStyle = "rgba(10,8,12,0.35)";
+      ctx.fillRect(2, -2, TILE, 9);
+      ctx.fillStyle = "#3e2618";
+      ctx.fillRect(0, -5, TILE, 10);
+      ctx.fillStyle = "#7a4e2e";
+      ctx.fillRect(1, -4, TILE - 2, 8);
+      ctx.fillStyle = "#8e5c36";
+      ctx.fillRect(1, -4, TILE - 2, 2);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(10, -4, 1, 8);
+      ctx.fillRect(21, -4, 1, 8);
+      ctx.fillStyle = "#d8b25a";
+      ctx.fillRect(TILE - 6, -1.5, 3, 3);
     }
     ctx.restore();
   }
@@ -1749,51 +1528,6 @@ function drawPersonSide(
   ctx.globalAlpha = 1;
 }
 
-function drawRoofs(
-  ctx: CanvasRenderingContext2D,
-  roofAlpha: Map<number, number>,
-  camX = 0,
-  camY = 0,
-  viewW = ARENA_W,
-  viewH = ARENA_H,
-) {
-  const roofTile = getTileImg("roof");
-  const vx1 = camX + viewW;
-  const vy1 = camY + viewH;
-  for (const b of BUILDINGS) {
-    const a = roofAlpha.get(b.id) ?? 1;
-    if (a <= 0.02) continue;
-    const r = roofRect(b);
-    // cull fora da câmera
-    if (r.x + r.w < camX || r.x > vx1 || r.y + r.h < camY || r.y > vy1) continue;
-    ctx.globalAlpha = a;
-    if (roofTile) {
-      const x0 = Math.max(r.x, Math.floor(camX / TILE) * TILE);
-      const y0 = Math.max(r.y, Math.floor(camY / TILE) * TILE);
-      const x1 = Math.min(r.x + r.w, vx1 + TILE);
-      const y1 = Math.min(r.y + r.h, vy1 + TILE);
-      for (let y = y0; y < y1; y += TILE) {
-        for (let x = x0; x < x1; x += TILE) {
-          if (x < r.x || y < r.y || x >= r.x + r.w || y >= r.y + r.h) continue;
-          const dw = Math.min(TILE, r.x + r.w - x);
-          const dh = Math.min(TILE, r.y + r.h - y);
-          ctx.drawImage(roofTile, 0, 0, dw, dh, x, y, dw, dh);
-        }
-      }
-    } else {
-      ctx.fillStyle = LOSPEC.roof;
-      ctx.fillRect(r.x, r.y, r.w, r.h);
-      ctx.fillStyle = "rgba(0,0,0,0.2)";
-      for (let i = 0; i < r.w; i += 16) {
-        ctx.fillRect(r.x + i, r.y, 2, r.h);
-      }
-      ctx.fillStyle = "rgba(180,120,80,0.25)";
-      ctx.fillRect(r.x + 4, r.y + 4, r.w - 8, 6);
-    }
-  }
-  ctx.globalAlpha = 1;
-}
-
 function drawVisionMask(
   ctx: CanvasRenderingContext2D,
   ox: number,
@@ -2005,7 +1739,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   ctx.rect(camX, camY, viewW, viewH);
   ctx.clip();
 
-  drawGround(ctx, camX, camY, viewW, viewH);
+  drawWorld(ctx, camX, camY, viewW, viewH);
   view.drawDecals(ctx, camX, camY, viewW, viewH);
   view.drawAbilityGround(ctx);
   if (view.spikeTotems?.length && view.drawSpikeTotems) {
@@ -2024,7 +1758,6 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       tMs,
     );
   }
-  drawSolids(ctx, camX, camY, viewW, viewH);
   drawDoors(ctx, view.doorsBits, view.doorAnim);
 
   // drops de munição
@@ -2427,7 +2160,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   }
 
   // telhados por cima
-  drawRoofs(ctx, view.roofAlpha, camX, camY, viewW, viewH);
+  drawRoofLayer(ctx, view.roofAlpha, camX, camY, viewW, viewH);
 
   if (view.local) {
     drawVisionMask(ctx, view.local.x, view.local.y, view.doorsBits);
