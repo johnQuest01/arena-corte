@@ -1449,3 +1449,11 @@ body.game-fullscreen {
     display: none;
   }
 }
+
+/* cards de skin: hover sutil (o azul forte do botão apagava a descrição) */
+.ward-preset:hover:not(:disabled) {
+  background: #2d4238;
+}
+.ward-preset.on:hover:not(:disabled) {
+  background: #34539a;
+}

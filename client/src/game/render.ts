@@ -1547,7 +1547,8 @@ function drawPersonNew(
   }
 
   if (p.alive && (p.stunnedUntil ?? 0) > serverTime) {
-    drawSilenceIcon(ctx, ox, topY - 26);
+    // acima do nome dos outros jogadores — não cobre o texto
+    drawSilenceIcon(ctx, ox, topY - (!isSelf && name ? 36 : 26));
   }
 
   if (frozen) {
