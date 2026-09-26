@@ -4,12 +4,14 @@
  * - Dir: stick mira/tiro + strip de armas acima + reload/poder ao lado
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { abilityGlyph } from "./abilityGlyph";
 import { WEAPONS } from "../../../shared/gear";
 import type { GameClient } from "../game/loop";
 
 interface Props {
   client: GameClient | null;
   abilityName?: string;
+  abilityId?: number;
   abilityCd?: number;
   stunned?: boolean;
   frozen?: boolean;
@@ -30,6 +32,7 @@ function clampStick(dx: number, dy: number, max: number) {
 export function TouchControls({
   client,
   abilityName,
+  abilityId,
   abilityCd = 1,
   stunned,
   frozen,
@@ -159,23 +162,7 @@ export function TouchControls({
     setActiveWeapon(id);
   };
 
-  const glyph = (abilityName ?? "").includes("Congelamento")
-    ? "❄"
-    : (abilityName ?? "").includes("Espinhos")
-    ? "E"
-    : (abilityName ?? "").includes("Bomba")
-      ? "D"
-      : (abilityName ?? "").includes("Fenda")
-        ? "F"
-        : (abilityName ?? "").includes("Recuo")
-          ? "R"
-          : (abilityName ?? "").includes("Capa")
-            ? "C"
-            : (abilityName ?? "").includes("Botas")
-              ? "B"
-              : (abilityName ?? "").includes("Gigante")
-                ? "G"
-                : "W";
+  const glyph = abilityGlyph(abilityId);
   const cooling = (abilityCd ?? 1) < 1;
 
   return (

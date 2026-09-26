@@ -26,6 +26,9 @@ import {
   type GraphicsQuality,
 } from "../game/graphics";
 import { preloadArt } from "../game/art";
+import { loadMyLook, saveMyLook } from "../game/lookStore";
+import type { Look } from "../../../shared/cosmetics";
+import { Wardrobe } from "./Wardrobe";
 import { preloadSfx, unlockAudio } from "../game/audio";
 
 /** Host do Party: env, senão o mesmo IP da página (celular na LAN), senão localhost. */
@@ -77,6 +80,16 @@ export function App() {
   const [loadProgress, setLoadProgress] = useState(0);
   const [assetsReady, setAssetsReady] = useState(false);
   const [entered, setEntered] = useState(false);
+  const [look, setLook] = useState<Look>(() => loadMyLook());
+  const [wardrobeOpen, setWardrobeOpen] = useState(false);
+
+  const saveLook = useCallback((l: Look) => {
+    const clean = saveMyLook(l);
+    setLook(clean);
+    clientRef.current?.setLook(clean);
+    setWardrobeOpen(false);
+  }, []);
+  const closeWardrobe = useCallback(() => setWardrobeOpen(false), []);
 
   // Preload real (art 70% + sfx 30%) antes do menu — elimina hitch de estreia
   useEffect(() => {
@@ -136,6 +149,11 @@ export function App() {
     c.dataset.fill = mobileUi && hud?.phase === "playing" ? "1" : "0";
     window.dispatchEvent(new Event("resize"));
   }, [mobileUi, hud?.phase, screen]);
+
+  // partida começou com o guarda-roupa aberto (host iniciou): fecha pra não tapar o jogo
+  useEffect(() => {
+    if (hud?.phase === "playing") setWardrobeOpen(false);
+  }, [hud?.phase]);
 
   const goFullscreen = useCallback(async () => {
     if (!isMobileViewport()) return;
@@ -338,7 +356,14 @@ export function App() {
           hostInfoUrl={hostInfoUrl}
           graphicsQuality={graphicsQuality}
           onGraphicsQuality={changeGraphics}
+          onOpenWardrobe={() => setWardrobeOpen(true)}
         />
+      )}
+
+      {/* na sala o guarda-roupa vai DENTRO do shell: no celular o shell está em
+          tela cheia e o que fica fora dele não aparece */}
+      {wardrobeOpen && screen !== "game" && (
+        <Wardrobe look={look} onSave={saveLook} onClose={closeWardrobe} />
       )}
 
       <div
@@ -379,6 +404,7 @@ export function App() {
             }}
             graphicsQuality={graphicsQuality}
             onGraphicsQuality={changeGraphics}
+            onOpenWardrobe={() => setWardrobeOpen(true)}
           />
         )}
         <div className="arena-wrap">
@@ -391,6 +417,7 @@ export function App() {
             <TouchControls
               client={clientRef.current}
               abilityName={hud.abilityName}
+              abilityId={hud.abilityId}
               abilityCd={hud.abilityCd}
               stunned={hud.stunned}
               frozen={hud.frozen}
@@ -411,6 +438,9 @@ export function App() {
               </button>
             </div>
           </div>
+        )}
+        {wardrobeOpen && screen === "game" && (
+          <Wardrobe look={look} onSave={saveLook} onClose={closeWardrobe} />
         )}
       </div>
     </div>

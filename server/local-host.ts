@@ -13,6 +13,8 @@ import { LagHistory } from "../shared/laghistory";
 import {
   MSG,
   decodeHello,
+  decodeHelloLook,
+  decodeLookMsg,
   decodeInput,
   decodePingTime,
   encodeCtrl,
@@ -22,6 +24,7 @@ import {
   encodeWelcome,
   msgType,
 } from "../shared/protocol";
+import { decodeLook, encodeLook } from "../shared/cosmetics";
 import {
   addPlayer,
   createSim,
@@ -62,6 +65,13 @@ interface Peer {
   playerId: number;
   name: string;
   ping: number;
+  /** visual (bytes validados); null = automático */
+  look: number[] | null;
+}
+
+function cleanLook(bytes: number[] | null): number[] | null {
+  const look = decodeLook(bytes);
+  return look ? encodeLook(look) : null;
 }
 
 const sim = createSim();
@@ -82,6 +92,7 @@ function broadcastLobby() {
     name: p.name,
     ready: true,
     ping: p.ping,
+    ...(p.look ? { look: p.look } : {}),
   }));
   const hostId = players[0]?.id ?? 0;
   broadcast(
@@ -194,7 +205,13 @@ wss.on("connection", (ws) => {
         ws.close(4000, "sala cheia");
         return;
       }
-      peers.set(ws, { ws, playerId: p.id, name, ping: 0 });
+      peers.set(ws, {
+        ws,
+        playerId: p.id,
+        name,
+        ping: 0,
+        look: cleanLook(decodeHelloLook(buf as ArrayBuffer)),
+      });
       ws.send(
         Buffer.from(
           encodeWelcome({
@@ -218,6 +235,14 @@ wss.on("connection", (ws) => {
     }
     if (type === MSG.PING) {
       ws.send(Buffer.from(encodePong(decodePingTime(buf as ArrayBuffer))));
+      return;
+    }
+    if (type === MSG.LOOK) {
+      const look = cleanLook(decodeLookMsg(buf as ArrayBuffer));
+      if (look) {
+        peer.look = look;
+        broadcastLobby();
+      }
       return;
     }
     if (type === MSG.START) {

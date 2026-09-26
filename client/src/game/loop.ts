@@ -1,8 +1,13 @@
 /**
  * loop.ts — requestAnimationFrame + netcode (prediction / reconciliação / interp).
  */
+import { isTouchPrimary } from "./fullscreen";
+import { BODY_K } from "./character";
 import {
   abilityOf,
+  CHAIN_SEGMENT_BASE,
+  performBlink,
+  SHIELD_THROW_KIND,
   DASH_BURST_DT,
   DASH_MAX_CHARGES,
   DASH_RECHARGE_MS,
@@ -14,8 +19,20 @@ import {
   TOTEM_RADIUS,
 } from "../../../shared/abilities";
 import { ARENA_H, ARENA_W, INPUT_HZ, MOVE_SPEED, PLAYER_R } from "../../../shared/constants";
-import { WEAPONS, muzzlePoint, weaponOf } from "../../../shared/gear";
-import { moveAndSlide } from "../../../shared/map";
+import { GUN_HAND_BODY_Y, WEAPONS, muzzlePoint, weaponOf } from "../../../shared/gear";
+import { hitsSolid, moveAndSlide } from "../../../shared/map";
+import {
+  BOOTS,
+  CAPES,
+  HAIR_COLORS,
+  HELMETS,
+  OUTFITS,
+  SKIN_TONES,
+  autoLookFor,
+  decodeLook,
+  encodeLook,
+  type Look,
+} from "../../../shared/cosmetics";
 import {
   MSG,
   decodeLobby,
@@ -24,12 +41,15 @@ import {
   decodeWelcome,
   encodeHello,
   encodeInput,
+  encodeLookMsg,
   encodePing,
   encodeCtrl,
   msgType,
   type LobbyMsg,
   type PlayerInput,
   type Snapshot,
+  type SpikeTotemSnap,
+  type TickEvent,
   type WelcomeMsg,
 } from "../../../shared/protocol";
 import type { Transport } from "../net/transport";
@@ -53,6 +73,18 @@ import {
   unlockAudio,
 } from "./audio";
 import { preloadArt } from "./art";
+import { loadMyLook } from "./lookStore";
+import { pruneCapes } from "./capes";
+import { prewarmWorld } from "./world";
+import { SPAWNS } from "../../../shared/constants";
+import { spawnShieldSparks, tickShieldSparks } from "./shield";
+import {
+  clearPowersFx,
+  spawnBlinkFx,
+  spawnCastSparkle,
+  spawnLightningBolt,
+  tickPowersFx,
+} from "./powers_fx";
 import {
   clearAbilityFx,
   drawAbilityGround,
@@ -79,6 +111,50 @@ import {
   syncFrostShatter,
   tickAbilityFx,
 } from "./abilities_fx";
+import {
+  CAST_RGB_DISC,
+  CAST_RGB_VOLT,
+  clearFx2,
+  drawSpikeTotems2,
+  drawTotemAim2,
+  spawnBigBoom2,
+  spawnBlink2,
+  spawnBolt2,
+  spawnBombDrop2,
+  spawnBootsCast2,
+  spawnCastGlint2,
+  spawnDiscBounce2,
+  spawnDiscCatch2,
+  spawnFreeze2,
+  spawnFrost2,
+  spawnGiantExpire2,
+  spawnGiantHit2,
+  spawnGiantSummon2,
+  spawnRiftStomp2,
+  spawnShadowBurst2,
+  spawnShatter2,
+  spawnShieldCast2,
+  spawnShieldRipple2,
+  spawnTotem2,
+  spawnTotemExpire2,
+  spawnTotemHit2,
+  spawnWaterJet2,
+  spawnWaterSplash2,
+  tickAuras2,
+  tickFx2,
+  type AuraActor,
+} from "./fx2";
+import {
+  clearFxOwners,
+  frostIsOld,
+  fxOld,
+  setFrostCaster,
+  setFxStyleProvider,
+  setGiantOwner,
+  setTotemOwner,
+  totemAngleOf,
+  totemOwnerOf,
+} from "./fxstyle";
 import { applyGraphicsQuality, getGraphicsQuality, setGraphicsQuality as persistGraphics, type GraphicsQuality } from "./graphics";
 import { previewTotemPlant } from "./input";
 import {
@@ -88,6 +164,7 @@ import {
   hitFlashActive,
   initDecals,
   processGoreEvents,
+  setCorpseColorProvider,
   spawnDust,
   spawnGiantStepDust,
   stampBulletMark,
@@ -126,6 +203,25 @@ import {
 
 export type GamePhase = "connecting" | "lobby" | "playing" | "result" | "full" | "error";
 
+/** Conjuro de outro jogador com visual novo (o som/tremor vem de processAbilityEvents). */
+function spawnRemoteCast2(e: TickEvent) {
+  const ang = e.angle ?? 0;
+  if (e.b === 0) spawnWaterJet2(e.x, e.y, ang);
+  else if (e.b === 2) spawnBootsCast2(e.x, e.y);
+  else if (e.b === 4) spawnShieldCast2(e.x, e.y, ang);
+  else if (e.b === 5) spawnRiftStomp2(e.x, e.y);
+  else if (e.b === 6) spawnBombDrop2(e.x, e.y);
+  else if (e.b === 8) spawnFrost2(e.x, e.y, ang);
+  // 1 (Gigante) vem no giantSpawn; 3 (Capa) sai da aura; 7 (Totem) no totemSpawn
+}
+
+/** Totens de cada dono no estilo dele (Novo = cristais, Rascunho = C neon). */
+function drawTotemsByStyle(ctx: CanvasRenderingContext2D, totems: readonly SpikeTotemSnap[], tMs: number) {
+  const oldT = totems.filter((t) => fxOld(t.ownerId));
+  if (oldT.length) drawSpikeTotems(ctx, oldT, tMs);
+  if (oldT.length < totems.length) drawSpikeTotems2(ctx, totems.filter((t) => !fxOld(t.ownerId)), tMs);
+}
+
 export interface GameHud {
   phase: GamePhase;
   ping: number;
@@ -139,6 +235,8 @@ export interface GameHud {
   reserve: number;
   reloadProgress: number;
   abilityName: string;
+  /** id da habilidade equipada (ícone no HUD) */
+  abilityId?: number;
   abilityCd: number; // 0..1 remaining fraction (1 = ready)
   abilityCdMs: number;
   /** Capa de Recuo: cargas atuais */
@@ -216,7 +314,12 @@ export class GameClient {
   private killFeed: KillFeedEntry[] = [];
   private dmgArrows: DmgArrow[] = [];
   private hitMarkerUntil = 0;
-  private camZoom = 1;
+  /**
+   * Zoom base: o boneco ficou menor no mundo (proporção com casas/carros);
+   * aproxima um pouco a câmera pra ele continuar legível — mais no celular.
+   */
+  private baseZoom = isTouchPrimary() ? 1.25 : 1.12;
+  private camZoom = this.baseZoom;
   private camX = 0;
   private camY = 0;
   private prevVx = 0;
@@ -231,12 +334,38 @@ export class GameClient {
   private giantPosPrev = new Map<number, { x: number; y: number }>();
   private giantWindupAt = new Map<number, number>();
   private giantVis = new Map<number, { facing: number; skew: number; windupFlash: number }>();
+  /** visual (cosméticos) de cada jogador — vem do LOBBY */
+  private looks = new Map<number, Look>();
+  private myLook: Look = loadMyLook();
+  private names = new Map<number, string>();
+  private lastCapePrune = 0;
+  private worldWarm = false;
+  private readonly lookFor = (id: number): Look =>
+    id === this.selfId ? this.myLook : this.looks.get(id) ?? autoLookFor(id);
+  private readonly nameFor = (id: number): string | undefined => this.names.get(id);
+
+  /** Quem veste a capa Sombria (visual novo) solta uma explosão de sombra ao conjurar. */
+  private darkCastFx(id: number, x: number, y: number) {
+    if (fxOld(id)) return;
+    const lk = this.lookFor(id);
+    if (lk.body !== 0 || CAPES[lk.cape]?.style !== "dark") return;
+    spawnShadowBurst2(x, y);
+  }
 
   setMuted(m: boolean) {
     setMuted(m);
   }
   setVolume(v: number) {
     setMasterVolume(v);
+  }
+  /** Troca o visual (guarda-roupa) — avisa o host, que repassa pra sala. */
+  setLook(look: Look) {
+    this.myLook = look;
+    if (this.selfId >= 0) this.looks.set(this.selfId, look);
+    if (this.running) this.transport.send(encodeLookMsg(encodeLook(look)));
+  }
+  getLook(): Look {
+    return this.myLook;
   }
   /** Troca Leve/Full e reaplica cache/DPR na hora. */
   setGraphicsQuality(q: GraphicsQuality) {
@@ -258,6 +387,23 @@ export class GameClient {
     this.canvas = opts.canvas;
     this.ctx = opts.canvas.getContext("2d")!;
     this.name = opts.name;
+    // gancho de teste (só no `npm run dev`): posição do jogador na tela
+    if (import.meta.env.DEV) {
+      (window as unknown as { __arenaClient?: GameClient }).__arenaClient = this;
+    }
+  }
+
+  /** DEV: posição (px CSS, relativa ao canvas) do próprio jogador. */
+  debugSelfScreen(): { x: number; y: number; scale: number } | null {
+    const me = this.prediction.predicted;
+    if (!me) return null;
+    const rect = this.canvas.getBoundingClientRect();
+    const { scale, ox, oy, z } = cameraScreenLayout(rect.width, rect.height, this.camZoom || 1);
+    return {
+      x: rect.left + ox + (me.x - this.camX) * scale * z,
+      y: rect.top + oy + (me.y - this.camY) * scale * z,
+      scale: scale * z,
+    };
   }
 
   onHud(cb: HudListener) {
@@ -335,6 +481,7 @@ export class GameClient {
       reserve,
       reloadProgress: Math.max(0, Math.min(1, reloadProgress)),
       abilityName: ab.name,
+      abilityId: ab.id,
       abilityCd,
       abilityCdMs: ab.id === 3 ? DASH_RECHARGE_MS : ab.cooldownMs,
       dashCharges,
@@ -358,6 +505,22 @@ export class GameClient {
 
     resizeCanvas(this.canvas);
     initDecals(ARENA_W, ARENA_H);
+    // poderes: visual "Novo" ou "Rascunho" conforme o guarda-roupa de quem conjurou
+    setFxStyleProvider((id) => this.lookFor(id).fx ?? 0, () => this.selfId);
+    setCorpseColorProvider((id) => {
+      const l = this.lookFor(id);
+      const o = OUTFITS[l.outfit] ?? OUTFITS[0]!;
+      const h = HELMETS[l.helmet] ?? HELMETS[0]!;
+      const full = h.style === "knight" || h.style === "darkLord" || h.style === "army" || h.style === "hood";
+      return {
+        shirt: o.top,
+        pants: o.pants,
+        skin: (SKIN_TONES[l.skin] ?? SKIN_TONES[1]!).color,
+        hair: (HAIR_COLORS[l.hairColor] ?? HAIR_COLORS[0]!).color,
+        shoes: (BOOTS[l.boots] ?? BOOTS[0]!).main,
+        helmet: full ? h.main : undefined,
+      };
+    });
     window.addEventListener("resize", this.onResize);
     this.input.attach(this.canvas);
     const unlock = () => {
@@ -379,7 +542,7 @@ export class GameClient {
     });
 
     await this.transport.connect();
-    this.transport.send(encodeHello(this.name));
+    this.transport.send(encodeHello(this.name, encodeLook(this.myLook)));
     this.phase = "lobby";
     this.running = true;
     this.lastFrame = performance.now();
@@ -439,6 +602,11 @@ export class GameClient {
     }
     if (type === MSG.LOBBY) {
       this.lobby = decodeLobby(data);
+      for (const pl of this.lobby?.players ?? []) {
+        this.names.set(pl.id, pl.name);
+        const look = decodeLook(pl.look);
+        if (look && pl.id !== this.selfId) this.looks.set(pl.id, look);
+      }
       this.emit(true);
       return;
     }
@@ -454,6 +622,9 @@ export class GameClient {
       this.weaponDrops = [];
       this.abilityDrops = [];
       clearAbilityFx();
+      clearPowersFx();
+      clearFx2();
+      clearFxOwners();
       resizeCanvas(this.canvas);
       this.emit(true);
       return;
@@ -477,6 +648,7 @@ export class GameClient {
         ownerId: t.ownerId,
         angle: t.angle,
       }));
+      for (const t of snap.spikeTotems ?? []) setTotemOwner(t.id, t.ownerId, t.angle);
       this.prediction.serverTime = snap.serverTime;
       this.interp.push(snap);
       pushFlashesFromEvents(this.flashes, snap.events);
@@ -493,6 +665,7 @@ export class GameClient {
           if (e.b === this.selfId) {
             this.flashBlind = 1;
             this.flashHoldMs = 400;
+            this.prediction.flashUntil = until;
             if (this.prediction.predicted) {
               (this.prediction.predicted as { flashUntil?: number }).flashUntil = until;
             }
@@ -502,7 +675,7 @@ export class GameClient {
           const self = e.a === this.selfId;
           pulseShotFeel(this.feel, e.weaponId ?? e.b, self);
           playWeaponShot(e.weaponId ?? e.b, e.x, e.y, listener);
-          if (self) this.camZoom = 1.015;
+          if (self) this.camZoom = this.baseZoom * 1.015;
         }
         if (e.kind === "reloadStart") {
           if (e.a === this.selfId) {
@@ -516,7 +689,8 @@ export class GameClient {
         if (e.kind === "explode" || e.kind === "fire") {
           const big = e.kind === "explode" && e.b === 1;
           if (big) {
-            spawnBigBoomFx(e.x, e.y, this.feel);
+            if (fxOld(e.a)) spawnBigBoomFx(e.x, e.y, this.feel);
+            else spawnBigBoom2(e.x, e.y, this.feel);
             playSfx("big_explosion", e.x, e.y, listener, { volumeMul: 1.55, rate: 0.72 });
             this.feel.shake = Math.max(this.feel.shake, 9.5);
             // flash cegante curto (mais suave que flashbang)
@@ -529,7 +703,23 @@ export class GameClient {
         if (e.kind === "hit" && e.b === 255) {
           stampBulletMark(e.x, e.y);
         } else if (e.kind === "hit" && e.b === 253) {
-          // Capa-Escudo bloqueou — faísca metálica, sem sangue
+          // Escudo Estelar bloqueou / ricocheteou — faísca metálica, sem sangue
+          spawnShieldSparks(e.x, e.y - ((e.weaponId ?? 0) === 9 ? 26 * BODY_K : 0), 12);
+          if ((e.weaponId ?? 0) === 9) playSfx("clang", e.x, e.y, listener);
+          else {
+            // quem segurou o Escudo Estelar decide o visual do bloqueio
+            let holder = -1;
+            let best = 90;
+            for (const p of snap.players) {
+              if ((p.shieldUntil ?? 0) <= snap.serverTime) continue;
+              const d = Math.hypot(p.x - e.x, p.y - e.y);
+              if (d < best) {
+                best = d;
+                holder = p.id;
+              }
+            }
+            if (holder >= 0 && !fxOld(holder)) spawnShieldRipple2(e.x, e.y + GUN_HAND_BODY_Y);
+          }
           this.fx.push({
             x: e.x,
             y: e.y,
@@ -540,6 +730,8 @@ export class GameClient {
           for (let i = 0; i < 6; i++) {
             const ang = (i / 6) * Math.PI * 2 + Math.random() * 0.4;
             this.flashes.push({
+              // -1: faísca do bloqueio, não é tiro do jogador local (sem muzzle flash)
+              owner: -1,
               x: e.x,
               y: e.y,
               angle: ang,
@@ -663,12 +855,53 @@ export class GameClient {
             this.input.setAbility(aid);
           }
         }
-        if (e.kind === "ability") {
+        if (e.kind === "ability" && (e.b === 9 || e.b === 10 || e.b === 11)) {
+          const wid = e.weaponId ?? 0;
+          if (e.b === 10 && wid >= CHAIN_SEGMENT_BASE) {
+            const hop = wid - CHAIN_SEGMENT_BASE;
+            if (fxOld(e.a)) spawnLightningBolt(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y, hop);
+            else spawnBolt2(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y, hop);
+            if (hop === 0) {
+              playSfx("zap", e.x, e.y, listener);
+              if (e.a !== this.selfId) this.darkCastFx(e.a, e.x, e.y);
+            }
+            else playSfx("zap", e.x2 ?? e.x, e.y2 ?? e.y, listener, { volumeMul: 0.55 });
+          } else if (e.b === 11) {
+            if (e.a !== this.selfId) {
+              if (fxOld(e.a)) spawnBlinkFx(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y);
+              else spawnBlink2(e.x, e.y, e.x2 ?? e.x, e.y2 ?? e.y, this.lookFor(e.a));
+              this.darkCastFx(e.a, e.x, e.y);
+              playSfx("blink", e.x2 ?? e.x, e.y2 ?? e.y, listener);
+            }
+          } else if (e.b === 9) {
+            if (wid === 9001) {
+              playSfx("clang", e.x, e.y, listener, { volumeMul: 0.7 });
+              if (fxOld(e.a)) spawnShieldSparks(e.x, e.y - 26 * BODY_K, 5);
+              else spawnDiscBounce2(e.x, e.y);
+            } else if (wid === 9002) {
+              if (fxOld(e.a)) spawnBlinkFx(e.x, e.y + 26, e.x, e.y + 26);
+              else spawnDiscCatch2(e.x, e.y);
+            } else if (e.a !== this.selfId) {
+              playSfx("boost", e.x, e.y, listener);
+              this.darkCastFx(e.a, e.x, e.y);
+              if (!fxOld(e.a)) {
+                const ang = e.angle ?? 0;
+                spawnCastGlint2(
+                  e.x + Math.cos(ang) * 24 * BODY_K,
+                  e.y + (-30 + Math.sin(ang) * 16) * BODY_K,
+                  CAST_RGB_DISC,
+                );
+              }
+            }
+          }
+        } else if (e.kind === "ability") {
           const hitId = e.weaponId ?? 0;
           // impacto em alvo específico (knockback real / freeze)
           if (hitId >= 1000) {
             if (e.b === 8) {
-              spawnFrostFreezeFx(e.x, e.y);
+              setFrostCaster(hitId - 1000, e.a);
+              if (fxOld(e.a)) spawnFrostFreezeFx(e.x, e.y);
+              else spawnFreeze2(e.x, e.y);
               playSfx("freeze", e.x, e.y, listener);
               const victimId = hitId - 1000;
               if (victimId === this.selfId && this.prediction.predicted) {
@@ -682,7 +915,8 @@ export class GameClient {
                 }
               }
             } else {
-              spawnWaterSplash(e.x, e.y);
+              if (fxOld(e.a)) spawnWaterSplash(e.x, e.y);
+              else spawnWaterSplash2(e.x, e.y);
               playSfx("splash", e.x, e.y, listener);
               // vítima local: aplica impulso do host na predição (online)
               const victimId = hitId - 1000;
@@ -699,35 +933,56 @@ export class GameClient {
             }
           } else if (e.a !== this.selfId) {
             // conjuro remoto
-            processAbilityEvents([e], this.feel, this.selfId, (x, y) => {
-              if (e.b === 0) playSfx("water_whoosh", x, y, listener);
-              else if (e.b === 2 || e.b === 3) playSfx("boost", x, y, listener);
-              else if (e.b === 4) playSfx("block", x, y, listener);
-              else if (e.b === 5) playSfx("earth_crack", x, y, listener);
-              else if (e.b === 7) playSfx("boost", x, y, listener);
-              else if (e.b === 8) playSfx("freeze", x, y, listener);
-              else playSfx("explosion", x, y, listener);
-            });
+            const newFx = !fxOld(e.a);
+            processAbilityEvents(
+              [e],
+              this.feel,
+              this.selfId,
+              (x, y) => {
+                if (e.b === 0) playSfx("water_whoosh", x, y, listener);
+                else if (e.b === 2 || e.b === 3) playSfx("boost", x, y, listener);
+                else if (e.b === 4) playSfx("block", x, y, listener);
+                else if (e.b === 5) playSfx("earth_crack", x, y, listener);
+                else if (e.b === 7) playSfx("boost", x, y, listener);
+                else if (e.b === 8) playSfx("freeze", x, y, listener);
+                else playSfx("explosion", x, y, listener);
+              },
+              undefined,
+              newFx,
+            );
+            if (newFx) spawnRemoteCast2(e);
+            if (e.b !== 3) this.darkCastFx(e.a, e.x, e.y);
           }
         }
         if (e.kind === "totemSpawn") {
-          spawnTotemSpawnFx(e.x, e.y, e.a, e.angle ?? 0);
+          setTotemOwner(e.a, e.b, e.angle ?? 0);
+          if (fxOld(e.b)) spawnTotemSpawnFx(e.x, e.y, e.a, e.angle ?? 0);
+          else spawnTotem2(e.x, e.y, e.a, e.angle ?? 0, e.b === this.selfId);
           playSfx("boost", e.x, e.y, listener);
           this.feel.shake = Math.max(this.feel.shake, 0.55);
         }
         if (e.kind === "totemHit") {
-          spawnTotemHitFx(e.x, e.y);
+          if (fxOld(totemOwnerOf(e.a))) spawnTotemHitFx(e.x, e.y);
+          else spawnTotemHit2(e.x, e.y);
           playSfx("block", e.x, e.y, listener);
         }
         if (e.kind === "totemExpire") {
           const prev = this.lastSnap?.spikeTotems?.find((t) => t.id === (e.a & 0xff));
-          spawnTotemExpireFx(e.x, e.y, e.a, prev?.angle ?? 0);
+          const openAng = prev?.angle ?? totemAngleOf(e.a) ?? 0;
+          if (fxOld(prev?.ownerId ?? totemOwnerOf(e.a))) spawnTotemExpireFx(e.x, e.y, e.a, openAng);
+          else spawnTotemExpire2(e.x, e.y, e.a, openAng);
           playSfx("boost", e.x, e.y, listener);
         }
         if (e.kind === "rift") {
-          processRiftEvents([e], this.feel, (x, y) => {
-            playSfx("earth_crack", x, y, listener);
-          });
+          processRiftEvents(
+            [e],
+            this.feel,
+            (x, y) => {
+              playSfx("earth_crack", x, y, listener);
+            },
+            undefined,
+            !fxOld(e.a),
+          );
           // slam quando o buraco abre — agendado pelo travelMs
           const travel = Math.max(120, e.weaponId ?? 400);
           const hx = e.x2 ?? e.x;
@@ -738,6 +993,7 @@ export class GameClient {
           }, travel);
         }
         if (e.kind === "giantSpawn") {
+          setGiantOwner(e.a, e.b);
           const packed = e.weaponId ?? 0;
           this.giantTargets.set(e.a, {
             kind: ((packed >> 8) & 3) as 0 | 1 | 2,
@@ -745,7 +1001,8 @@ export class GameClient {
           });
           // Conjurador já tem FX predito; peers/bots veem o evento do host
           if (e.b !== this.selfId) {
-            spawnGiantSummonFx(e.x, e.y);
+            if (fxOld(e.b)) spawnGiantSummonFx(e.x, e.y);
+            else spawnGiantSummon2(e.x, e.y);
             const dist = Math.hypot(e.x - listener.x, e.y - listener.y);
             if (dist < 520) {
               this.feel.shake = Math.max(this.feel.shake, 1.1 * (1 - dist / 520));
@@ -760,7 +1017,8 @@ export class GameClient {
           this.giantPosPrev.delete(e.a);
           this.giantWindupAt.delete(e.a);
           this.giantVis.delete(e.a);
-          spawnGiantHitFx(e.x, e.y);
+          if (fxOld(e.b)) spawnGiantHitFx(e.x, e.y);
+          else spawnGiantHit2(e.x, e.y);
           playSfx("giant_hit", e.x, e.y, listener);
           const dist = Math.hypot(e.x - listener.x, e.y - listener.y);
           if (dist < 720) {
@@ -803,12 +1061,18 @@ export class GameClient {
             this.feel.shake = Math.max(this.feel.shake, 2.5);
           } else if (cause === 104) {
             // espinhos: dissolve / faísca — SEM cair no buraco
-            spawnTotemHitFx(e.x, e.y);
-            spawnGiantExpireFx(e.x, e.y);
+            if (fxOld(e.b)) {
+              spawnTotemHitFx(e.x, e.y);
+              spawnGiantExpireFx(e.x, e.y);
+            } else {
+              spawnTotemHit2(e.x, e.y);
+              spawnGiantExpire2(e.x, e.y);
+            }
             playSfx("block", e.x, e.y, listener);
             this.feel.shake = Math.max(this.feel.shake, 1.4);
           } else {
-            spawnGiantExpireFx(e.x, e.y);
+            if (fxOld(e.b)) spawnGiantExpireFx(e.x, e.y);
+            else spawnGiantExpire2(e.x, e.y);
             playSfx("empty_click", e.x, e.y, listener);
           }
         }
@@ -986,7 +1250,7 @@ export class GameClient {
           }
           this.prediction.predictFire(raw.aim, raw.weapon);
           pulseShotFeel(this.feel, raw.weapon, true);
-          this.camZoom = 1.015;
+          this.camZoom = this.baseZoom * 1.015;
           const muzz = muzzlePoint(pred.x, pred.y, raw.aim, wpn);
           playWeaponShot(raw.weapon, muzz.x, muzz.y, { x: pred.x, y: pred.y });
           pushFlashesFromEvents(this.flashes, [
@@ -1010,7 +1274,29 @@ export class GameClient {
         const cdUntil = pred.abilityCdUntil ?? 0;
         const cdReady = ab.id === 3 || cdUntil <= nowSrv;
         if (cdReady && raw.cast) {
-          if (ab.id === 3) {
+          if (ab.id === 11) {
+            // Passo Sombrio: teleporte previsto (replay da reconciliação repete igual)
+            const r = performBlink(
+              pred,
+              nowSrv,
+              raw.aim,
+              this.prediction.doorBits,
+              hitsSolid,
+              this.prediction.spikeTotems,
+            );
+            if (r) {
+              if (fxOld(this.selfId)) spawnBlinkFx(r.fromX, r.fromY, r.x, r.y);
+              else spawnBlink2(r.fromX, r.fromY, r.x, r.y, this.myLook);
+              this.darkCastFx(this.selfId, r.fromX, r.fromY);
+              playSfx("blink", r.x, r.y, { x: r.x, y: r.y });
+              this.feel.shake = Math.max(this.feel.shake, 0.6);
+              if (this.smooth) {
+                this.smooth.errX = 0;
+                this.smooth.errY = 0;
+                this.smooth.t = 0;
+              }
+            }
+          } else if (ab.id === 3) {
             // Manual: arremessa NA direção da mira
             if (
               performRecoilDash(
@@ -1026,28 +1312,35 @@ export class GameClient {
             }
           } else {
             pred.abilityCdUntil = nowSrv + ab.cooldownMs;
+            const oldFx = fxOld(this.selfId);
+            this.darkCastFx(this.selfId, pred.x, pred.y);
             if (ab.id === 0) {
-              spawnWaterJetFx(pred.x, pred.y, raw.aim);
+              if (oldFx) spawnWaterJetFx(pred.x, pred.y, raw.aim);
+              else spawnWaterJet2(pred.x, pred.y, raw.aim);
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.7);
               this.feel.shake = Math.max(this.feel.shake, 1.2);
               playSfx("water_whoosh", pred.x, pred.y, { x: pred.x, y: pred.y });
             } else if (ab.id === 1) {
               const gx = pred.x + Math.cos(raw.aim) * 28;
               const gy = pred.y + Math.sin(raw.aim) * 28;
-              spawnGiantSummonFx(gx, gy);
+              if (oldFx) spawnGiantSummonFx(gx, gy);
+              else spawnGiantSummon2(gx, gy);
               this.feel.shake = Math.max(this.feel.shake, 1.3);
               // rugido longo no evento giantSpawn (evita dobrar com predição)
             } else if (ab.id === 2) {
               pred.speedBoostUntil = nowSrv + SPRINT_BOOTS_DURATION_MS;
+              if (!oldFx) spawnBootsCast2(pred.x, pred.y);
               playSfx("boost", pred.x, pred.y, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.35);
             } else if (ab.id === 4) {
               pred.shieldUntil = nowSrv + SHIELD_MS;
+              if (!oldFx) spawnShieldCast2(pred.x, pred.y, raw.aim);
               playSfx("block", pred.x, pred.y, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.25);
             } else if (ab.id === 5) {
               // pisão predito — rachadura/kill vêm do host (evento rift)
-              spawnRiftStompFx(pred.x, pred.y);
+              if (oldFx) spawnRiftStompFx(pred.x, pred.y);
+              else spawnRiftStomp2(pred.x, pred.y);
               playSfx("earth_crack", pred.x, pred.y, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.65);
               this.feel.shake = Math.max(this.feel.shake, 1.15);
@@ -1055,7 +1348,8 @@ export class GameClient {
               // bomba predita — detonação/dano vêm do host (explode.b=1)
               const bx = pred.x + Math.cos(raw.aim) * 20;
               const by = pred.y + Math.sin(raw.aim) * 20;
-              spawnBombDropFx(bx, by);
+              if (oldFx) spawnBombDropFx(bx, by);
+              else spawnBombDrop2(bx, by);
               playSfx("boost", bx, by, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.35);
               this.feel.shake = Math.max(this.feel.shake, 0.45);
@@ -1068,17 +1362,31 @@ export class GameClient {
                 this.input.totemAimDist,
                 this.lastSnap?.doorsBits ?? 0,
               );
-              spawnTotemSpawnFx(
-                plant.x,
-                plant.y,
-                undefined,
-                Math.atan2(pred.y - plant.y, pred.x - plant.x),
-              );
+              const openAng = Math.atan2(pred.y - plant.y, pred.x - plant.x);
+              if (oldFx) spawnTotemSpawnFx(plant.x, plant.y, undefined, openAng);
+              else spawnTotem2(plant.x, plant.y, undefined, openAng);
               playSfx("boost", plant.x, plant.y, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.3);
               this.feel.shake = Math.max(this.feel.shake, 0.4);
+            } else if (ab.id === 9) {
+              // arremesso: o disco vem do host (throwable kind 7)
+              const hx = pred.x + Math.cos(raw.aim) * 24 * BODY_K;
+              const hy = pred.y + (-30 + Math.sin(raw.aim) * 16) * BODY_K;
+              if (oldFx) spawnCastSparkle(hx, hy);
+              else spawnCastGlint2(hx, hy, CAST_RGB_DISC);
+              playSfx("boost", pred.x, pred.y, { x: pred.x, y: pred.y });
+              this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.45);
+            } else if (ab.id === 10) {
+              // raio: os saltos vêm do host (eventos com x2/y2)
+              const hx = pred.x + Math.cos(raw.aim) * 26 * BODY_K;
+              const hy = pred.y + (-26 + Math.sin(raw.aim) * 18) * BODY_K;
+              if (oldFx) spawnCastSparkle(hx, hy);
+              else spawnCastGlint2(hx, hy, CAST_RGB_VOLT);
+              this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.4);
+              this.feel.shake = Math.max(this.feel.shake, 0.5);
             } else if (ab.id === 8) {
-              spawnFrostCastFx(pred.x, pred.y, raw.aim);
+              if (oldFx) spawnFrostCastFx(pred.x, pred.y, raw.aim);
+              else spawnFrost2(pred.x, pred.y, raw.aim);
               playSfx("freeze", pred.x, pred.y, { x: pred.x, y: pred.y });
               this.feel.bodyKick = Math.max(this.feel.bodyKick, 0.45);
               this.feel.shake = Math.max(this.feel.shake, 0.55);
@@ -1164,6 +1472,13 @@ export class GameClient {
     this.fx = tickFx(this.fx, dtMs);
     tickGore(dtMs, now);
     tickAbilityFx(dtMs, this.feel);
+    tickShieldSparks(dtMs);
+    tickPowersFx(dtMs);
+    tickFx2(dtMs, this.feel);
+    if (now - this.lastCapePrune > 2000) {
+      this.lastCapePrune = now;
+      pruneCapes(now);
+    }
     // Fim do gelo → estilhaço (detecção client-side a partir de frozenUntil autoritativo)
     {
       const nowSrvFrost =
@@ -1205,12 +1520,16 @@ export class GameClient {
         x: pred?.x ?? this.lastSnap?.players.find((p) => p.id === this.selfId)?.x ?? 0,
         y: pred?.y ?? this.lastSnap?.players.find((p) => p.id === this.selfId)?.y ?? 0,
       };
-      syncFrostShatter(frostEnts, (x, y) => {
-        playSfx("ice_shatter", x, y, listenerPos);
-        this.feel.shake = Math.max(this.feel.shake, 0.35);
-      });
+      syncFrostShatter(
+        frostEnts,
+        (x, y) => {
+          playSfx("ice_shatter", x, y, listenerPos);
+          this.feel.shake = Math.max(this.feel.shake, 0.35);
+        },
+        (key) => (frostIsOld(Number(key.slice(1))) ? null : spawnShatter2),
+      );
     }
-    this.camZoom += (1 - this.camZoom) * Math.min(1, dtMs / 80);
+    this.camZoom += (this.baseZoom - this.camZoom) * Math.min(1, dtMs / 80);
     this.damageFlash = Math.max(0, this.damageFlash - dtMs / 120);
     this.killFeed = pruneKillFeed(this.killFeed, now);
     this.dmgArrows = pruneDmgArrows(this.dmgArrows, now);
@@ -1426,6 +1745,45 @@ export class GameClient {
       }
     }
 
+    // chamas das Botas / vento da Capa (visual novo) em quem está com o poder ativo
+    {
+      const srvT = (this.lastSnap?.serverTime ?? 0) + Math.max(0, now - (this.lastSnapAt || now));
+      const actors: AuraActor[] = [];
+      const add = (
+        id: number,
+        p: {
+          x: number;
+          y: number;
+          vx?: number;
+          vy?: number;
+          angle?: number;
+          alive: boolean;
+          ability?: number;
+          speedBoostUntil?: number;
+          dashUntil?: number;
+        },
+      ) => {
+        const ab = p.ability ?? 0;
+        if (!p.alive || (ab !== 2 && ab !== 3) || fxOld(id)) return;
+        const lk = this.lookFor(id);
+        actors.push({
+          id,
+          x: p.x,
+          y: p.y,
+          vx: p.vx ?? 0,
+          vy: p.vy ?? 0,
+          boost: ab === 2 && (p.speedBoostUntil ?? 0) > srvT,
+          dash: ab === 3 && (p.dashUntil ?? 0) > srvT,
+          aim: p.angle,
+          look: lk.body === 0 ? lk : null,
+          dark: CAPES[lk.cape]?.style === "dark",
+        });
+      };
+      if (local) add(this.selfId, local);
+      for (const r of remotes) add(r.id, r);
+      tickAuras2(actors, dtMs);
+    }
+
     let totemAim: { fromX: number; fromY: number; toX: number; toY: number } | null = null;
     if (this.input.isTotemAiming() && local?.alive) {
       const plant = previewTotemPlant(
@@ -1446,7 +1804,12 @@ export class GameClient {
       giantTargets: this.giantTargets,
       giantVis: this.giantVis,
       bullets,
-      throwables: this.lastSnap?.throwables ?? [],
+      throwables: (this.lastSnap?.throwables ?? []).map((t) => {
+        if (t.kind !== SHIELD_THROW_KIND) return t;
+        // disco rápido: extrapola entre snapshots (30 Hz) pra não "pular"
+        const k = Math.min(0.06, Math.max(0, (now - (this.lastSnapAt || now)) / 1000));
+        return { ...t, x: t.x + t.vx * k, y: t.y + t.vy * k };
+      }),
       flashes: this.flashes,
       fx: this.fx,
       flashBlind: this.flashBlind,
@@ -1460,8 +1823,8 @@ export class GameClient {
       abilityDrops: this.abilityDrops,
       spikeTotems: this.lastSnap?.spikeTotems ?? [],
       totemAim,
-      drawSpikeTotems,
-      drawTotemAimBeam,
+      drawSpikeTotems: drawTotemsByStyle,
+      drawTotemAimBeam: fxOld(this.selfId) ? drawTotemAimBeam : drawTotemAim2,
       drawTotemHoloDissolves,
       camZoom: this.camZoom,
       camX: this.camX,
@@ -1478,6 +1841,8 @@ export class GameClient {
       serverTime:
         (this.lastSnap?.serverTime ?? 0) +
         Math.max(0, now - (this.lastSnapAt || now)),
+      lookFor: this.lookFor,
+      nameFor: this.nameFor,
     };
 
     try {
@@ -1486,6 +1851,11 @@ export class GameClient {
       } else {
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        // sala de espera: pinta o mapa em volta do provável spawn aos poucos
+        if (this.phase === "lobby" && this.selfId >= 0 && !this.worldWarm) {
+          const sp = SPAWNS[this.selfId % SPAWNS.length]!;
+          this.worldWarm = prewarmWorld(sp.x, sp.y, 1300, 2) === 0;
+        }
       }
     } catch (err) {
       console.error("drawFrame", err);

@@ -780,6 +780,19 @@ export function botInput(
           m.nextCastAt = serverTime + 700;
         }
       }
+      // poderes novos: Raio em Cadeia (id 10) e Escudo Bumerangue (id 9)
+      if (!cast && los && dist > 110 && dist < 420) {
+        const roll = Math.random();
+        if (roll < (m.style === "tactical" ? 0.3 : 0.18)) {
+          ability = 10;
+          cast = true;
+          m.nextCastAt = serverTime + 11000;
+        } else if (roll < (m.style === "aggressive" ? 0.5 : 0.36) && dist < 380) {
+          ability = 9;
+          cast = true;
+          m.nextCastAt = serverTime + 6500;
+        }
+      }
       if (!cast && los && dist < 340 && dist > 35) {
         // ocasionalmente Congelamento (id 8); senão jato
         const wantFrost =

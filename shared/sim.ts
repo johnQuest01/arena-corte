@@ -51,6 +51,25 @@ import {
   ricochetOffTotemBody,
   segmentHitsTotemBody,
   tryAutoRecoilCape,
+  performBlink,
+  CHAIN_CAUSE,
+  CHAIN_DMG,
+  CHAIN_HOP,
+  CHAIN_MAX,
+  CHAIN_RANGE,
+  CHAIN_SEGMENT_BASE,
+  CHAIN_STUN_MS,
+  SHIELD_THROW_BOUNCES,
+  SHIELD_THROW_CAUSE,
+  SHIELD_THROW_DMG,
+  SHIELD_THROW_ENEMY_DMG,
+  SHIELD_THROW_KIND,
+  SHIELD_THROW_KNOCK,
+  SHIELD_THROW_MAX_MS,
+  SHIELD_THROW_OUT_MS,
+  SHIELD_THROW_R,
+  SHIELD_THROW_SPEED,
+  SHIELD_THROW_WALL_R,
   type AbilityCtx,
   type AbilityTargetRef,
   type SpikeTotemSense,
@@ -257,6 +276,27 @@ export interface GameSim {
   pendingRifts: PendingRift[];
   riftHoles: RiftHole[];
   spikeTotems: SpikeTotem[];
+  /** Escudos Bumerangue no ar */
+  shieldThrows: ShieldThrow[];
+  nextShieldThrowId: number;
+}
+
+/** Escudo Estelar arremessado (Escudo Bumerangue). */
+export interface ShieldThrow {
+  id: number;
+  owner: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  /** ms no ar */
+  age: number;
+  bounces: number;
+  returning: boolean;
+  /** na volta atravessou parede: não fere mais ninguém (sem dano através de muro) */
+  ghost: boolean;
+  /** alvos já atingidos nesta viagem ("p:id" / "e:id") — ida e volta */
+  hit: Set<string>;
 }
 function clamp(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));
@@ -309,6 +349,8 @@ export function createSim(): GameSim {
     pendingRifts: [],
     riftHoles: [],
     spikeTotems: [],
+    shieldThrows: [],
+    nextShieldThrowId: 1,
   };
 }
 export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
@@ -357,6 +399,7 @@ export function addPlayer(sim: GameSim, name: string): SimPlayer | null {
 export function removePlayer(sim: GameSim, id: number) {
   sim.players = sim.players.filter((p) => p.id !== id);
   sim.bullets = sim.bullets.filter((b) => b.owner !== id);
+  sim.shieldThrows = (sim.shieldThrows ?? []).filter((t) => t.owner !== id);
 }
 export function queueInput(sim: GameSim, playerId: number, input: PlayerInput) {
   const p = sim.players.find((x) => x.id === playerId);
@@ -420,6 +463,24 @@ function tryCastAbility(sim: GameSim, p: SimPlayer, castInput?: PlayerInput) {
     });
   };
 
+  // Passo Sombrio — teleporte curto na mira (não atravessa parede)
+  if (ab.id === 11) {
+    const r = performBlink(p, now, p.angle, bits, hitsSolid, totemSenses(sim));
+    if (!r) return;
+    sim.events.push({
+      kind: "ability",
+      a: p.id,
+      b: 11,
+      x: r.fromX,
+      y: r.fromY,
+      x2: r.x,
+      y2: r.y,
+      angle: p.angle,
+      weaponId: 11,
+    });
+    return;
+  }
+
   // Fenda Sísmica — pisão (windup) + CD; a rachadura dispara depois
   if (ab.id === 5) {
     p.abilityCdUntil = now + ab.cooldownMs;
@@ -432,11 +493,21 @@ function tryCastAbility(sim: GameSim, p: SimPlayer, castInput?: PlayerInput) {
     return;
   }
 
-  // Self-buffs + Bomba + Totem — sem alvos / jato
-  if (ab.id === 2 || ab.id === 3 || ab.id === 4 || ab.id === 6 || ab.id === 7) {
+  // Self-buffs + Bomba + Totem + Escudo Bumerangue + Raio — sem alvos / jato
+  if (
+    ab.id === 2 ||
+    ab.id === 3 ||
+    ab.id === 4 ||
+    ab.id === 6 ||
+    ab.id === 7 ||
+    ab.id === 9 ||
+    ab.id === 10
+  ) {
     const ctx: AbilityCtx = {
       didCast: false,
       mode: sim.mode,
+      spawnShieldThrow: ab.id === 9 ? (caster) => spawnShieldThrow(sim, caster) : undefined,
+      chainLightning: ab.id === 10 ? (caster) => castChainLightning(sim, caster) : undefined,
       totemDist: totemDistFromWire,
       doorBits: bits,
       hitsSolid,
@@ -697,6 +768,323 @@ function tryCastAbility(sim: GameSim, p: SimPlayer, castInput?: PlayerInput) {
     angle: p.angle,
     casterId: p.id,
   });
+}
+
+/** Escudo Bumerangue: lança o disco (1 por jogador no ar). */
+function spawnShieldThrow(sim: GameSim, caster: PlayerState): boolean {
+  if (!sim.shieldThrows) sim.shieldThrows = [];
+  if (sim.shieldThrows.some((t) => t.owner === caster.id)) return false;
+  const ax = Math.cos(caster.angle);
+  const ay = Math.sin(caster.angle);
+  let x = caster.x + ax * 22;
+  let y = caster.y + ay * 22;
+  const bits = doorBitsOf(sim);
+  if (hitsSolid(x, y, SHIELD_THROW_WALL_R, bits)) {
+    // colado na parede mirando nela: sai da mão e ricocheteia
+    x = caster.x;
+    y = caster.y;
+    if (hitsSolid(x, y, SHIELD_THROW_WALL_R, bits)) return false;
+  }
+  sim.shieldThrows.push({
+    id: sim.nextShieldThrowId++,
+    owner: caster.id,
+    x,
+    y,
+    vx: ax * SHIELD_THROW_SPEED,
+    vy: ay * SHIELD_THROW_SPEED,
+    age: 0,
+    bounces: 0,
+    returning: false,
+    ghost: false,
+    hit: new Set(),
+  });
+  return true;
+}
+
+/** Voo do escudo: ricochete nas paredes, dano único por alvo, volta pro dono. */
+function tickShieldThrows(sim: GameSim, dt: number) {
+  if (!sim.shieldThrows?.length) return;
+  const bits = doorBitsOf(sim);
+  const senses = totemSenses(sim);
+  const now = sim.serverTime;
+  const keep: ShieldThrow[] = [];
+  for (const s of sim.shieldThrows) {
+    s.age += dt * 1000;
+    const owner = sim.players.find((p) => p.id === s.owner);
+    if (!owner || !owner.alive || s.age > SHIELD_THROW_MAX_MS) {
+      sim.events.push({ kind: "ability", a: s.owner, b: 9, x: s.x, y: s.y, weaponId: 9002 });
+      continue;
+    }
+    if (!s.returning && (s.age > SHIELD_THROW_OUT_MS || s.bounces >= SHIELD_THROW_BOUNCES)) {
+      s.returning = true;
+    }
+    if (s.returning) {
+      const tx = owner.x;
+      const ty = owner.y;
+      const dx = tx - s.x;
+      const dy = ty - s.y;
+      const d = Math.hypot(dx, dy) || 1;
+      if (d < 36) {
+        // pegou de volta
+        sim.events.push({ kind: "ability", a: s.owner, b: 9, x: s.x, y: s.y, weaponId: 9001 });
+        continue;
+      }
+      const sp = SHIELD_THROW_SPEED * 1.12;
+      const k = Math.min(1, dt * 10);
+      s.vx += ((dx / d) * sp - s.vx) * k;
+      s.vy += ((dy / d) * sp - s.vy) * k;
+    }
+    // 2 subpassos (27 px/tick) — ricochete por eixo
+    for (let i = 0; i < 2; i++) {
+      const h = dt / 2;
+      const nx = s.x + s.vx * h;
+      const ny = s.y + s.vy * h;
+      if (s.returning) {
+        // na volta atravessa obstáculos (evita ficar preso); depois de
+        // atravessar parede não fere ninguém do outro lado
+        s.x = nx;
+        s.y = ny;
+        if (!s.ghost && hitsSolid(nx, ny, SHIELD_THROW_WALL_R * 0.5, bits)) s.ghost = true;
+        continue;
+      }
+      const hitX = hitsSolid(nx, s.y, SHIELD_THROW_WALL_R, bits);
+      const hitY = hitsSolid(s.x, ny, SHIELD_THROW_WALL_R, bits);
+      const hitXY = !hitX && !hitY && hitsSolid(nx, ny, SHIELD_THROW_WALL_R, bits);
+      if (hitX || hitY || hitXY) {
+        if (hitX || hitXY) s.vx = -s.vx;
+        if (hitY || hitXY) s.vy = -s.vy;
+        s.bounces++;
+        sim.events.push({ kind: "hit", a: s.owner, b: 253, x: s.x, y: s.y, weaponId: 9 });
+        continue;
+      }
+      const bounce = ricochetOffTotemBody(s.x, s.y, nx, ny, s.vx, s.vy, senses, SHIELD_THROW_R * 0.5);
+      if (bounce) {
+        s.x = bounce.x;
+        s.y = bounce.y;
+        s.vx = bounce.vx;
+        s.vy = bounce.vy;
+        s.bounces++;
+        sim.events.push({ kind: "hit", a: s.owner, b: 253, x: s.x, y: s.y, weaponId: 9 });
+        continue;
+      }
+      s.x = nx;
+      s.y = ny;
+    }
+    if (s.ghost) {
+      keep.push(s);
+      continue;
+    }
+    // alvos: jogadores
+    for (const t of sim.players) {
+      if (!t.alive || t.id === s.owner) continue;
+      const key = `p:${t.id}`;
+      if (s.hit.has(key)) continue;
+      const hx = t.x;
+      const hy = t.y + PLAYER_HIT_Y;
+      if (Math.hypot(hx - s.x, hy - s.y) > PLAYER_HIT_R * 0.72 + SHIELD_THROW_R * 0.6) continue;
+      // o tronco de quem encosta na face de baixo cai "dentro" da parede no chão:
+      // exige linha livre pé a pé, senão o disco acerta do outro lado do muro
+      if (!losClear(sim, s.x, s.y, t.x, t.y)) continue;
+      s.hit.add(key);
+      // Escudo Estelar erguido rebate o arremesso
+      if (
+        t.shieldUntil > 0 &&
+        now < t.shieldUntil &&
+        isFrontalShieldHit(t.angle, t.x, t.y, s.x - s.vx * 0.05, s.y - s.vy * 0.05)
+      ) {
+        s.vx = -s.vx;
+        s.vy = -s.vy;
+        s.returning = true;
+        sim.events.push({ kind: "hit", a: s.owner, b: 253, x: s.x, y: s.y, weaponId: 9 });
+        continue;
+      }
+      // totem do alvo segurou (evento de bloqueio já saiu): sem empurrão nem sangue
+      if (!damagePlayer(sim, t, SHIELD_THROW_DMG, s.owner, SHIELD_THROW_CAUSE)) continue;
+      const sp = Math.hypot(s.vx, s.vy) || 1;
+      t.vx += (s.vx / sp) * SHIELD_THROW_KNOCK;
+      t.vy += (s.vy / sp) * SHIELD_THROW_KNOCK;
+      sim.events.push({
+        kind: "hit",
+        a: s.owner,
+        b: t.id,
+        x: s.x,
+        y: s.y,
+        weaponId: SHIELD_THROW_CAUSE,
+      });
+    }
+    // alvos: zumbis / brutamontes (Survival)
+    if (sim.mode === 1) {
+      for (const en of sim.enemies) {
+        if (en.state === 3 || en.type === 2) continue;
+        const key = `e:${en.id}`;
+        if (s.hit.has(key)) continue;
+        const def = enemyOf(en);
+        if (Math.hypot(en.x - s.x, en.y + def.hitY - s.y) > def.hitRadius + SHIELD_THROW_R * 0.6) continue;
+        if (!losClear(sim, s.x, s.y, en.x, en.y)) continue;
+        s.hit.add(key);
+        const died = damageEnemy(sim.enemies, sim.waves, en.id, SHIELD_THROW_ENEMY_DMG, makeEnemyCtx(sim), {
+          causeWeaponId: SHIELD_THROW_CAUSE,
+        });
+        if (died) {
+          const killer = sim.players.find((p) => p.id === s.owner);
+          if (killer) killer.kills++;
+        }
+        sim.events.push({ kind: "hit", a: s.owner, b: 254, x: s.x, y: s.y, weaponId: SHIELD_THROW_CAUSE });
+      }
+    }
+    keep.push(s);
+  }
+  sim.shieldThrows = keep;
+}
+
+/** Linha livre de parede/totem entre dois pontos (raio em cadeia). */
+function losClear(sim: GameSim, ax: number, ay: number, bx: number, by: number): boolean {
+  const bits = doorBitsOf(sim);
+  const len = Math.hypot(bx - ax, by - ay);
+  const n = Math.max(1, Math.ceil(len / 12));
+  for (let i = 1; i < n; i++) {
+    const u = i / n;
+    if (hitsSolid(ax + (bx - ax) * u, ay + (by - ay) * u, 2, bits)) return false;
+  }
+  return !segmentHitsTotemBody(ax, ay, bx, by, totemSenses(sim), 3);
+}
+
+/** Raio em Cadeia: alvo na mira + até 3 saltos; dano decrescente + mini-stun. */
+function castChainLightning(sim: GameSim, caster: PlayerState) {
+  const now = sim.serverTime;
+  // gx/gy = pé: linha de visão e saltos no plano do chão (parede é o footprint);
+  // x/y = tronco: onde o cursor mira e onde o raio é desenhado
+  type Tgt = {
+    key: string;
+    gx: number;
+    gy: number;
+    x: number;
+    y: number;
+    player?: SimPlayer;
+    enemyId?: number;
+  };
+  const cands: Tgt[] = [];
+  for (const o of sim.players) {
+    if (!o.alive || o.id === caster.id) continue;
+    cands.push({ key: `p:${o.id}`, gx: o.x, gy: o.y, x: o.x, y: o.y + PLAYER_HIT_Y, player: o });
+  }
+  if (sim.mode === 1) {
+    for (const en of sim.enemies) {
+      if (en.state === 3 || en.type === 2) continue;
+      cands.push({ key: `e:${en.id}`, gx: en.x, gy: en.y, x: en.x, y: en.y + enemyOf(en).hitY, enemyId: en.id });
+    }
+  }
+  const aimX = Math.cos(caster.angle);
+  const aimY = Math.sin(caster.angle);
+  // saída no chão fica dentro do corpo (nunca dentro de parede)
+  let gFromX = caster.x + aimX * 10;
+  let gFromY = caster.y + aimY * 10;
+  // desenho sai da mão
+  let fromX = caster.x + aimX * 26;
+  let fromY = caster.y + PLAYER_HIT_Y * 0.6 + aimY * 20;
+  const used = new Set<string>();
+  const minDot = Math.cos(0.55);
+  for (let hop = 0; hop < CHAIN_MAX; hop++) {
+    let best: Tgt | null = null;
+    let bestScore = Infinity;
+    for (const c of cands) {
+      if (used.has(c.key)) continue;
+      if (hop === 0) {
+        // mira do mouse vai no tronco, a do analógico no pé: vale a melhor das duas
+        const dx = c.x - caster.x;
+        const dy = c.y - caster.y;
+        const d = Math.hypot(dx, dy);
+        if (d > CHAIN_RANGE || d < 1) continue;
+        const gdx = c.gx - caster.x;
+        const gdy = c.gy - caster.y;
+        const gd = Math.hypot(gdx, gdy) || 1;
+        const dot = Math.max((dx / d) * aimX + (dy / d) * aimY, (gdx / gd) * aimX + (gdy / gd) * aimY);
+        if (dot < minDot) continue;
+        const score = d * (1.6 - dot);
+        if (score < bestScore && losClear(sim, gFromX, gFromY, c.gx, c.gy)) {
+          bestScore = score;
+          best = c;
+        }
+      } else {
+        const d = Math.hypot(c.gx - gFromX, c.gy - gFromY);
+        if (d > CHAIN_HOP) continue;
+        if (d < bestScore && losClear(sim, gFromX, gFromY, c.gx, c.gy)) {
+          bestScore = d;
+          best = c;
+        }
+      }
+    }
+    if (!best) {
+      if (hop === 0) {
+        // errou: raio morre na primeira parede à frente (no chão; desenho na altura da mão)
+        let ex = gFromX;
+        let ey = gFromY;
+        const bits = doorBitsOf(sim);
+        for (let d = 12; d <= CHAIN_RANGE * 0.8; d += 12) {
+          const x = gFromX + aimX * d;
+          const y = gFromY + aimY * d;
+          if (hitsSolid(x, y, 2, bits)) break;
+          ex = x;
+          ey = y;
+        }
+        sim.events.push({
+          kind: "ability",
+          a: caster.id,
+          b: 10,
+          x: fromX,
+          y: fromY,
+          x2: ex,
+          y2: ey + PLAYER_HIT_Y * 0.6,
+          angle: caster.angle,
+          weaponId: CHAIN_SEGMENT_BASE,
+        });
+      }
+      break;
+    }
+    used.add(best.key);
+    const dmg = CHAIN_DMG[Math.min(hop, CHAIN_DMG.length - 1)]!;
+    sim.events.push({
+      kind: "ability",
+      a: caster.id,
+      b: 10,
+      x: fromX,
+      y: fromY,
+      x2: best.x,
+      y2: best.y,
+      angle: caster.angle,
+      weaponId: CHAIN_SEGMENT_BASE + hop,
+    });
+    if (best.player) {
+      const t = best.player;
+      // Escudo Estelar erguido de frente pro raio: bloqueia e a corrente acaba ali
+      if (t.shieldUntil > 0 && now < t.shieldUntil && isFrontalShieldHit(t.angle, t.x, t.y, gFromX, gFromY)) {
+        sim.events.push({ kind: "hit", a: caster.id, b: 253, x: best.x, y: best.y, weaponId: CHAIN_CAUSE });
+        break;
+      }
+      // totem do alvo segurou (evento de bloqueio já saiu): sem stun, corrente acaba
+      if (!damagePlayer(sim, t, dmg, caster.id, CHAIN_CAUSE)) break;
+      if (t.alive) t.stunnedUntil = Math.max(t.stunnedUntil ?? 0, now + CHAIN_STUN_MS);
+      sim.events.push({ kind: "hit", a: caster.id, b: t.id, x: best.x, y: best.y, weaponId: CHAIN_CAUSE });
+    } else if (best.enemyId != null) {
+      const died = damageEnemy(
+        sim.enemies,
+        sim.waves,
+        best.enemyId,
+        Math.round(dmg * 1.6),
+        makeEnemyCtx(sim),
+        { causeWeaponId: CHAIN_CAUSE },
+      );
+      if (died) {
+        const killer = sim.players.find((p) => p.id === caster.id);
+        if (killer) killer.kills++;
+      }
+      sim.events.push({ kind: "hit", a: caster.id, b: 254, x: best.x, y: best.y, weaponId: CHAIN_CAUSE });
+    }
+    fromX = best.x;
+    fromY = best.y;
+    gFromX = best.gx;
+    gFromY = best.gy;
+  }
 }
 
 /** Coleta alvos válidos pra Fenda (mesmo critério do Gigante + zumbis no Survival). */
@@ -1156,6 +1544,7 @@ export function startMatch(sim: GameSim) {
   sim.pendingRifts = [];
   sim.riftHoles = [];
   sim.spikeTotems = [];
+  sim.shieldThrows = [];
   sim.enemies = [];
   sim.waves = createWaveManager();
   resetEnemyIds();
@@ -1213,8 +1602,8 @@ function damagePlayer(
   killerId: number,
   weaponId = 0,
   cause: "weapon" | "explosion" | "fire" | "enemy" | "bomb" = "weapon",
-) {
-  if (!target.alive) return;
+): boolean {
+  if (!target.alive) return false;
   // Escudo em C do próprio totem — protege o conjurador no bolso
   if (
     cause !== "bomb" &&
@@ -1239,7 +1628,7 @@ function damagePlayer(
       y: target.y,
       weaponId: weaponId || 7,
     });
-    return;
+    return false;
   }
   target.hp -= amount;
   const causeCode =
@@ -1269,6 +1658,7 @@ function damagePlayer(
     });
     spawnWeaponDropsFromPlayer(sim, target);
   }
+  return true;
 }
 /** Dano periódico + expire dos Totens de Espinhos. */
 function tickSpikeTotems(sim: GameSim, dt: number) {
@@ -1897,6 +2287,7 @@ export function stepSim(sim: GameSim, dt = TICK_MS / 1000, hitTest?: HitTestFn |
     if (!consumed) keepB.push(b);
   }
   sim.bullets = keepB;
+  tickShieldThrows(sim, dt);
   const keepT: ThrowableState[] = [];
   for (const t of sim.throwables) {
     t.vx *= 0.985;
@@ -2345,7 +2736,20 @@ export function toSnapshot(sim: GameSim): Snapshot {
       dashUntil: p.dashUntil ?? 0,
     })),
     bullets: sim.bullets.map((b) => ({ ...b })),
-    throwables: sim.throwables.map((t) => ({ ...t })),
+    throwables: [
+      ...sim.throwables.map((t) => ({ ...t })),
+      ...(sim.shieldThrows ?? []).map((t) => ({
+        id: 60000 + (t.id % 5000),
+        kind: SHIELD_THROW_KIND,
+        owner: t.owner,
+        x: t.x,
+        y: t.y,
+        vx: t.vx,
+        vy: t.vy,
+        // fuse pro visual: 1 = voltando, 2 = voltando por dentro de parede (inofensivo)
+        fuse: t.ghost ? 2 : t.returning ? 1 : 0,
+      })),
+    ],
     events: [...sim.events],
     doorsBits: doorBitsOf(sim),
     enemies: toEnemyStates(sim.enemies),

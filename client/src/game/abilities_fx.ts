@@ -338,13 +338,17 @@ const frostWasFrozen = new Map<string, boolean>();
 export function syncFrostShatter(
   entities: readonly { key: string; x: number; y: number; frozen: boolean; scale?: number }[],
   onShatter?: (x: number, y: number) => void,
+  /** estilhaço alternativo (visual novo) por entidade; null = antigo */
+  pick?: (key: string) => ((x: number, y: number, scale: number) => void) | null,
 ) {
   const live = new Set<string>();
   for (const e of entities) {
     live.add(e.key);
     const was = frostWasFrozen.get(e.key) ?? false;
     if (was && !e.frozen) {
-      spawnFrostShatterFx(e.x, e.y, e.scale ?? 1);
+      const alt = pick?.(e.key);
+      if (alt) alt(e.x, e.y, e.scale ?? 1);
+      else spawnFrostShatterFx(e.x, e.y, e.scale ?? 1);
       onShatter?.(e.x, e.y);
     }
     frostWasFrozen.set(e.key, e.frozen);
@@ -459,13 +463,15 @@ export function processAbilityEvents(
   selfId: number,
   onWhoosh?: (x: number, y: number) => void,
   onSplash?: (x: number, y: number) => void,
+  /** true = visual novo (fx2) cuida das partículas; aqui só tremor/som */
+  skipFx = false,
 ) {
   for (const e of events) {
     if (e.kind !== "ability") continue;
     const abilityId = e.b;
     const angle = e.angle ?? 0;
     if (abilityId === 0) {
-      spawnWaterJetFx(e.x, e.y, angle);
+      if (!skipFx) spawnWaterJetFx(e.x, e.y, angle);
       if (e.a === selfId) {
         feel.bodyKick = Math.max(feel.bodyKick, 0.7);
         feel.shake = Math.max(feel.shake, 1.2);
@@ -504,7 +510,7 @@ export function processAbilityEvents(
     }
     // Fenda Sísmica — pisão telegrafa
     if (abilityId === 5) {
-      spawnRiftStompFx(e.x, e.y);
+      if (!skipFx) spawnRiftStompFx(e.x, e.y);
       if (e.a === selfId) {
         feel.bodyKick = Math.max(feel.bodyKick, 0.65);
         feel.shake = Math.max(feel.shake, 1.1);
@@ -515,7 +521,7 @@ export function processAbilityEvents(
     }
     // Bomba Devastadora — solta a bomba (FX leve; detonação vem do explode.b=1)
     if (abilityId === 6) {
-      spawnBombDropFx(e.x, e.y);
+      if (!skipFx) spawnBombDropFx(e.x, e.y);
       if (e.a === selfId) {
         feel.bodyKick = Math.max(feel.bodyKick, 0.35);
         feel.shake = Math.max(feel.shake, 0.45);
@@ -532,7 +538,7 @@ export function processAbilityEvents(
     }
     // Congelamento — cone de cristais
     if (abilityId === 8) {
-      spawnFrostCastFx(e.x, e.y, angle);
+      if (!skipFx) spawnFrostCastFx(e.x, e.y, angle);
       if (e.a === selfId) {
         feel.bodyKick = Math.max(feel.bodyKick, 0.45);
         feel.shake = Math.max(feel.shake, 0.55);
@@ -962,7 +968,9 @@ export function clearAbilityFx() {
  * Fenda Sísmica — rachadura em ziguezague + buraco (capricho)
  * ═══════════════════════════════════════════════════════════ */
 
-interface RiftFx {
+export interface RiftFx {
+  /** visual novo (fx2 desenha; aqui só a lógica do buraco/queda) */
+  v2?: boolean;
   x0: number;
   y0: number;
   x1: number;
@@ -978,7 +986,8 @@ interface RiftFx {
   collapsed: boolean;
 }
 
-interface RiftScar {
+export interface RiftScar {
+  v2?: boolean;
   pts: { x: number; y: number }[];
   x1: number;
   y1: number;
@@ -988,6 +997,14 @@ interface RiftScar {
 
 const rifts: RiftFx[] = [];
 const riftScars: RiftScar[] = [];
+
+/** Estado das fendas para o visual novo (fx2) — só leitura. */
+export function riftsForFx2(): readonly RiftFx[] {
+  return rifts;
+}
+export function riftScarsForFx2(): readonly RiftScar[] {
+  return riftScars;
+}
 const MAX_RIFTS = 8;
 const MAX_SCARS = 24;
 
@@ -1056,6 +1073,7 @@ export function spawnRiftFx(
   e: TickEvent,
   feel: FeelState,
   onCrack?: (x: number, y: number) => void,
+  v2 = false,
 ) {
   const x0 = e.x;
   const y0 = e.y;
@@ -1064,6 +1082,7 @@ export function spawnRiftFx(
   const travelMs = Math.max(120, Math.min(800, e.weaponId ?? 400));
   const seed = ((e.a * 131 + Math.round(x0) * 17 + Math.round(y0) * 31) >>> 0) || 1;
   const fx: RiftFx = {
+    v2,
     x0,
     y0,
     x1,
@@ -1310,7 +1329,7 @@ export function tickRiftFx(dtMs: number, feel: FeelState) {
     // tremor crescente enquanto a rachadura corre
     if (travelU < 1) {
       feel.shake = Math.max(feel.shake, 0.7 + travelU * 1.6);
-      if (Math.floor(fx.age / 40) !== Math.floor((fx.age - dtMs) / 40)) {
+      if (!fx.v2 && Math.floor(fx.age / 40) !== Math.floor((fx.age - dtMs) / 40)) {
         emitRiftDebris(fx, travelU);
       }
     }
@@ -1319,8 +1338,8 @@ export function tickRiftFx(dtMs: number, feel: FeelState) {
       fx.holeOpen = true;
       fx.holeT = 0;
       feel.shake = Math.max(feel.shake, 2.8);
-      shocks.push({ x: fx.x1, y: fx.y1, t: 420, max: 420 });
-      for (let k = 0; k < 28; k++) {
+      if (!fx.v2) shocks.push({ x: fx.x1, y: fx.y1, t: 420, max: 420 });
+      for (let k = 0; k < (fx.v2 ? 0 : 28); k++) {
         const ang = Math.random() * Math.PI * 2;
         const spd = 80 + Math.random() * 220;
         const life = 320 + Math.random() * 280;
@@ -1342,6 +1361,7 @@ export function tickRiftFx(dtMs: number, feel: FeelState) {
       }
       // cicatriz permanente no chão
       riftScars.push({
+        v2: fx.v2,
         pts: fx.pts.map((p) => ({ ...p })),
         x1: fx.x1,
         y1: fx.y1,
@@ -1392,6 +1412,7 @@ function strokeZigzag(
 
 function drawRiftScars(ctx: CanvasRenderingContext2D) {
   for (const s of riftScars) {
+    if (s.v2) continue;
     const a = 0.55 * Math.min(1, s.life / 8000);
     ctx.strokeStyle = `rgba(18, 12, 8, ${a})`;
     ctx.lineWidth = 5;
@@ -1412,6 +1433,7 @@ function drawRiftScars(ctx: CanvasRenderingContext2D) {
 
 function drawRiftsGround(ctx: CanvasRenderingContext2D) {
   for (const fx of rifts) {
+    if (fx.v2) continue;
     const travelU = Math.min(1, fx.age / fx.travelMs);
     const pulse = 0.55 + 0.45 * Math.sin(fx.age * 0.03);
 
@@ -1470,10 +1492,11 @@ export function processRiftEvents(
   feel: FeelState,
   onCrack?: (x: number, y: number) => void,
   onSlam?: (x: number, y: number) => void,
+  v2 = false,
 ) {
   for (const e of events) {
     if (e.kind !== "rift") continue;
-    spawnRiftFx(e, feel, onCrack);
+    spawnRiftFx(e, feel, onCrack, v2);
     // slam agendado no tick quando o buraco abre — marca via callback leve
     void onSlam;
   }

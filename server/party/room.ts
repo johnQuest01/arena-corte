@@ -5,10 +5,13 @@
 import { Server, type Connection, routePartykitRequest } from "partyserver";
 import { TICK_MS, ONLINE_ROOM_CAP } from "../../shared/constants";
 import { LagHistory } from "../../shared/laghistory";
+import { decodeLook, encodeLook } from "../../shared/cosmetics";
 import {
   MSG,
   decodeHello,
+  decodeHelloLook,
   decodeInput,
+  decodeLookMsg,
   decodePingTime,
   encodeCtrl,
   encodeLobby,
@@ -31,6 +34,14 @@ interface ConnMeta {
   playerId: number;
   name: string;
   ping: number;
+  /** visual (bytes validados); null = automático */
+  look: number[] | null;
+}
+
+/** Valida bytes de visual vindos do cliente. */
+function cleanLook(bytes: number[] | null): number[] | null {
+  const look = decodeLook(bytes);
+  return look ? encodeLook(look) : null;
 }
 
 function roomCodeFromId(id: string): string {
@@ -96,7 +107,7 @@ export class GameRoom extends Server {
         conn.close(4000, "sala cheia");
         return;
       }
-      this.meta.set(conn.id, { playerId: p.id, name, ping: 0 });
+      this.meta.set(conn.id, { playerId: p.id, name, ping: 0, look: cleanLook(decodeHelloLook(buf)) });
       const code = roomCodeFromId(this.name);
       const isHost = this.meta.size === 1;
       conn.send(
@@ -119,6 +130,15 @@ export class GameRoom extends Server {
     if (type === MSG.PING) {
       const t = decodePingTime(buf);
       conn.send(encodePong(t));
+      return;
+    }
+
+    if (type === MSG.LOOK) {
+      const look = cleanLook(decodeLookMsg(buf));
+      if (look) {
+        m.look = look;
+        this.broadcastLobby();
+      }
       return;
     }
 
@@ -150,6 +170,7 @@ export class GameRoom extends Server {
       name: m.name,
       ready: true,
       ping: m.ping,
+      ...(m.look ? { look: m.look } : {}),
     }));
     const hostId = players[0]?.id ?? 0;
     this.broadcast(

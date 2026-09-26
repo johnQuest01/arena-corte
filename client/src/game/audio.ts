@@ -227,6 +227,83 @@ function synthIceShatter() {
   src.start();
 }
 
+/** Choque elétrico (Raio em Cadeia) — crepitar + zumbido. */
+function synthZap(vol: number) {
+  const ac = ensureCtx();
+  const len = Math.floor(ac.sampleRate * 0.28);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  let hold = 0;
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    const env = Math.min(1, t * 60) * Math.exp(-t * 9);
+    if (i % 24 === 0) hold = Math.random() * 2 - 1;
+    const buzz = Math.sign(Math.sin(2 * Math.PI * (120 + Math.random() * 30) * t)) * 0.25;
+    data[i] = Math.max(-1, Math.min(1, (hold * 0.7 + buzz) * env));
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = "highpass";
+  filter.frequency.value = 350;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : 0.42 * vol;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
+/** Metal do escudo (ricochete / pegar de volta). */
+function synthClang(vol: number) {
+  const ac = ensureCtx();
+  const len = Math.floor(ac.sampleRate * 0.45);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    const env = Math.exp(-t * 7);
+    const ring =
+      Math.sin(2 * Math.PI * 1320 * t) * 0.4 +
+      Math.sin(2 * Math.PI * 2210 * t) * 0.25 +
+      Math.sin(2 * Math.PI * 3470 * t) * 0.12;
+    const hit = (Math.random() * 2 - 1) * Math.exp(-t * 60) * 0.6;
+    data[i] = Math.max(-1, Math.min(1, (ring + hit) * env));
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : 0.34 * vol;
+  src.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
+/** Teleporte (Passo Sombrio) — sucção grave invertida. */
+function synthBlink(vol: number) {
+  const ac = ensureCtx();
+  const len = Math.floor(ac.sampleRate * 0.3);
+  const buf = ac.createBuffer(1, len, ac.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) {
+    const t = i / ac.sampleRate;
+    const env = Math.pow(t / 0.3, 1.6) * (1 - t / 0.3) * 4;
+    const tone = Math.sin(2 * Math.PI * (160 + t * 900) * t) * 0.5;
+    data[i] = Math.max(-1, Math.min(1, (tone + (Math.random() * 2 - 1) * 0.3) * env));
+  }
+  const src = ac.createBufferSource();
+  src.buffer = buf;
+  const filter = ac.createBiquadFilter();
+  filter.type = "lowpass";
+  filter.frequency.value = 2200;
+  const gain = ac.createGain();
+  gain.gain.value = muted ? 0 : 0.5 * vol;
+  src.connect(filter);
+  filter.connect(gain);
+  gain.connect(ac.destination);
+  src.start();
+}
+
 /** Fallback grave se giant_*.wav/ogg faltar — ainda posicional via vol externo. */
 function synthGiant(kind: "step" | "roar" | "roar_short" | "hit", volScale: number) {
   const ac = ensureCtx();
@@ -280,6 +357,17 @@ export function playSfx(
     buf = buffers.get("explosion");
   }
   if (!buf) {
+    // sintetizados com volume por distância
+    if (name === "zap" || name === "clang" || name === "blink") {
+      let v = master * (opts?.volumeMul ?? 1);
+      if (listener && x != null && y != null) {
+        v *= Math.max(0.05, 1 - Math.hypot(x - listener.x, y - listener.y) / AUDIBLE);
+      }
+      if (name === "zap") synthZap(v);
+      else if (name === "clang") synthClang(v);
+      else synthBlink(v);
+      return;
+    }
     if (name === "empty_click" || name === "pickup" || name === "reload") synthClick();
     if (name === "water_whoosh" || name === "boost" || name === "earth_crack") synthWhoosh();
     if (name === "earth_slam" || name === "collapse") synthGiant("hit", 1.1);

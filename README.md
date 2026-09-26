@@ -28,15 +28,78 @@ Sprites/base: Kenney.nl · paleta: Lospec · efeitos (muzzle, trail, bob, sombra
 ## Estrutura
 
 ```
-/shared          protocol.ts, sim.ts, laghistory.ts, constants.ts
+/shared          protocol.ts, sim.ts, laghistory.ts, constants.ts, cosmetics.ts
 /server
   party/room.ts  Durable Object (tick 30 Hz)
   local-host.ts  host LAN
   wrangler.toml
 /client
   src/net/       Transport + modeSelector + prediction/interp/reconcile
-  src/game/      loop, render, input
-  src/ui/        lobby + HUD
+  src/game/      loop, render, input, world (mapa), character (boneco),
+                 capes (pano), shield (escudo), powers_fx
+  src/ui/        lobby + HUD + Wardrobe (guarda-roupa)
+```
+
+---
+
+## Visual (tudo desenhado por código)
+
+- **Mapa** (`client/src/game/world.ts`): ruas com faixas e zebras, meio-fio, calçadas, terrenos, praças, pisos internos, paredes, carros, caixas, barris e postes. É pintado em blocos de 256 px com cache LRU (≈30 MB no Full, ≈10 MB no Leve). Por frame só copia os blocos visíveis. Bloco novo tem orçamento de ~6 ms por frame (renascer longe não trava): o que falta aparece por alguns frames como uma prévia borrada do mapa.
+- **Proporção**: boneco com ~76 px de altura (`CHAR_SCALE` 0.95), carros de 4×2 tiles estacionados numa faixa, casas de 8–11 tiles. A câmera aproxima um pouco (zoom base 1.12, 1.25 no celular) pra compensar o boneco menor.
+- **Boneco** (`character.ts`): 8 direções, idle/caminhada, com camadas de pele, cabelo, roupa, armadura, calçado e capacete. O boneco antigo (sprite) continua como corpo **"Rascunho"**, com as capas, as botas e o escudo antigos.
+- **Capas** (`capes.ts`): física de pano (verlet, 7 pontos) em todas as capas, cosméticas e de habilidade.
+  - O desenho é de tecido: dobras que ondulam com o vento, brilho de seda, gola com forro e barras bordadas (arminho na Real, pedras na Dourada e na Esmeralda).
+  - A **Sombria** é a capa das trevas: forro carmesim, símbolo rubro nas costas e uma barra que se desfaz em sombra. No visual Novo de poderes ela solta fumaça das trevas, deixa uma aura com garras de sombra no chão e explode em sombra quando o dono lança um poder.
+  - As outras capas também soltam efeitos próprios: brilhos dourados, faíscas verdes, rastro de arco-íris e poeira na esfarrapada.
+  - A **Capa de Recuo** (poder) ganhou costuras de energia que acendem no dash e clones-silhueta pelo caminho. Em quem veste a Sombria, ela vira a versão das trevas: preta com costuras rubras e fumaça escura.
+  - As capas "Rascunho" continuam com o desenho antigo.
+- **Escudo Estelar** (`shield.ts`): inspirado no escudo do Capitão América. Fica nas costas quando equipado e é erguido na frente quando ativo.
+- **Armas** (`guns.ts`): as 7 armas desenhadas em código (pistola, M4, M16, AK, escopeta, SMG e sniper). Os sprites antigos continuam como estilo **"Rascunho"**. Só o desenho muda: dano, cadência, pente e alcance são os mesmos.
+- **Poderes** (`fx2.ts` + `fx2_core.ts`, Gigante em `giant2.ts`): visual novo dos 12 poderes, com partículas com altura e gravidade, brilho aditivo com sprites em cache, anéis de choque e marcas no chão:
+  - rajada d'água com espuma e poças;
+  - golem de pedra com veias de magma;
+  - chamas nos calcanhares (Botas);
+  - rastro rosa (Capa);
+  - barreira hexagonal (Escudo Estelar);
+  - fissura de magma com buraco de lava (Fenda);
+  - bomba com zona de perigo e explosão com fumaça e cratera;
+  - muro de cristais esmeralda (Espinhos);
+  - sopro gelado com geada e prisma de gelo;
+  - disco com rastro de luz (Bumerangue);
+  - raios com ramificações;
+  - silhueta que se desfaz com runas (Passo Sombrio).
+
+  O visual antigo continua como estilo **"Rascunho"** (`abilities_fx.ts` / `powers_fx.ts`). Quem conjura escolhe: todo mundo vê o poder no estilo do dono (`fxstyle.ts`). Nada muda na simulação. No perfil Leve, o orçamento de partículas cai para ~40%.
+
+## Guarda-roupa (cosméticos)
+
+Botão **Guarda-roupa** no menu e na sala. Tem skins completas (Recruta, Lorde Sombrio — inspirado no Darth Vader —, Cavaleiro, Soldado, Neon, Rei, Andarilho, Herói e Rascunho) ou item por item: roupa, armadura, calçado, capa, capacete, cabelo e pele. As abas **Armas** e **Poderes** escolhem entre o desenho novo e o "Rascunho".
+
+É **só visual**. O visual vai 1× no `HELLO` (11 bytes; o formato antigo de 9 bytes ainda é aceito) e numa mensagem `LOOK` quando o jogador troca. O host valida e repassa no `LOBBY`. Não há nenhum byte extra por tick.
+
+## Poderes (Q usa · T troca no treino · drops no Survival)
+
+| id | Poder | Resumo |
+|----|-------|--------|
+| 0 | Jato de Água | empurra e silencia |
+| 1 | Invocar Gigante | persegue o alvo na mira |
+| 2 | Botas de Impulso | corrida rápida |
+| 3 | Capa de Recuo | dash com 2 cargas + desvio automático |
+| 4 | Escudo Estelar | bloqueia tiros e o raio de frente (e rebate o bumerangue) |
+| 5 | Fenda Sísmica | rachadura que engole |
+| 6 | Bomba Devastadora | explosão enorme com pavio |
+| 7 | Escudo de Espinhos | C protetor + espinhos |
+| 8 | Congelamento | bloco de gelo em cone |
+| 9 | **Escudo Bumerangue** | arremessa o escudo: ricocheteia, fere cada alvo 1× e volta (na volta atravessa parede, sem ferir) |
+| 10 | **Raio em Cadeia** | acerta na mira e salta pra até 3 alvos (mini-stun) |
+| 11 | **Passo Sombrio** | teleporte curto na mira (não atravessa parede; desliza rente a ela) |
+
+## Testes da simulação
+
+```bash
+npx tsx scripts/test-powers.mjs      # poderes 9–11
+npx tsx scripts/test-cosmetics.mjs   # visual no HELLO/LOOK/LOBBY
+npx tsx scripts/test-fire.mjs        # (e os test-giant-*.mjs)
 ```
 
 ---

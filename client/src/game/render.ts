@@ -1,7 +1,7 @@
 /**
  * render.ts — mapa deserto tilemap, personagens estilo Gungeon (em pé), arma, feel.
  */
-import { ARENA_H, ARENA_W, CAM_VIEW_H, CAM_VIEW_W } from "../../../shared/constants";
+import { ARENA_H, ARENA_W, CAM_VIEW_H, CAM_VIEW_W, PLAYER_COLORS } from "../../../shared/constants";
 import {
   LOADOUTS,
   MAX_STAMINA,
@@ -54,6 +54,27 @@ import {
   getThrowImg,
   getTileImg,
 } from "./art";
+import { drawRoofLayer, drawWorld, invalidateWorld } from "./world";
+import { BODY, BODY_K, CHAR_SCALE, LEGACY_K, capeAnchor, drawBody, facingOf, skinColorOf } from "./character";
+import { drawGunArt, drawGunHands, drawGunIcon, gunGeom } from "./guns";
+import { drawCape, RECOIL_CAPE2_DEF, RECOIL_CAPE_DEF, RECOIL_DARK_DEF, stepCape } from "./capes";
+import { drawShieldSparks, drawStarShield } from "./shield";
+import { drawPowersFx, drawThrownShield } from "./powers_fx";
+import {
+  drawBomb2,
+  drawDarkAura2,
+  drawFx2Air,
+  drawFx2Ground,
+  drawIceBlock2,
+  drawShieldBarrier2,
+  drawThrownShield2,
+  emitCapeFx2,
+} from "./fx2";
+import { setFx2View } from "./fx2_core";
+import { drawGiant2, GIANT2_TOP } from "./giant2";
+import { frostIsOld, fxOld, giantIsOld } from "./fxstyle";
+import { SHIELD_THROW_KIND } from "../../../shared/abilities";
+import { CAPES, autoLookFor, type Look } from "../../../shared/cosmetics";
 
 export const LOSPEC = {
   sand: "#c8a35a",
@@ -195,6 +216,10 @@ export interface RenderView {
   drawAbilityWater: (ctx: CanvasRenderingContext2D) => void;
   /** serverTime do snapshot (para stun UI) */
   serverTime: number;
+  /** visual (cosméticos) por jogador */
+  lookFor?: (id: number) => Look;
+  /** nome do lobby (tag acima dos outros jogadores) */
+  nameFor?: (id: number) => string | undefined;
 }
 
 /**
@@ -218,29 +243,9 @@ export function computeCamera(
 
 const LIGHT_DIR = { x: 0.35, y: 0.55 };
 
-/** Chão estático pré-renderizado (não redesenha tile a tile por frame). */
-let groundCache: HTMLCanvasElement | null = null;
-/** Escala do cache (0.5 no mobile = bem menos VRAM/RAM). */
-let groundCacheScale = 1;
-
+/** Chão/props são pintados por chunks em world.ts — força repintura (troca Leve/Full). */
 export function invalidateGroundCache() {
-  groundCache = null;
-}
-
-function ensureGroundCache() {
-  if (groundCache) return groundCache;
-  // Só o perfil "Leve" (FX_MOBILE) usa meia resolução — Full = nítido
-  const scale = FX_MOBILE ? 0.5 : 1;
-  groundCacheScale = scale;
-  const c = document.createElement("canvas");
-  c.width = Math.max(1, Math.floor(ARENA_W * scale));
-  c.height = Math.max(1, Math.floor(ARENA_H * scale));
-  const g = c.getContext("2d")!;
-  g.imageSmoothingEnabled = false;
-  if (scale !== 1) g.scale(scale, scale);
-  paintGround(g);
-  groundCache = c;
-  return c;
+  invalidateWorld();
 }
 
 /** Layout tela↔câmera: encaixa a janela (contain), sem esticar o campo. */
@@ -281,212 +286,6 @@ export function resizeCanvas(canvas: HTMLCanvasElement) {
   }
 }
 
-function tileColor(t: number, shade: number): string {
-  const base =
-    t === T.DIRT
-      ? LOSPEC.dirt
-      : t === T.WOOD
-        ? LOSPEC.wood
-        : t === T.CONCRETE
-          ? LOSPEC.concrete
-          : t === T.ROAD
-            ? shade
-              ? LOSPEC.roadDark
-              : LOSPEC.road
-            : t === T.ROAD_LINE
-              ? LOSPEC.roadLine
-              : t === T.SIDEWALK
-                ? shade
-                  ? LOSPEC.sidewalkDark
-                  : LOSPEC.sidewalk
-                : t === T.GRASS
-                  ? shade
-                    ? LOSPEC.grassDark
-                    : LOSPEC.grass
-                  : t === T.GRASS_TALL
-                    ? LOSPEC.grassTall
-                    : t === T.WALL
-                      ? LOSPEC.wall
-                      : t === T.METAL
-                        ? LOSPEC.metal
-                        : t === T.CRATE
-                          ? "#8a7040"
-                          : t === T.BARREL
-                            ? "#4a5a30"
-                            : t === T.CAR
-                              ? "#3a4048"
-                              : shade
-                                ? LOSPEC.sandDark
-                                : LOSPEC.sand;
-  return base;
-}
-
-function paintGround(ctx: CanvasRenderingContext2D) {
-  for (let ty = 0; ty < GROUND.length; ty++) {
-    for (let tx = 0; tx < GROUND[0]!.length; tx++) {
-      const t = GROUND[ty]![tx]!;
-      const shade = (tx * 3 + ty * 5) % 2;
-      const x = tx * TILE;
-      const y = ty * TILE;
-      const h = (tx * 17 + ty * 31) >>> 0;
-      let img: HTMLImageElement | null = null;
-      if (t === T.SAND || t === T.DIRT) img = getTileImg("sand", tx, ty);
-      else if (t === T.WOOD) img = getTileImg("floorWood", tx, ty);
-      else if (t === T.CONCRETE) img = getTileImg("floorConcrete", tx, ty);
-
-      if (img) {
-        ctx.drawImage(img, x, y, TILE, TILE);
-      } else {
-        ctx.fillStyle = tileColor(t, shade);
-        ctx.fillRect(x, y, TILE, TILE);
-
-        if (t === T.ROAD || t === T.ROAD_LINE) {
-          // asfalto rachado + poeira
-          ctx.fillStyle = "rgba(0,0,0,0.22)";
-          if (h % 5 === 0) {
-            ctx.fillRect(x + (h % 18), y + ((h >> 3) % 20), 8 + (h % 6), 1);
-            ctx.fillRect(x + ((h >> 2) % 22), y + 6 + (h % 14), 1, 7);
-          }
-          if (t === T.ROAD_LINE) {
-            // faixa desbotada
-            ctx.fillStyle = "rgba(184,160,90,0.55)";
-            ctx.fillRect(x + 12, y + 2, 8, TILE - 4);
-            ctx.fillStyle = "rgba(40,36,28,0.35)";
-            ctx.fillRect(x + 13, y + 8, 6, 3);
-          } else {
-            ctx.fillStyle = "rgba(90,90,80,0.12)";
-            ctx.fillRect(x + 2, y + 2, TILE - 4, TILE - 4);
-          }
-        } else if (t === T.SIDEWALK) {
-          // juntas da calçada
-          ctx.strokeStyle = "rgba(30,28,24,0.35)";
-          ctx.lineWidth = 1;
-          ctx.strokeRect(x + 0.5, y + 0.5, TILE - 1, TILE - 1);
-          ctx.fillStyle = "rgba(0,0,0,0.12)";
-          if (h % 7 === 0) ctx.fillRect(x + 4, y + 10, 6, 2);
-          if (h % 11 === 0) ctx.fillRect(x + 18, y + 20, 5, 2);
-        } else if (t === T.GRASS || t === T.GRASS_TALL) {
-          // tufos de mato (2–3 tons)
-          const tufts = t === T.GRASS_TALL ? 5 : 3;
-          for (let i = 0; i < tufts; i++) {
-            const px = x + 3 + ((h + i * 13) % 24);
-            const py = y + 4 + ((h + i * 7) % 22);
-            ctx.fillStyle =
-              i % 3 === 0
-                ? LOSPEC.grassDark
-                : i % 3 === 1
-                  ? LOSPEC.grass
-                  : LOSPEC.grassTall;
-            const hh = t === T.GRASS_TALL ? 5 + (i % 3) : 3 + (i % 2);
-            ctx.fillRect(px, py, 2, hh);
-          }
-        } else if (t === T.SAND || t === T.DIRT) {
-          ctx.fillStyle = "rgba(0,0,0,0.06)";
-          ctx.fillRect(x + 4, y + 8, 3, 2);
-          ctx.fillRect(x + 18, y + 20, 4, 2);
-        }
-        if ((tx * 17 + ty * 31) % 8 === 0 && t !== T.ROAD && t !== T.ROAD_LINE) {
-          ctx.fillStyle = "rgba(60,40,20,0.18)";
-          ctx.fillRect(x + ((tx * 3) % 20), y + ((ty * 5) % 22), 3, 2);
-          ctx.fillRect(x + 10, y + 14, 5, 1);
-        }
-      }
-    }
-  }
-}
-
-function drawGround(
-  ctx: CanvasRenderingContext2D,
-  camX: number,
-  camY: number,
-  viewW: number,
-  viewH: number,
-) {
-  const cache = ensureGroundCache();
-  const s = groundCacheScale;
-  // Só a janela da câmera — evita blit de 5120×3840 no mobile
-  const pad = 2;
-  const wx = Math.max(0, camX - pad);
-  const wy = Math.max(0, camY - pad);
-  const ww = Math.min(ARENA_W - wx, viewW + pad * 2);
-  const wh = Math.min(ARENA_H - wy, viewH + pad * 2);
-  if (ww <= 0 || wh <= 0) return;
-  const sx = wx * s;
-  const sy = wy * s;
-  const sw = ww * s;
-  const sh = wh * s;
-  ctx.imageSmoothingEnabled = s < 1;
-  ctx.drawImage(cache, sx, sy, sw, sh, wx, wy, ww, wh);
-  ctx.imageSmoothingEnabled = false;
-}
-
-function drawSolids(
-  ctx: CanvasRenderingContext2D,
-  camX: number,
-  camY: number,
-  viewW: number,
-  viewH: number,
-) {
-  const tx0 = Math.max(0, Math.floor(camX / TILE) - 1);
-  const ty0 = Math.max(0, Math.floor(camY / TILE) - 1);
-  const tx1 = Math.min(SOLID[0]!.length, Math.ceil((camX + viewW) / TILE) + 1);
-  const ty1 = Math.min(SOLID.length, Math.ceil((camY + viewH) / TILE) + 1);
-  for (let ty = ty0; ty < ty1; ty++) {
-    for (let tx = tx0; tx < tx1; tx++) {
-      const t = SOLID[ty]![tx]!;
-      if (t < 10) continue;
-      const x = tx * TILE;
-      const y = ty * TILE;
-      ctx.fillStyle = LOSPEC.shadow;
-      ctx.fillRect(x + LIGHT_DIR.x * 6, y + LIGHT_DIR.y * 6, TILE, TILE);
-
-      if (t === T.CRATE) {
-        const prop = getPropImg("crate");
-        if (prop) {
-          ctx.drawImage(prop, x, y, TILE, TILE);
-          continue;
-        }
-      } else if (t === T.BARREL) {
-        const prop = getPropImg("barrel");
-        if (prop) {
-          ctx.drawImage(prop, x, y, TILE, TILE);
-          continue;
-        }
-      } else if (t === T.CAR) {
-        const prop = getPropImg("car");
-        if (prop) {
-          // carcaça pode ser 96×48 — encaixa no tile atual (vizinho também CAR)
-          ctx.drawImage(prop, x, y, TILE, TILE);
-          continue;
-        }
-      } else if (t === T.WALL || t === T.METAL) {
-        const wall = getTileImg("wall", tx, ty);
-        if (wall) {
-          ctx.drawImage(wall, x, y, TILE, TILE);
-          continue;
-        }
-      }
-
-      ctx.fillStyle = tileColor(t, 0);
-      ctx.fillRect(x, y, TILE, TILE);
-      ctx.fillStyle = "rgba(255,255,255,0.08)";
-      ctx.fillRect(x, y, TILE, 4);
-      if (t === T.CRATE) {
-        ctx.strokeStyle = "rgba(0,0,0,0.35)";
-        ctx.strokeRect(x + 4, y + 4, TILE - 8, TILE - 8);
-      } else if (t === T.CAR) {
-        ctx.fillStyle = "#1a2228";
-        ctx.fillRect(x + 4, y + 8, TILE - 8, TILE - 14);
-      } else if (t === T.BARREL) {
-        ctx.fillStyle = "#2a3a20";
-        ctx.beginPath();
-        ctx.ellipse(x + 16, y + 16, 10, 12, 0, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-  }
-}
-
 function drawDoors(
   ctx: CanvasRenderingContext2D,
   doorsBits: number,
@@ -502,20 +301,24 @@ function drawDoors(
     ctx.translate(hingeX, hingeY);
     const ang = openT * (Math.PI / 2) * (d.orient === "h" ? -1 : 1);
     ctx.rotate(ang);
+    if (d.orient === "v") ctx.rotate(Math.PI / 2);
     if (doorImg) {
-      if (d.orient === "h") ctx.drawImage(doorImg, 0, -6, TILE, 12);
-      else {
-        ctx.save();
-        ctx.rotate(Math.PI / 2);
-        ctx.drawImage(doorImg, 0, -6, TILE, 12);
-        ctx.restore();
-      }
+      ctx.drawImage(doorImg, 0, -6, TILE, 12);
     } else {
-      ctx.fillStyle = "#5a3a28";
-      if (d.orient === "h") ctx.fillRect(0, -6, TILE, 12);
-      else ctx.fillRect(-6, 0, 12, TILE);
-      ctx.fillStyle = "#c8a35a";
-      ctx.fillRect(d.orient === "h" ? TILE - 6 : -2, d.orient === "h" ? -2 : TILE - 6, 4, 4);
+      // folha de madeira: sombra, tábuas, moldura e maçaneta
+      ctx.fillStyle = "rgba(10,8,12,0.35)";
+      ctx.fillRect(2, -2, TILE, 9);
+      ctx.fillStyle = "#3e2618";
+      ctx.fillRect(0, -5, TILE, 10);
+      ctx.fillStyle = "#7a4e2e";
+      ctx.fillRect(1, -4, TILE - 2, 8);
+      ctx.fillStyle = "#8e5c36";
+      ctx.fillRect(1, -4, TILE - 2, 2);
+      ctx.fillStyle = "rgba(0,0,0,0.25)";
+      ctx.fillRect(10, -4, 1, 8);
+      ctx.fillRect(21, -4, 1, 8);
+      ctx.fillStyle = "#d8b25a";
+      ctx.fillRect(TILE - 6, -1.5, 3, 3);
     }
     ctx.restore();
   }
@@ -525,26 +328,24 @@ function drawDoors(
  * Arma em silhueta lateral (Gungeon): gira pela mira contínua.
  * Pivô na mão; tip = muzzleForward - HAND (casa com muzzlePoint do shared).
  */
-function drawGripHands(ctx: CanvasRenderingContext2D, gunLen: number, skin = "#d4a574") {
-  ctx.fillStyle = skin;
-  // mão traseira (punho) — colada na origem/ombro com GUN_HAND_VISUAL
-  ctx.beginPath();
-  ctx.ellipse(1, 2.5, 5, 4, 0.15, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(0,0,0,0.25)";
-  ctx.beginPath();
-  ctx.ellipse(1, 3.5, 4, 2.5, 0.15, 0, Math.PI * 2);
-  ctx.fill();
-  // mão dianteira (guarda-mão) — ~55% do comprimento da arma
-  const fx = gunLen * 0.55;
-  ctx.fillStyle = skin;
-  ctx.beginPath();
-  ctx.ellipse(fx, 4, 5.5, 4.2, -0.1, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "rgba(0,0,0,0.22)";
-  ctx.beginPath();
-  ctx.ellipse(fx, 5, 4.5, 2.8, -0.1, 0, Math.PI * 2);
-  ctx.fill();
+function drawGripHands(ctx: CanvasRenderingContext2D, gunLen: number, skin = "#d4a574", weaponId = 1) {
+  // mão de apoio: pistola quase junto do punho; SMG no meio; fuzis no guarda-mão
+  const frontK = weaponId === 0 ? 0.2 : weaponId === 5 ? 0.42 : 0.55;
+  const hand = (x: number, y: number, rx: number, ry: number, rot: number) => {
+    ctx.beginPath();
+    ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2);
+    ctx.fillStyle = skin;
+    ctx.fill();
+    ctx.strokeStyle = "#1a1411";
+    ctx.lineWidth = 1.4;
+    ctx.stroke();
+    ctx.fillStyle = "rgba(0,0,0,0.2)";
+    ctx.beginPath();
+    ctx.ellipse(x, y + ry * 0.35, rx * 0.8, ry * 0.5, rot, 0, Math.PI * 2);
+    ctx.fill();
+  };
+  hand(1, 2.5, 5, 4, 0.15);
+  hand(gunLen * frontK, 4, 5.2, 4, -0.1);
 }
 
 function drawWeaponLayer(
@@ -557,6 +358,11 @@ function drawWeaponLayer(
   gripHands = true,
   /** 0 = idle; 0..1 durante reload (client-side) */
   reloadProgress = 0,
+  /** cor da pele (mãos) */
+  skin = "#d4a574",
+  /** 0 = arma desenhada em código, 1 = sprite antigo ("Rascunho") */
+  gunStyle = 0,
+  tMs = 0,
 ) {
   const w = weaponOf(weaponId);
   const HAND = GUN_HAND_VISUAL;
@@ -579,7 +385,7 @@ function drawWeaponLayer(
   if (facingLeft) ctx.scale(1, -1);
   ctx.translate(-gunKick * 5, reloadDrop);
 
-  const gunImg = getGunImg(weaponId);
+  const gunImg = gunStyle === 1 ? getGunImg(weaponId) : null;
   const VISUAL_SCALE = GUN_VISUAL_SCALE;
   const grip = (w.gripInset ?? 4) * VISUAL_SCALE;
   const visualLen = w.length * VISUAL_SCALE;
@@ -594,12 +400,64 @@ function drawWeaponLayer(
     ctx.globalAlpha *= a;
     ctx.translate(ox, oy);
     ctx.rotate(rot);
-    ctx.fillStyle = "#2a2418";
+    ctx.fillStyle = "#26282c";
     ctx.fillRect(-magW / 2, 0, magW, magH);
-    ctx.fillStyle = "#5a4a28";
-    ctx.fillRect(-magW / 2 + 1, 1, magW - 2, 3);
+    ctx.strokeStyle = "#15110f";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-magW / 2, 0, magW, magH);
+    ctx.fillStyle = "#c9a44a";
+    ctx.fillRect(-magW / 2 + 0.8, 0.6, magW - 1.6, 1.4);
     ctx.restore();
   };
+
+  if (gunStyle !== 1) {
+    // arma em código: pente sai do desenho durante a recarga (o que cai/entra é o drawMag)
+    const magOut = reloading && rp > 0.01 && rp < 0.97;
+    drawGunArt(ctx, weaponId, { magOut, t: tMs });
+    if (gripHands) drawGunHands(ctx, weaponId, skin);
+    if (reloading) {
+      const G = gunGeom(weaponId);
+      const mx = G.x0 + G.len * (weaponId === 5 ? 0.13 : weaponId === 0 ? 0.2 : 0.33);
+      const my = weaponId === 5 ? G.tipY + 11 : G.tipY + 4;
+      if (rp < 0.18) {
+        const t = rp / 0.18;
+        drawMag(mx, my + t * t * 30, t * 1.4, 1 - t * 0.35);
+      } else if (rp > 0.78) {
+        const t = (rp - 0.78) / 0.22;
+        drawMag(mx, my + (1 - t) * 18, (1 - t) * -0.35, 0.55 + t * 0.45);
+      }
+    }
+    if (muzzleFlash) {
+      const G = gunGeom(weaponId);
+      const mx = G.tipX;
+      const my = G.tipY;
+      const R = 13;
+      const fl = ctx.createRadialGradient(mx, my, 0, mx, my, R);
+      fl.addColorStop(0, "rgba(255,250,200,1)");
+      fl.addColorStop(0.3, "rgba(255,205,90,0.85)");
+      fl.addColorStop(0.6, "rgba(255,110,30,0.4)");
+      fl.addColorStop(1, "rgba(255,60,0,0)");
+      ctx.fillStyle = fl;
+      ctx.beginPath();
+      ctx.arc(mx, my, R, 0, Math.PI * 2);
+      ctx.fill();
+      // estrela de 3 pontas (clarão)
+      ctx.fillStyle = "rgba(255,238,160,0.95)";
+      ctx.beginPath();
+      ctx.moveTo(mx - 1, my - 1.8);
+      ctx.lineTo(mx + 11, my);
+      ctx.lineTo(mx - 1, my + 1.8);
+      ctx.closePath();
+      ctx.moveTo(mx + 1, my);
+      ctx.lineTo(mx + 5, my - 5);
+      ctx.lineTo(mx + 3.5, my);
+      ctx.lineTo(mx + 5, my + 5);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+    return;
+  }
 
   if (gunImg) {
     const scale = visualLen / Math.max(1, gunImg.naturalWidth);
@@ -610,7 +468,7 @@ function drawWeaponLayer(
     ctx.drawImage(gunImg, -grip, -dh / 2, dw, dh);
 
     // só fallback procedural — no sheet do designer as mãos já estão no corpo
-    if (gripHands) drawGripHands(ctx, visualLen);
+    if (gripHands) drawGripHands(ctx, visualLen, skin, weaponId);
 
     if (reloading) {
       if (rp < 0.18) {
@@ -721,7 +579,7 @@ function drawWeaponLayer(
     ctx.fillRect(T * 0.7, -2.5 * th, T * 0.32, 5 * th);
   }
 
-  if (gripHands) drawGripHands(ctx, T);
+  if (gripHands) drawGripHands(ctx, T, skin, weaponId);
 
   if (reloading) {
     if (rp < 0.18) {
@@ -807,6 +665,22 @@ function drawSilenceIcon(ctx: CanvasRenderingContext2D, x: number, y: number) {
   ctx.restore();
 }
 
+/** Lado pro qual o inimigo anda (+1 dir / -1 esq) — deduzido do movimento. */
+const enemyFace = new Map<number, { x: number; y: number; f: number }>();
+function enemyFacing(id: number, x: number, y: number): number {
+  const prev = enemyFace.get(id);
+  if (!prev) {
+    enemyFace.set(id, { x, y, f: 1 });
+    if (enemyFace.size > 256) enemyFace.clear();
+    return 1;
+  }
+  const dx = x - prev.x;
+  if (Math.abs(dx) > 0.4) prev.f = dx > 0 ? 1 : -1;
+  prev.x = x;
+  prev.y = y;
+  return prev.f;
+}
+
 function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, view: RenderView) {
   const def =
     en.type === 2
@@ -828,8 +702,28 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
 
   ctx.save();
   ctx.translate(en.x, en.y + bob);
+  const giantNew = en.type === 2 && !giantIsOld(en.id);
 
-  if (en.type === 2) {
+  if (giantNew) {
+    let near = 0;
+    if (view.local?.alive) {
+      near = 1 - Math.min(1, Math.hypot(en.x - view.local.x, en.y - view.local.y) / 520);
+    }
+    drawGiant2(ctx, {
+      s: scale,
+      id: en.id,
+      tMs,
+      chase,
+      windup,
+      charge,
+      stun,
+      frozen,
+      windupFlash,
+      skew,
+      facing,
+      near,
+    });
+  } else if (en.type === 2) {
     // Gigante procedural — silhueta monstruosa (ombros largos, corcunda, olhos vermelhos)
     const s = scale;
     const shadowOx = Math.cos(facing) * 5 * s;
@@ -980,121 +874,289 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
     ctx.shadowBlur = 0;
     ctx.restore();
   } else if (en.type === 1) {
-    // Brutamontes — monstro enorme, inconfundível
+    // Brutamontes — massa de músculo, ombreiras com espinhos, punhos enormes
     const s = scale * 0.55;
-    ctx.fillStyle = "rgba(20,8,8,0.55)";
+    const face = enemyFacing(en.id, en.x, en.y);
+    const walk = charge ? tMs * 0.03 : tMs * 0.012;
+    const stomp = frozen ? 0 : Math.sin(walk + en.id);
+    ctx.fillStyle = "rgba(20,8,8,0.5)";
     ctx.beginPath();
-    ctx.ellipse(0, 22 * s, 34 * s, 12 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 24 * s, 36 * s, 11 * s, 0, 0, Math.PI * 2);
     ctx.fill();
-
-    // aura de ameaça
     if (charge || windup) {
-      const pulse = 0.35 + Math.sin(tMs * 0.02) * 0.15;
-      ctx.fillStyle = `rgba(180,30,20,${pulse})`;
+      const pulse = 0.28 + Math.sin(tMs * 0.02) * 0.12;
+      ctx.fillStyle = `rgba(190,34,22,${pulse})`;
       ctx.beginPath();
-      ctx.arc(0, 0, 48 * s, 0, Math.PI * 2);
+      ctx.arc(0, -4 * s, 50 * s, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    // corpo gordo
-    ctx.fillStyle = stun ? "#6a5a4a" : charge ? "#8a2820" : "#3a2218";
+    ctx.save();
+    ctx.scale(face, 1);
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#140a08";
+    ctx.lineWidth = 2.4;
+    const skin = stun ? "#7a6a5a" : charge ? "#8e3526" : "#6b3b2c";
+    const skinD = stun ? "#5e5044" : charge ? "#6a2419" : "#4d281d";
+    // pernas grossas
+    for (const i of [-1, 1]) {
+      const lift = Math.max(0, Math.sin(walk + en.id + (i > 0 ? Math.PI : 0))) * 4 * s;
+      ctx.fillStyle = "#2b1d18";
+      ctx.beginPath();
+      ctx.ellipse(i * 13 * s, 14 * s - lift, 9 * s, 12 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#171010";
+      ctx.beginPath();
+      ctx.ellipse(i * 14 * s + 3 * s, 24 * s - lift, 10 * s, 5 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // braço de trás
+    ctx.fillStyle = skinD;
     ctx.beginPath();
-    ctx.ellipse(0, 4 * s, 36 * s, 40 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(-26 * s, -2 * s + stomp * 2 * s, 9 * s, 16 * s, 0.2, 0, Math.PI * 2);
     ctx.fill();
-    // barriga
-    ctx.fillStyle = stun ? "#7a6a55" : "#4a3020";
+    ctx.stroke();
+    // tronco (V invertido)
+    ctx.fillStyle = skin;
     ctx.beginPath();
-    ctx.ellipse(0, 12 * s, 28 * s, 24 * s, 0, 0, Math.PI * 2);
+    ctx.moveTo(-30 * s, -20 * s);
+    ctx.quadraticCurveTo(0, -34 * s, 30 * s, -20 * s);
+    ctx.quadraticCurveTo(26 * s, 8 * s, 14 * s, 14 * s);
+    ctx.lineTo(-14 * s, 14 * s);
+    ctx.quadraticCurveTo(-26 * s, 8 * s, -30 * s, -20 * s);
+    ctx.closePath();
     ctx.fill();
-    // cabeça
-    ctx.fillStyle = "#2a1810";
+    ctx.stroke();
+    // peitoral / abdômen
+    ctx.strokeStyle = "rgba(20,8,6,0.45)";
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(0, -28 * s, 22 * s, 0, Math.PI * 2);
+    ctx.moveTo(-14 * s, -14 * s);
+    ctx.quadraticCurveTo(0, -8 * s, 14 * s, -14 * s);
+    ctx.moveTo(0, -10 * s);
+    ctx.lineTo(0, 8 * s);
+    ctx.moveTo(-8 * s, -1 * s);
+    ctx.lineTo(8 * s, -1 * s);
+    ctx.moveTo(-7 * s, 5 * s);
+    ctx.lineTo(7 * s, 5 * s);
+    ctx.stroke();
+    // cicatriz
+    ctx.strokeStyle = "rgba(230,160,150,0.5)";
+    ctx.beginPath();
+    ctx.moveTo(-18 * s, -18 * s);
+    ctx.lineTo(-6 * s, -6 * s);
+    ctx.stroke();
+    // cinto com fivela de crânio
+    ctx.fillStyle = "#1c1210";
+    ctx.fillRect(-16 * s, 8 * s, 32 * s, 6 * s);
+    ctx.fillStyle = "#cfc6b0";
+    ctx.beginPath();
+    ctx.arc(0, 11 * s, 3.2 * s, 0, Math.PI * 2);
     ctx.fill();
-    // mandíbula / ombros
-    ctx.fillStyle = "#1a1008";
-    ctx.fillRect(-26 * s, -18 * s, 52 * s, 10 * s);
-    // olhos vermelhos grandes
-    const eye = windup || charge ? "#ff3030" : "#e02020";
+    // ombreiras com espinhos
+    ctx.strokeStyle = "#140a08";
+    ctx.lineWidth = 2.4;
+    for (const i of [-1, 1]) {
+      ctx.fillStyle = "#3a3634";
+      ctx.beginPath();
+      ctx.ellipse(i * 24 * s, -22 * s, 11 * s, 8 * s, i * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#b8b0a2";
+      for (let k = -1; k <= 1; k++) {
+        const bx = i * 24 * s + k * 6 * s;
+        ctx.beginPath();
+        ctx.moveTo(bx - 2.5 * s, -27 * s);
+        ctx.lineTo(bx, -36 * s);
+        ctx.lineTo(bx + 2.5 * s, -27 * s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    // cabeça pequena afundada + chifres
+    ctx.fillStyle = skinD;
+    ctx.beginPath();
+    ctx.arc(4 * s, -32 * s, 11 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#e8dcc2";
+    for (const i of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(4 * s + i * 7 * s, -38 * s);
+      ctx.quadraticCurveTo(4 * s + i * 16 * s, -44 * s, 4 * s + i * 14 * s, -54 * s);
+      ctx.lineTo(4 * s + i * 4 * s, -41 * s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    const eye = windup || charge ? "#ff3a2a" : "#e02020";
     ctx.fillStyle = eye;
     ctx.shadowColor = eye;
     ctx.shadowBlur = charge ? 12 : 6;
     ctx.beginPath();
-    ctx.arc(-8 * s, -30 * s, 4.5 * s, 0, Math.PI * 2);
-    ctx.arc(8 * s, -30 * s, 4.5 * s, 0, Math.PI * 2);
+    ctx.arc(8 * s, -33 * s, 2.6 * s, 0, Math.PI * 2);
+    ctx.arc(1 * s, -33 * s, 2.3 * s, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
-    // chifres / crista
-    ctx.fillStyle = "#1a1008";
+    // mandíbula com presas
+    ctx.fillStyle = "#e8dcc2";
+    ctx.fillRect(1 * s, -26 * s, 2 * s, 3 * s);
+    ctx.fillRect(7 * s, -26 * s, 2 * s, 3 * s);
+    // braço da frente + punho gigante
+    const armY = windup ? -30 * s : 4 * s + stomp * 2 * s;
+    ctx.fillStyle = skin;
     ctx.beginPath();
-    ctx.moveTo(-14 * s, -42 * s);
-    ctx.lineTo(-22 * s, -58 * s);
-    ctx.lineTo(-6 * s, -46 * s);
+    ctx.ellipse(28 * s, (armY - 14 * s) / 2, 9 * s, 17 * s, -0.3, 0, Math.PI * 2);
     ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = skinD;
     ctx.beginPath();
-    ctx.moveTo(14 * s, -42 * s);
-    ctx.lineTo(22 * s, -58 * s);
-    ctx.lineTo(6 * s, -46 * s);
+    ctx.arc(32 * s, armY + 6 * s, 10 * s, 0, Math.PI * 2);
     ctx.fill();
-    // label
-    ctx.fillStyle = "rgba(0,0,0,0.65)";
-    ctx.fillRect(-38 * s, -72 * s, 76 * s, 12 * s);
-    ctx.fillStyle = "#ffcc44";
-    ctx.font = `bold ${Math.round(10 * s)}px sans-serif`;
+    ctx.stroke();
+    ctx.restore();
+    // rótulo
+    ctx.font = `bold ${Math.round(10 * s)}px 'Martian Mono', monospace`;
     ctx.textAlign = "center";
-    ctx.fillText("BRUTAMONTES", 0, -63 * s);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.strokeText("BRUTAMONTES", 0, -62 * s);
+    ctx.fillStyle = "#ffcc44";
+    ctx.fillText("BRUTAMONTES", 0, -62 * s);
   } else {
-    // Zumbi — silhueta podre mais legível
+    // Zumbi — curvado, braços esticados, roupa rasgada, olhos acesos
     const s = scale;
-    ctx.fillStyle = "rgba(20,10,10,0.4)";
+    const face = enemyFacing(en.id, en.x, en.y);
+    const ph = frozen ? 0 : tMs * 0.009 + en.id;
+    ctx.fillStyle = "rgba(20,10,10,0.38)";
     ctx.beginPath();
-    ctx.ellipse(0, 16 * s, 14 * s, 6 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 17 * s, 14 * s, 5 * s, 0, 0, Math.PI * 2);
     ctx.fill();
-
     if (windup) {
-      ctx.fillStyle = "rgba(100,180,40,0.25)";
+      ctx.fillStyle = "rgba(120,200,60,0.22)";
       ctx.beginPath();
-      ctx.arc(0, 0, 22 * s, 0, Math.PI * 2);
+      ctx.arc(0, -2 * s, 22 * s, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    // pernas
-    ctx.fillStyle = "#3a4a28";
-    ctx.fillRect(-8 * s, 6 * s, 5 * s, 12 * s);
-    ctx.fillRect(3 * s, 6 * s, 5 * s, 12 * s);
-    // torso
-    ctx.fillStyle = windup ? "#6a8a40" : chase ? "#4a6a30" : "#3a5a28";
-    ctx.fillRect(-11 * s, -10 * s, 22 * s, 20 * s);
-    // braços caídos
-    ctx.strokeStyle = "#5a7a38";
-    ctx.lineWidth = 4 * s;
+    ctx.save();
+    ctx.scale(face, 1);
+    ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    const armSwing = Math.sin(tMs * 0.012 + en.id) * 0.35;
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 1.8;
+    const skinZ = windup ? "#9cbf5c" : "#86a656";
+    const skinZd = "#66843e";
+    // pernas arrastando
+    for (const i of [-1, 1]) {
+      const sw = Math.sin(ph + (i > 0 ? Math.PI : 0)) * 2.5 * s;
+      ctx.fillStyle = "#3b4a52";
+      ctx.beginPath();
+      ctx.moveTo(i * 4 * s - 2.6 * s + sw * 0.4, 5 * s);
+      ctx.lineTo(i * 4 * s + 2.6 * s + sw * 0.4, 5 * s);
+      ctx.lineTo(i * 4 * s + 2.2 * s + sw, 15 * s);
+      ctx.lineTo(i * 4 * s - 2.2 * s + sw, 15 * s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#2a2220";
+      ctx.beginPath();
+      ctx.ellipse(i * 4 * s + sw + 1 * s, 16 * s, 3.4 * s, 1.8 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // braço de trás esticado
+    const reach = windup ? -6 * s : 0;
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 5.2 * s;
     ctx.beginPath();
-    ctx.moveTo(-10 * s, -4 * s);
-    ctx.lineTo(-16 * s, 8 * s + armSwing * 6);
-    ctx.moveTo(10 * s, -4 * s);
-    ctx.lineTo(16 * s, 8 * s - armSwing * 6);
+    ctx.moveTo(-2 * s, -7 * s);
+    ctx.lineTo(12 * s, -6 * s + reach + Math.sin(ph) * 1.2 * s);
     ctx.stroke();
-    // cabeça
-    ctx.fillStyle = "#6a8a48";
+    ctx.strokeStyle = skinZd;
+    ctx.lineWidth = 3.4 * s;
+    ctx.stroke();
+    // tronco curvado (camisa rasgada)
+    ctx.save();
+    ctx.translate(0, 4 * s);
+    ctx.rotate(0.18);
+    ctx.fillStyle = "#5b6a74";
     ctx.beginPath();
-    ctx.arc(0, -18 * s, 10 * s, 0, Math.PI * 2);
+    ctx.moveTo(-7 * s, -13 * s);
+    ctx.lineTo(7 * s, -13 * s);
+    ctx.lineTo(8 * s, 1 * s);
+    ctx.lineTo(4 * s, 3 * s);
+    ctx.lineTo(1 * s, 0);
+    ctx.lineTo(-3 * s, 3 * s);
+    ctx.lineTo(-8 * s, 1 * s);
+    ctx.closePath();
     ctx.fill();
-    // olhos pretos / vazios
-    ctx.fillStyle = windup ? "#ff4040" : "#101808";
-    ctx.fillRect(-5 * s, -20 * s, 3.5 * s, 2.5 * s);
-    ctx.fillRect(2 * s, -20 * s, 3.5 * s, 2.5 * s);
-    // boca
-    ctx.fillStyle = "#2a1808";
-    ctx.fillRect(-3 * s, -14 * s, 6 * s, 2 * s);
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    // rasgos mostrando a pele
+    ctx.fillStyle = skinZ;
+    ctx.beginPath();
+    ctx.ellipse(-2 * s, -6 * s, 2.2 * s, 3 * s, 0.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(120,20,20,0.55)";
+    ctx.fillRect(3 * s, -10 * s, 2 * s, 5 * s);
+    ctx.restore();
+    // cabeça pendendo pra frente
+    const hx = 4 * s;
+    const hy = -13 * s + Math.sin(ph * 0.7) * 0.8 * s;
+    ctx.fillStyle = skinZ;
+    ctx.beginPath();
+    ctx.arc(hx, hy, 7.8 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    ctx.fillStyle = skinZd;
+    ctx.beginPath();
+    ctx.arc(hx + 3 * s, hy + 2 * s, 5 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // cabelo ralo
+    ctx.fillStyle = "#2a2a1c";
+    ctx.beginPath();
+    ctx.arc(hx - 1 * s, hy - 4 * s, 5.5 * s, Math.PI * 1.05, Math.PI * 1.75);
+    ctx.fill();
+    // olhos fundos acesos
+    const glow = windup || chase;
+    ctx.fillStyle = "#1a1408";
+    ctx.beginPath();
+    ctx.arc(hx + 2 * s, hy - 1 * s, 2 * s, 0, Math.PI * 2);
+    ctx.arc(hx + 6.5 * s, hy - 1 * s, 1.7 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = windup ? "#ff4a3a" : glow ? "#e8f070" : "#b8c070";
+    ctx.beginPath();
+    ctx.arc(hx + 2.3 * s, hy - 1 * s, 0.9 * s, 0, Math.PI * 2);
+    ctx.arc(hx + 6.6 * s, hy - 1 * s, 0.8 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // boca aberta
+    ctx.fillStyle = "#3a0e0a";
+    ctx.beginPath();
+    ctx.ellipse(hx + 4.5 * s, hy + 4 * s, 2.4 * s, 1.5 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // braço da frente esticado
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 5.2 * s;
+    ctx.beginPath();
+    ctx.moveTo(2 * s, -6 * s);
+    ctx.lineTo(15 * s, -4 * s + reach - Math.sin(ph) * 1.2 * s);
+    ctx.stroke();
+    ctx.strokeStyle = skinZ;
+    ctx.lineWidth = 3.4 * s;
+    ctx.stroke();
+    ctx.restore();
   }
 
   // barra de HP só nos zumbis — chefe sem barra (mistério / pressão)
   if (en.type !== 1) {
     const pct = Math.max(0, Math.min(1, en.hp / 255));
     const bw = 26 * scale;
-    const by = -32 * scale;
+    const by = giantNew ? GIANT2_TOP * scale * 0.9 - 6 : -32 * scale;
     ctx.fillStyle = "rgba(0,0,0,0.55)";
     ctx.fillRect(-bw / 2, by, bw, 4);
     ctx.fillStyle = "#6ecf5a";
@@ -1112,7 +1174,11 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
   ctx.restore();
 
   // Congelamento — bloco sobre inimigo/Gigante
-  if (frozen) {
+  if (frozen && !frostIsOld(en.id)) {
+    const w = en.type === 2 ? 50 : en.type === 1 ? 46 : 24;
+    const h = en.type === 2 ? 104 : en.type === 1 ? 100 : 66;
+    drawIceBlock2(ctx, en.x, en.y + bob, tMs, w, h, en.id * 0.91);
+  } else if (frozen) {
     const iceScale = en.type === 2 ? 2.35 : en.type === 1 ? 1.65 : 1.05;
     ctx.fillStyle = "rgba(100,180,230,0.28)";
     ctx.beginPath();
@@ -1277,7 +1343,7 @@ function drawBoostTrail(
   const n = Math.min(5, 2 + Math.floor(spd / 120));
   for (let i = 0; i < n; i++) {
     const jitter = ((tMs * 0.02 + i * 17) % 7) - 3;
-    const dist = 10 + i * 9 + (tMs * 0.04 + i * 5) % 6;
+    const dist = (10 + i * 9 + ((tMs * 0.04 + i * 5) % 6)) * BODY_K;
     const px = x + ux * dist + uy * jitter;
     const py = y + uy * dist - ux * jitter;
     const a = 0.45 - i * 0.07;
@@ -1290,38 +1356,43 @@ function drawBoostTrail(
   }
 }
 
+type PersonDraw = {
+  id: number;
+  x: number;
+  y: number;
+  angle: number;
+  alive: boolean;
+  weapon: number;
+  hp?: number;
+  stamina?: number;
+  reloadProgress?: number;
+  stunnedUntil?: number;
+  frozenUntil?: number;
+  speedBoostUntil?: number;
+  shieldUntil?: number;
+  dashUntil?: number;
+  ability?: number;
+  flashUntil?: number;
+  vx?: number;
+  vy?: number;
+};
+
 /** Desenha o boneco — se estiver caindo na Fenda, anima giro/encolhe no buraco. */
 function drawPersonMaybeSink(
   ctx: CanvasRenderingContext2D,
-  p: {
-    id: number;
-    x: number;
-    y: number;
-    angle: number;
-    alive: boolean;
-    weapon: number;
-    stamina?: number;
-    reloadProgress?: number;
-    stunnedUntil?: number;
-    frozenUntil?: number;
-    speedBoostUntil?: number;
-    shieldUntil?: number;
-    dashUntil?: number;
-    ability?: number;
-    flashUntil?: number;
-    vx?: number;
-    vy?: number;
-  },
+  p: PersonDraw,
   tMs: number,
   isSelf: boolean,
   muzzle: boolean,
   feel: FeelState,
-  serverTime = 0,
+  serverTime: number,
+  look: Look,
+  name?: string,
 ) {
   if (riftSinkHidden(p.id)) return;
   const sink = riftSinkPose(p.id);
   if (!sink) {
-    drawPersonSide(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
+    drawPersonSide(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look, `p${p.id}`, name);
     return;
   }
   ctx.save();
@@ -1342,11 +1413,323 @@ function drawPersonMaybeSink(
     false,
     feel,
     serverTime,
+    look,
+    `sink${p.id}`,
   );
   ctx.restore();
 }
 
+/** Boneco novo (código + cosméticos) ou o antigo ("Rascunho"). */
 function drawPersonSide(
+  ctx: CanvasRenderingContext2D,
+  p: PersonDraw,
+  tMs: number,
+  isSelf: boolean,
+  muzzle: boolean,
+  feel: FeelState,
+  serverTime: number,
+  look: Look,
+  capeKey: string,
+  name?: string,
+) {
+  if (look.body === 1) {
+    const barrier =
+      p.alive && (p.ability ?? 0) === 4 && (p.shieldUntil ?? 0) > serverTime && !fxOld(p.id);
+    if (barrier) drawShieldBarrier2(ctx, p.x, p.y, p.angle, tMs, "back");
+    drawPersonLegacy(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look.gun);
+    if (barrier) drawShieldBarrier2(ctx, p.x, p.y, p.angle, tMs, "front");
+    return;
+  }
+  drawPersonNew(ctx, p, tMs, isSelf, muzzle, feel, serverTime, look, capeKey, name);
+}
+
+/** Anel no chão com a cor do jogador (+ marcador da mira no próprio). */
+function drawPlayerRing(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  id: number,
+  isSelf: boolean,
+  aim: number,
+) {
+  const col = PLAYER_COLORS[id % PLAYER_COLORS.length]!;
+  const k = BODY_K;
+  ctx.save();
+  ctx.translate(x, y + 7 * k);
+  ctx.strokeStyle = col;
+  ctx.globalAlpha *= isSelf ? 0.9 : 0.55;
+  ctx.lineWidth = isSelf ? 2.4 : 1.7;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 27 * k, 10 * k, 0, 0, Math.PI * 2);
+  ctx.stroke();
+  if (isSelf) {
+    const ax = Math.cos(aim) * 27 * k;
+    const ay = Math.sin(aim) * 10 * k;
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.moveTo(ax + Math.cos(aim) * 7 * k, ay + Math.sin(aim) * 3 * k);
+    ctx.lineTo(ax - Math.sin(aim) * 4 * k, ay + Math.cos(aim) * 2 * k);
+    ctx.lineTo(ax + Math.sin(aim) * 4 * k, ay - Math.cos(aim) * 2 * k);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+/** Escudo Estelar pendurado nas costas (habilidade equipada, inativa). */
+function drawBackShield(ctx: CanvasRenderingContext2D, aim: number, tMs: number) {
+  const f = facingOf(aim);
+  const backSign = Math.cos(aim) >= 0 ? -1 : 1;
+  const x = backSign * f.turn * 9 * CHAR_SCALE;
+  const y = (BODY.shoulder + 15) * CHAR_SCALE;
+  drawStarShield(ctx, x, y, 14 * CHAR_SCALE, {
+    squash: Math.max(0.32, 1 - f.turn * 0.72),
+    t: tMs,
+  });
+}
+
+/** Escudo Estelar erguido na frente (ativo) — maior que o tronco. */
+function drawRaisedShield(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  aim: number,
+  tMs: number,
+  glow: number,
+) {
+  const fx = Math.cos(aim);
+  const fy = Math.sin(aim);
+  const cx = x + fx * 24 * BODY_K;
+  const cy = y + (BODY.shoulder + 19) * CHAR_SCALE + fy * 10 * BODY_K;
+  drawStarShield(ctx, cx, cy, 30 * BODY_K, {
+    squash: 0.46 + 0.54 * Math.abs(fy),
+    rot: Math.abs(fy) > 0.98 ? 0 : Math.atan2(fy, fx),
+    back: fy < -0.25,
+    glow,
+    t: tMs,
+  });
+}
+
+function drawPersonNew(
+  ctx: CanvasRenderingContext2D,
+  p: PersonDraw,
+  tMs: number,
+  isSelf: boolean,
+  muzzle: boolean,
+  feel: FeelState,
+  serverTime: number,
+  look: Look,
+  capeKey: string,
+  name?: string,
+) {
+  const frozen = p.alive && (p.frozenUntil ?? 0) > serverTime;
+  const vx = p.vx ?? 0;
+  const vy = p.vy ?? 0;
+  const speed = frozen ? 0 : Math.hypot(vx, vy);
+  const gunBehind = Math.sin(p.angle) < -0.3;
+  const bodyKick = isSelf ? feel.bodyKick * 1.5 : 0;
+  const gunKick = isSelf ? feel.gunKick : 0;
+  const ox = p.x - Math.cos(p.angle) * bodyKick;
+  const oy = p.y - Math.sin(p.angle) * bodyKick;
+  const ab = p.ability ?? 0;
+  const bootsOn = ab === 2;
+  const recoilCapeOn = ab === 3;
+  const shieldOn = ab === 4;
+  const boosted = bootsOn && (p.speedBoostUntil ?? 0) > serverTime;
+  const shieldUp = shieldOn && (p.shieldUntil ?? 0) > serverTime;
+  const dashing = recoilCapeOn && (p.dashUntil ?? 0) > serverTime;
+  const f = facingOf(p.angle);
+  const skin = skinColorOf(look);
+  // alpha de fora (ex.: afundando na Fenda) multiplica tudo e volta no fim
+  const inA = ctx.globalAlpha;
+  const baseA = (p.alive ? 1 : 0.35) * inA;
+  const pose = {
+    aim: p.angle,
+    speed,
+    leanX: Math.max(-1, Math.min(1, vx / 260)),
+    t: tMs,
+    frozen,
+    seed: p.id,
+    impulseBoots: bootsOn,
+    boosted,
+  };
+
+  const fxNew = !fxOld(p.id);
+  const cosmeticCape = look.cape > 0 ? CAPES[look.cape] ?? null : null;
+  const darkCape = cosmeticCape?.style === "dark";
+  // rastro fantasma (dash da capa / botas ativas) — no visual novo o dash vira clones (fx2)
+  if (p.alive && ((dashing && !fxNew) || boosted) && speed > 60) {
+    const bx = -(vx / speed) * 13 * BODY_K;
+    const by = -(vy / speed) * 13 * BODY_K;
+    for (let g = 3; g >= 1; g--) {
+      ctx.save();
+      ctx.globalAlpha = baseA * (dashing ? 0.13 : 0.09) * (4 - g);
+      ctx.translate(ox + bx * g, oy + by * g);
+      drawBody(ctx, look, { ...pose, t: tMs - g * 40 });
+      ctx.restore();
+    }
+    if (boosted) drawBoostTrail(ctx, ox, oy, vx, vy, tMs);
+  }
+
+  ctx.globalAlpha = baseA;
+  // aura das trevas (capa Sombria, visual novo)
+  if (p.alive && fxNew && darkCape) drawDarkAura2(ctx, ox, oy, tMs);
+  // sombra + anel
+  ctx.fillStyle = "rgba(18,14,22,0.32)";
+  ctx.beginPath();
+  ctx.ellipse(ox + 3 * BODY_K, oy + 10 * BODY_K, 23 * BODY_K, 7.5 * BODY_K, 0, 0, Math.PI * 2);
+  ctx.fill();
+  if (p.alive) drawPlayerRing(ctx, ox, oy + 3 * BODY_K, p.id, isSelf, p.angle);
+
+  // capa (física) — atrás do corpo, ou por cima quando de costas
+  const capeDef = recoilCapeOn
+    ? fxNew
+      ? darkCape
+        ? RECOIL_DARK_DEF
+        : RECOIL_CAPE2_DEF
+      : RECOIL_CAPE_DEF
+    : cosmeticCape;
+  const anchor = capeAnchor(p.angle);
+  const capeFront = !!capeDef && f.back;
+  if (capeDef && p.alive) {
+    stepCape(capeKey, ox + anchor.x, oy + anchor.y, p.angle, tMs, {
+      dash: dashing,
+      frozen,
+      floorY: oy + 8,
+      scale: CHAR_SCALE,
+    });
+    if (!capeFront) {
+      drawCape(ctx, capeKey, capeDef, {
+        width: anchor.w,
+        glow: dashing ? (capeDef.style === "recoilDark" ? "rgba(255,50,80,0.95)" : "rgba(255,120,190,0.95)") : undefined,
+      });
+    }
+  }
+
+  const barrier = shieldUp && p.alive && !fxOld(p.id);
+  if (barrier) drawShieldBarrier2(ctx, ox, oy, p.angle, tMs, "back");
+  if (shieldUp && p.alive && gunBehind) drawRaisedShield(ctx, ox, oy, p.angle, tMs, 1);
+
+  ctx.save();
+  ctx.translate(ox, oy);
+  if (shieldOn && !shieldUp && p.alive && !f.back) drawBackShield(ctx, p.angle, tMs);
+  if (gunBehind && p.alive) {
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin, look.gun, tMs);
+  }
+  drawBody(ctx, look, pose);
+  if (shieldOn && !shieldUp && p.alive && f.back) drawBackShield(ctx, p.angle, tMs);
+  ctx.restore();
+
+  if (capeDef && p.alive && capeFront) {
+    drawCape(ctx, capeKey, capeDef, {
+      width: anchor.w,
+      glow: dashing ? (capeDef.style === "recoilDark" ? "rgba(255,50,80,0.95)" : "rgba(255,120,190,0.95)") : undefined,
+    });
+  }
+  // partículas da capa (fumaça das trevas, brilhos…) — só no mundo, não no afundar da Fenda
+  if (capeDef && p.alive && fxNew && !frozen && capeKey.charCodeAt(0) === 112) {
+    emitCapeFx2(capeKey, capeDef.style, speed, vx, vy, tMs);
+  }
+
+  ctx.save();
+  ctx.translate(ox, oy);
+  if (!gunBehind && p.alive) {
+    drawWeaponLayer(ctx, p.weapon, p.angle, gunKick, muzzle && isSelf, true, p.reloadProgress ?? 0, skin, look.gun, tMs);
+  }
+  ctx.restore();
+  if (shieldUp && p.alive && !gunBehind) drawRaisedShield(ctx, ox, oy, p.angle, tMs, 1);
+  if (barrier) drawShieldBarrier2(ctx, ox, oy, p.angle, tMs, "front");
+
+  const topY = oy + BODY.top * CHAR_SCALE;
+  if (isSelf && p.alive) {
+    drawHeadBars(ctx, ox, topY - 16, p.stamina ?? MAX_STAMINA, p.reloadProgress ?? 0);
+  } else if (!isSelf && p.alive) {
+    // nome + vida dos outros jogadores
+    const hp = Math.max(0, Math.min(100, p.hp ?? 100));
+    const bw = 34;
+    ctx.fillStyle = "rgba(8,10,12,0.72)";
+    ctx.fillRect(ox - bw / 2 - 1, topY - 12, bw + 2, 5);
+    ctx.fillStyle = hp > 55 ? "#6ecf5a" : hp > 25 ? "#e8b838" : "#e04a3a";
+    ctx.fillRect(ox - bw / 2, topY - 11, (bw * hp) / 100, 3);
+    if (name) {
+      ctx.font = "bold 11px 'Martian Mono', monospace";
+      ctx.textAlign = "center";
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = "rgba(0,0,0,0.75)";
+      ctx.strokeText(name, ox, topY - 16);
+      ctx.fillStyle = PLAYER_COLORS[p.id % PLAYER_COLORS.length]!;
+      ctx.fillText(name, ox, topY - 16);
+    }
+  }
+
+  if (p.alive && (p.stunnedUntil ?? 0) > serverTime) {
+    // acima do nome dos outros jogadores — não cobre o texto
+    drawSilenceIcon(ctx, ox, topY - (!isSelf && name ? 36 : 26));
+  }
+
+  if (frozen && !frostIsOld(p.id)) {
+    drawIceBlock2(ctx, ox, oy, tMs, 23, 78, p.id * 1.37);
+  } else if (frozen) {
+    ctx.fillStyle = "rgba(100,180,230,0.3)";
+    ctx.beginPath();
+    ctx.ellipse(ox, oy - 34 * BODY_K, 32 * BODY_K, 52 * BODY_K, 0, 0, Math.PI * 2);
+    ctx.fill();
+    drawFrostBlock(ctx, ox, oy, tMs, 1.15 * BODY_K, p.id * 1.37);
+  }
+
+  if (p.alive && !isSelf && (p.flashUntil ?? 0) > serverTime) {
+    const left = (p.flashUntil! - serverTime) / 2800;
+    const a = Math.min(0.85, 0.35 + left * 0.55);
+    ctx.fillStyle = `rgba(255,255,255,${a})`;
+    ctx.beginPath();
+    ctx.ellipse(ox, oy - 38 * BODY_K, 32 * BODY_K, 50 * BODY_K, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = inA;
+}
+
+/** Boneco antigo (sprite) + capas/botas/escudo antigos — preservado como "Rascunho". */
+function drawPersonLegacy(
+  ctx: CanvasRenderingContext2D,
+  p: Parameters<typeof drawPersonLegacyAt>[1],
+  tMs: number,
+  isSelf: boolean,
+  muzzle: boolean,
+  feel: FeelState,
+  serverTime = 0,
+  gunStyle = 1,
+) {
+  // desenhado na escala antiga e encolhido a partir dos pés (mesma altura do boneco novo)
+  ctx.save();
+  ctx.translate(p.x, p.y);
+  ctx.scale(LEGACY_K, LEGACY_K);
+  ctx.translate(-p.x, -p.y);
+  legacyGunStyle = gunStyle;
+  drawPersonLegacyAt(ctx, p, tMs, isSelf, muzzle, feel, serverTime);
+  ctx.restore();
+}
+
+/** estilo da arma do Rascunho sendo desenhado (evita passar por 2 níveis de assinatura) */
+let legacyGunStyle = 1;
+
+/** Arma do Rascunho: desfaz a escala do sprite (arma no tamanho do mundo). */
+function drawLegacyWeapon(
+  ctx: CanvasRenderingContext2D,
+  weaponId: number,
+  aim: number,
+  gunKick: number,
+  muzzleFlash: boolean,
+  gripHands: boolean,
+  reloadProgress: number,
+) {
+  ctx.save();
+  ctx.scale(1 / LEGACY_K, 1 / LEGACY_K);
+  // arma nova no Rascunho: o sprite antigo já tem mãos — não desenha as de elipse
+  drawWeaponLayer(ctx, weaponId, aim, gunKick, muzzleFlash, gripHands, reloadProgress, "#d4a574", legacyGunStyle);
+  ctx.restore();
+}
+
+function drawPersonLegacyAt(
   ctx: CanvasRenderingContext2D,
   p: {
     id: number;
@@ -1527,7 +1910,7 @@ function drawPersonSide(
   const showGripHands = !dirs;
 
   if (gunBehind) {
-    drawWeaponLayer(
+    drawLegacyWeapon(
       ctx,
       p.weapon,
       p.angle,
@@ -1648,7 +2031,7 @@ function drawPersonSide(
   }
 
   if (!gunBehind) {
-    drawWeaponLayer(
+    drawLegacyWeapon(
       ctx,
       p.weapon,
       p.angle,
@@ -1723,7 +2106,9 @@ function drawPersonSide(
   }
 
   // Congelamento — tint frio + bloco de gelo (por cima do corpo)
-  if (frozen) {
+  if (frozen && !frostIsOld(p.id)) {
+    drawIceBlock2(ctx, p.x + kickX, p.y + bob + kickY, tMs, 27, 93, p.id * 1.37);
+  } else if (frozen) {
     ctx.fillStyle = "rgba(100,180,230,0.32)";
     ctx.beginPath();
     ctx.ellipse(p.x + kickX, p.y + bob + kickY - 10, 28, 40, 0, 0, Math.PI * 2);
@@ -1746,51 +2131,6 @@ function drawPersonSide(
     ctx.stroke();
   }
 
-  ctx.globalAlpha = 1;
-}
-
-function drawRoofs(
-  ctx: CanvasRenderingContext2D,
-  roofAlpha: Map<number, number>,
-  camX = 0,
-  camY = 0,
-  viewW = ARENA_W,
-  viewH = ARENA_H,
-) {
-  const roofTile = getTileImg("roof");
-  const vx1 = camX + viewW;
-  const vy1 = camY + viewH;
-  for (const b of BUILDINGS) {
-    const a = roofAlpha.get(b.id) ?? 1;
-    if (a <= 0.02) continue;
-    const r = roofRect(b);
-    // cull fora da câmera
-    if (r.x + r.w < camX || r.x > vx1 || r.y + r.h < camY || r.y > vy1) continue;
-    ctx.globalAlpha = a;
-    if (roofTile) {
-      const x0 = Math.max(r.x, Math.floor(camX / TILE) * TILE);
-      const y0 = Math.max(r.y, Math.floor(camY / TILE) * TILE);
-      const x1 = Math.min(r.x + r.w, vx1 + TILE);
-      const y1 = Math.min(r.y + r.h, vy1 + TILE);
-      for (let y = y0; y < y1; y += TILE) {
-        for (let x = x0; x < x1; x += TILE) {
-          if (x < r.x || y < r.y || x >= r.x + r.w || y >= r.y + r.h) continue;
-          const dw = Math.min(TILE, r.x + r.w - x);
-          const dh = Math.min(TILE, r.y + r.h - y);
-          ctx.drawImage(roofTile, 0, 0, dw, dh, x, y, dw, dh);
-        }
-      }
-    } else {
-      ctx.fillStyle = LOSPEC.roof;
-      ctx.fillRect(r.x, r.y, r.w, r.h);
-      ctx.fillStyle = "rgba(0,0,0,0.2)";
-      for (let i = 0; i < r.w; i += 16) {
-        ctx.fillRect(r.x + i, r.y, 2, r.h);
-      }
-      ctx.fillStyle = "rgba(180,120,80,0.25)";
-      ctx.fillRect(r.x + 4, r.y + 4, r.w - 8, 6);
-    }
-  }
   ctx.globalAlpha = 1;
 }
 
@@ -1970,6 +2310,24 @@ export function tickRoofAlpha(
   return alphas;
 }
 
+let vignette: HTMLCanvasElement | null = null;
+/** Vinheta pré-renderizada (256×170) — esticada na janela da câmera. */
+function vignetteCanvas(): HTMLCanvasElement {
+  if (vignette) return vignette;
+  const c = document.createElement("canvas");
+  c.width = 256;
+  c.height = 170;
+  const g = c.getContext("2d")!;
+  const grd = g.createRadialGradient(128, 85, 40, 128, 85, 150);
+  grd.addColorStop(0, "rgba(0,0,0,0)");
+  grd.addColorStop(0.62, "rgba(6,8,12,0.06)");
+  grd.addColorStop(1, "rgba(6,8,12,0.42)");
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 256, 170);
+  vignette = c;
+  return c;
+}
+
 export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: number) {
   const dpr = Math.min(2, window.devicePixelRatio || 1);
   const cw = ctx.canvas.width;
@@ -2005,9 +2363,11 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   ctx.rect(camX, camY, viewW, viewH);
   ctx.clip();
 
-  drawGround(ctx, camX, camY, viewW, viewH);
+  drawWorld(ctx, camX, camY, viewW, viewH);
   view.drawDecals(ctx, camX, camY, viewW, viewH);
   view.drawAbilityGround(ctx);
+  setFx2View(camX, camY, viewW, viewH);
+  drawFx2Ground(ctx, tMs);
   if (view.spikeTotems?.length && view.drawSpikeTotems) {
     view.drawSpikeTotems(ctx, view.spikeTotems, tMs);
   }
@@ -2024,7 +2384,6 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       tMs,
     );
   }
-  drawSolids(ctx, camX, camY, viewW, viewH);
   drawDoors(ctx, view.doorsBits, view.doorAnim);
 
   // drops de munição
@@ -2046,16 +2405,20 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   }
 
   // armas dropadas na morte
+  const dropStyle = view.lookFor?.(view.selfId)?.gun ?? 0;
   for (const d of view.weaponDrops) {
     const bob = Math.sin(tMs * 0.005 + d.id * 1.7) * 2.5;
-    const gun = getGunImg(d.weaponId);
+    const gun = dropStyle === 1 ? getGunImg(d.weaponId) : null;
     const w = weaponOf(d.weaponId);
+    const gw = gunGeom(d.weaponId).len * 0.95;
     ctx.fillStyle = LOSPEC.shadow;
     ctx.beginPath();
-    ctx.ellipse(d.x, d.y + 8, 26, 7, 0, 0, Math.PI * 2);
+    ctx.ellipse(d.x, d.y + 8, gw * 0.42, 6, 0, 0, Math.PI * 2);
     ctx.fill();
-    if (gun) {
-      const dw = Math.min(110, Math.max(64, w.length * 1.55));
+    if (dropStyle !== 1) {
+      drawGunIcon(ctx, d.weaponId, d.x, d.y + bob, gw, tMs);
+    } else if (gun) {
+      const dw = gw;
       const scale = dw / Math.max(1, gun.naturalWidth);
       const dh = gun.naturalHeight * scale;
       ctx.drawImage(gun, d.x - dw / 2, d.y - dh / 2 + bob, dw, dh);
@@ -2075,22 +2438,7 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     ctx.beginPath();
     ctx.ellipse(d.x, d.y + 8, 12, 5, 0, 0, Math.PI * 2);
     ctx.fill();
-    if (d.abilityId === 4) {
-      ctx.fillStyle = `rgba(120,170,210,${0.28 * pulse})`;
-      ctx.beginPath();
-      ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = "#3a4a58";
-      ctx.beginPath();
-      ctx.moveTo(d.x - 8, d.y - 2 + bob);
-      ctx.quadraticCurveTo(d.x - 14, d.y + 14 + bob, d.x - 4, d.y + 16 + bob);
-      ctx.lineTo(d.x + 4, d.y + 16 + bob);
-      ctx.quadraticCurveTo(d.x + 14, d.y + 14 + bob, d.x + 8, d.y - 2 + bob);
-      ctx.closePath();
-      ctx.fill();
-      ctx.fillStyle = "#8ab0c8";
-      ctx.fillRect(d.x - 5, d.y - 4 + bob, 10, 6);
-    } else if (d.abilityId === 3) {
+    if (d.abilityId === 3) {
       ctx.fillStyle = `rgba(180,60,100,${0.28 * pulse})`;
       ctx.beginPath();
       ctx.arc(d.x, d.y + bob, 16, 0, Math.PI * 2);
@@ -2207,6 +2555,54 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
       ctx.moveTo(d.x - 4, by - 8);
       ctx.lineTo(d.x + 2, by + 4);
       ctx.stroke();
+    } else if (d.abilityId === 4 || d.abilityId === 9) {
+      // Escudo Estelar / Escudo Bumerangue
+      ctx.fillStyle = `rgba(120,170,255,${0.3 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y + bob, 17, 0, Math.PI * 2);
+      ctx.fill();
+      drawStarShield(ctx, d.x, d.y + bob, 11, {
+        squash: d.abilityId === 9 ? 0.6 + 0.4 * Math.abs(Math.sin(tMs * 0.004)) : 1,
+        spin: d.abilityId === 9 ? tMs * 0.004 : 0,
+        t: tMs,
+      });
+    } else if (d.abilityId === 10) {
+      // Raio em Cadeia — orbe elétrico
+      const by = d.y + bob;
+      ctx.fillStyle = `rgba(120,180,255,${0.32 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, by, 16, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#1d2c52";
+      ctx.beginPath();
+      ctx.arc(d.x, by, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = `rgba(210,235,255,${0.7 + 0.3 * pulse})`;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(d.x - 2, by - 8);
+      ctx.lineTo(d.x + 3, by - 1);
+      ctx.lineTo(d.x - 2, by + 1);
+      ctx.lineTo(d.x + 2, by + 8);
+      ctx.stroke();
+    } else if (d.abilityId === 11) {
+      // Passo Sombrio — névoa roxa
+      const by = d.y + bob;
+      ctx.fillStyle = `rgba(110,60,170,${0.35 * pulse})`;
+      ctx.beginPath();
+      ctx.arc(d.x, by, 16, 0, Math.PI * 2);
+      ctx.fill();
+      for (let i = 0; i < 3; i++) {
+        const a = tMs * 0.003 + (i * Math.PI * 2) / 3;
+        ctx.fillStyle = "rgba(60,30,90,0.75)";
+        ctx.beginPath();
+        ctx.arc(d.x + Math.cos(a) * 6, by + Math.sin(a) * 4, 5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#e6d6ff";
+      ctx.beginPath();
+      ctx.arc(d.x, by, 2.5, 0, Math.PI * 2);
+      ctx.fill();
     } else {
       ctx.fillStyle = `rgba(240,160,60,${0.25 * pulse})`;
       ctx.beginPath();
@@ -2224,6 +2620,11 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
 
   // throwables
   for (const t of view.throwables) {
+    if (t.kind === SHIELD_THROW_KIND) continue; // desenhado na camada "ar"
+    if (t.kind === 5 && !fxOld(t.owner)) {
+      drawBomb2(ctx, t, tMs);
+      continue;
+    }
     if (t.kind === 5) {
       // Bomba Devastadora — pavio pisca mais rápido perto do fim
       const fuseLeft = Math.max(0, t.fuse);
@@ -2336,65 +2737,92 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
     (f) => f.t > 30 && (f.owner === undefined || f.owner === view.selfId),
   );
 
+  const lookOf = view.lookFor ?? autoLookFor;
+  // ordem por profundidade (y): quem está mais embaixo na tela fica na frente
+  const people: { p: PersonDraw; self: boolean; muzzle: boolean }[] = [];
   if (view.local) {
-    drawPersonMaybeSink(
-      ctx,
-      { ...view.local, id: view.selfId },
-      tMs,
-      true,
-      selfMuzzle,
-      view.feel,
-      view.serverTime,
-    );
+    people.push({ p: { ...view.local, id: view.selfId }, self: true, muzzle: selfMuzzle });
   }
   for (const r of view.remotes) {
-    const muzzle = view.events.some((e) => e.kind === "shot" && e.a === r.id);
+    people.push({
+      p: { ...r, weapon: r.weapon ?? 0 },
+      self: false,
+      muzzle: view.events.some((e) => e.kind === "shot" && e.a === r.id),
+    });
+  }
+  people.sort((a, b) => a.p.y - b.p.y);
+  for (const it of people) {
     drawPersonMaybeSink(
       ctx,
-      { ...r, weapon: r.weapon ?? 0 },
+      it.p,
       tMs,
-      false,
-      muzzle,
+      it.self,
+      it.muzzle,
       view.feel,
       view.serverTime,
+      lookOf(it.p.id),
+      it.self ? undefined : view.nameFor?.(it.p.id),
     );
   }
 
   // massa de água / spray por cima dos personagens
   view.drawAbilityWater(ctx);
 
-  // balas — rastro
+  // Escudo Bumerangue em voo + raios / teleporte
+  for (const t of view.throwables) {
+    if (t.kind !== SHIELD_THROW_KIND) continue;
+    if (fxOld(t.owner)) drawThrownShield(ctx, t, tMs);
+    else drawThrownShield2(ctx, t, tMs);
+  }
+  drawPowersFx(ctx);
+  drawFx2Air(ctx, tMs);
+
+  // balas — rastro na altura da arma (3/4: a bala voa no nível das mãos)
+  const EL = GUN_HAND_BODY_Y;
+  ctx.lineCap = "round";
   for (const b of view.bullets) {
     const sniper = b.weapon === 6;
-    ctx.strokeStyle = sniper ? "rgba(255,240,200,0.85)" : "rgba(255,220,120,0.75)";
-    ctx.lineWidth = sniper ? 1 : 2;
+    const dx = b.x - b.px;
+    const dy = b.y - b.py;
+    const tailX = b.px - dx * (sniper ? 1.5 : 0.6);
+    const tailY = b.py - dy * (sniper ? 1.5 : 0.6);
+    const headX = sniper ? b.x + dx * 2 : b.x;
+    const headY = sniper ? b.y + dy * 2 : b.y;
+    // brilho largo + núcleo claro
+    ctx.strokeStyle = sniper ? "rgba(255,230,170,0.22)" : "rgba(255,190,90,0.22)";
+    ctx.lineWidth = sniper ? 4 : 5;
     ctx.beginPath();
-    ctx.moveTo(b.px, b.py);
-    ctx.lineTo(b.x, b.y);
-    if (sniper) {
-      const dx = b.x - b.px;
-      const dy = b.y - b.py;
-      ctx.lineTo(b.x + dx * 2, b.y + dy * 2);
-    }
+    ctx.moveTo(tailX, tailY + EL);
+    ctx.lineTo(headX, headY + EL);
+    ctx.stroke();
+    ctx.strokeStyle = sniper ? "rgba(255,248,220,0.95)" : "rgba(255,232,150,0.9)";
+    ctx.lineWidth = sniper ? 1.3 : 2;
+    ctx.beginPath();
+    ctx.moveTo(b.px, b.py + EL);
+    ctx.lineTo(headX, headY + EL);
     ctx.stroke();
   }
+  ctx.lineCap = "butt";
 
   for (const f of view.flashes) {
-    const g = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, 16);
+    const fy = f.y + EL;
+    const g = ctx.createRadialGradient(f.x, fy, 0, f.x, fy, 16);
     g.addColorStop(0, "rgba(255,230,120,0.9)");
     g.addColorStop(1, "rgba(255,80,0,0)");
     ctx.fillStyle = g;
     ctx.beginPath();
-    ctx.arc(f.x, f.y, 16, 0, Math.PI * 2);
+    ctx.arc(f.x, fy, 16, 0, Math.PI * 2);
     ctx.fill();
     for (const s of f.sparks ?? []) {
       ctx.strokeStyle = `rgba(255,200,80,${s.life / 80})`;
       ctx.beginPath();
-      ctx.moveTo(f.x, f.y);
-      ctx.lineTo(f.x + s.dx, f.y + s.dy);
+      ctx.moveTo(f.x, fy);
+      ctx.lineTo(f.x + s.dx, fy + s.dy);
       ctx.stroke();
     }
   }
+
+  drawShieldSparks(ctx);
 
   for (const s of view.feel.shells) {
     ctx.fillStyle = "#c8a060";
@@ -2427,7 +2855,12 @@ export function drawFrame(ctx: CanvasRenderingContext2D, view: RenderView, tMs: 
   }
 
   // telhados por cima
-  drawRoofs(ctx, view.roofAlpha, camX, camY, viewW, viewH);
+  drawRoofLayer(ctx, view.roofAlpha, camX, camY, viewW, viewH);
+
+  // vinheta suave (canvas pequeno em cache, 1 drawImage)
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(vignetteCanvas(), camX, camY, viewW, viewH);
+  ctx.imageSmoothingEnabled = false;
 
   if (view.local) {
     drawVisionMask(ctx, view.local.x, view.local.y, view.doorsBits);

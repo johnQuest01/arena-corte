@@ -5,6 +5,8 @@
 import { SMOOTH_MS, TICK_MS } from "../../../shared/constants";
 import type { PlayerInput, PlayerState } from "../../../shared/protocol";
 import { applyInput, clonePlayerState } from "../../../shared/sim";
+import { performBlink } from "../../../shared/abilities";
+import { hitsSolid } from "../../../shared/map";
 import type { PredictionBuffer } from "./prediction";
 
 export interface SmoothState {
@@ -77,6 +79,13 @@ export function reconcile(
       doorBits: buffer.doorBits,
       serverTime: t,
       spikeTotems: buffer.spikeTotems,
+      // Passo Sombrio é determinístico: refaz o teleporte no replay (sem puxar de volta).
+      // Cego de flash o host não conjura — o auth não traz flashUntil, então checa aqui.
+      onCast: () => {
+        if ((merged.ability ?? replayed.ability) === 11 && buffer.flashUntil <= t) {
+          performBlink(replayed, t, merged.aim, buffer.doorBits, hitsSolid, buffer.spikeTotems);
+        }
+      },
     });
   }
 

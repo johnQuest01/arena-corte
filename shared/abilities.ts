@@ -1,6 +1,7 @@
 /**
  * abilities.ts — framework de habilidades (receita: efeito + evento + cooldown).
  */
+import { PLAYER_R } from "./constants";
 import type { PlayerState } from "./protocol";
 
 export interface AbilityTargetRef {
@@ -38,6 +39,10 @@ export interface AbilityCtx {
   hitsSolid?: (x: number, y: number, r: number, doorBits: number) => boolean;
   /** candidatos já filtrados (players e/ou enemies vivos, sem o caster) */
   candidates?: AbilityTargetRef[];
+  /** Escudo Bumerangue — arremessa o escudo (false = já tem um no ar) */
+  spawnShieldThrow?: (caster: PlayerState) => boolean;
+  /** Raio em Cadeia — resolve os saltos e o dano */
+  chainLightning?: (caster: PlayerState) => void;
 }
 
 export interface AbilityDef {
@@ -478,7 +483,7 @@ export const SHIELD_SPEED_MUL = 0.6;
 /** Capa-Escudo — bloqueia projéteis frontais (id 4). */
 export const SHIELD_CAPE: AbilityDef = {
   id: 4,
-  name: "Capa-Escudo",
+  name: "Escudo Estelar",
   cooldownMs: 14000,
   castMs: 0,
   range: 0,
@@ -1099,6 +1104,157 @@ export const FROST_NOVA: AbilityDef = {
   },
 };
 
+/* ------------------------------------------------------------------ */
+/* Poderes novos                                                        */
+/* ------------------------------------------------------------------ */
+
+/** Escudo Bumerangue: kind no wire de throwables (snapshot). */
+export const SHIELD_THROW_KIND = 7;
+export const SHIELD_THROW_SPEED = 820;
+/** Ida (ms) antes de voltar pro dono. */
+export const SHIELD_THROW_OUT_MS = 820;
+/** Some se não conseguir voltar. */
+export const SHIELD_THROW_MAX_MS = 3200;
+export const SHIELD_THROW_BOUNCES = 3;
+/** Raio do disco (acerto em alvos / visual). */
+export const SHIELD_THROW_R = 17;
+/**
+ * Raio do disco contra paredes: menor que o do jogador (PLAYER_R), senão o
+ * disco nasce dentro da parede quando o dono está encostado nela e não passa
+ * em portas de 1 tile.
+ */
+export const SHIELD_THROW_WALL_R = 10;
+export const SHIELD_THROW_DMG = 34;
+export const SHIELD_THROW_ENEMY_DMG = 60;
+/** Empurrão no alvo. */
+export const SHIELD_THROW_KNOCK = 950;
+/** Causa killfeed. */
+export const SHIELD_THROW_CAUSE = 105;
+
+/** Escudo Bumerangue — arremessa o Escudo Estelar; ricocheteia e volta (id 9). */
+export const SHIELD_BOOMERANG: AbilityDef = {
+  id: 9,
+  name: "Escudo Bumerangue",
+  cooldownMs: 6500,
+  castMs: 0,
+  range: 0,
+  coneRad: 0,
+  apply(caster, _targets, _now, ctx) {
+    if (ctx.spawnShieldThrow?.(caster)) ctx.didCast = true;
+  },
+};
+
+export const CHAIN_RANGE = 440;
+export const CHAIN_HOP = 240;
+export const CHAIN_MAX = 4;
+export const CHAIN_DMG = [30, 24, 18, 14] as const;
+export const CHAIN_STUN_MS = 650;
+export const CHAIN_CAUSE = 106;
+/** weaponId dos eventos de segmento do raio (3000 + salto). */
+export const CHAIN_SEGMENT_BASE = 3000;
+
+/** Raio em Cadeia — acerta o alvo na mira e salta pra até 3 vizinhos (id 10). */
+export const CHAIN_LIGHTNING: AbilityDef = {
+  id: 10,
+  name: "Raio em Cadeia",
+  cooldownMs: 11000,
+  castMs: 0,
+  range: CHAIN_RANGE,
+  coneRad: 0.55,
+  apply(caster, _targets, _now, ctx) {
+    ctx.chainLightning?.(caster);
+    ctx.didCast = true;
+  },
+};
+
+export const BLINK_RANGE = 270;
+export const BLINK_CD_MS = 7000;
+/** Menor salto que conta (evita gastar CD encostado na parede). */
+export const BLINK_MIN = 26;
+
+type SolidFn = (x: number, y: number, r: number, doorBits: number) => boolean;
+
+/**
+ * Sonda do teleporte: meio px menor que o jogador — quem desliza encostado
+ * na parede fica a exatamente PLAYER_R dela e não pode contar como colisão.
+ */
+const BLINK_PROBE_R = PLAYER_R - 0.5;
+const BLINK_STEP = 6;
+
+/**
+ * Destino do Passo Sombrio: anda na mira em passos curtos; se bater em
+ * parede/totem, desliza no eixo livre (como o movimento). Nunca atravessa.
+ */
+export function blinkDestination(
+  x: number,
+  y: number,
+  aim: number,
+  doorBits: number,
+  hitsSolidFn: SolidFn,
+  totems?: readonly SpikeTotemSense[],
+): { x: number; y: number } {
+  const sx = Math.cos(aim) * BLINK_STEP;
+  const sy = Math.sin(aim) * BLINK_STEP;
+  const blocked = (px: number, py: number) =>
+    hitsSolidFn(px, py, BLINK_PROBE_R, doorBits) ||
+    (!!totems?.length && hitsTotemBody(px, py, BLINK_PROBE_R, totems));
+  // quina (os dois eixos livres): anda no eixo dominante da mira
+  const xFirst = Math.abs(sx) >= Math.abs(sy);
+  let bx = x;
+  let by = y;
+  for (let d = BLINK_STEP; d <= BLINK_RANGE; d += BLINK_STEP) {
+    if (!blocked(bx + sx, by + sy)) {
+      bx += sx;
+      by += sy;
+      continue;
+    }
+    const canX = Math.abs(sx) > 0.5 && !blocked(bx + sx, by);
+    const canY = Math.abs(sy) > 0.5 && !blocked(bx, by + sy);
+    if (canX && (xFirst || !canY)) bx += sx;
+    else if (canY) by += sy;
+    else break;
+  }
+  return { x: bx, y: by };
+}
+
+/**
+ * Passo Sombrio (host + predição + replay): teleporta na mira.
+ * Retorna origem/destino ou null (CD / sem espaço).
+ */
+export function performBlink(
+  p: PlayerState,
+  now: number,
+  aim: number,
+  doorBits: number,
+  hitsSolidFn: SolidFn,
+  totems?: readonly SpikeTotemSense[],
+): { fromX: number; fromY: number; x: number; y: number } | null {
+  if ((p.abilityCdUntil ?? 0) > now) return null;
+  const dest = blinkDestination(p.x, p.y, aim, doorBits, hitsSolidFn, totems);
+  if (Math.hypot(dest.x - p.x, dest.y - p.y) < BLINK_MIN) return null;
+  const fromX = p.x;
+  const fromY = p.y;
+  p.x = dest.x;
+  p.y = dest.y;
+  p.vx *= 0.25;
+  p.vy *= 0.25;
+  p.abilityCdUntil = now + BLINK_CD_MS;
+  return { fromX, fromY, x: dest.x, y: dest.y };
+}
+
+/** Passo Sombrio — teleporte curto na mira (id 11). Resolvido no sim. */
+export const SHADOW_STEP: AbilityDef = {
+  id: 11,
+  name: "Passo Sombrio",
+  cooldownMs: BLINK_CD_MS,
+  castMs: 0,
+  range: BLINK_RANGE,
+  coneRad: 0,
+  apply(_caster, _targets, _now, ctx) {
+    ctx.didCast = true;
+  },
+};
+
 export const ABILITIES: AbilityDef[] = [
   WATER_JET,
   SUMMON_GIANT,
@@ -1109,13 +1265,16 @@ export const ABILITIES: AbilityDef[] = [
   DEVASTATOR_BOMB,
   SPIKE_TOTEM,
   FROST_NOVA,
+  SHIELD_BOOMERANG,
+  CHAIN_LIGHTNING,
+  SHADOW_STEP,
 ];
 
 /** Ordem do ciclo T no treino. */
-export const ABILITY_CYCLE_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8] as const;
+export const ABILITY_CYCLE_IDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const;
 
-/** Drops de habilidade no Survival (6 = bomba rara; 7 = totem; 8 = gelo). */
-export const ABILITY_DROP_IDS = [2, 3, 4, 5, 6, 7, 8] as const;
+/** Drops de habilidade no Survival (6 = bomba rara; 7 = totem; 8 = gelo; 9–11 novos). */
+export const ABILITY_DROP_IDS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11] as const;
 
 export function abilityOf(id: number): AbilityDef {
   return ABILITIES.find((a) => a.id === id) ?? WATER_JET;

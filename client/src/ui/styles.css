@@ -1187,3 +1187,273 @@ body.game-fullscreen {
     height: 16px;
   }
 }
+
+/* ---------- guarda-roupa ---------- */
+.wardrobe-overlay {
+  z-index: 60;
+}
+
+.wardrobe {
+  width: min(980px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+  padding: 1rem 1.1rem;
+  background: linear-gradient(180deg, #16251f 0%, #0f1a16 100%);
+  border: 2px solid #000;
+  box-shadow: 6px 6px 0 #000;
+}
+
+.ward-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+}
+
+.ward-head h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  letter-spacing: 0.02em;
+}
+
+.ward-body {
+  display: grid;
+  grid-template-columns: minmax(200px, 300px) 1fr;
+  gap: 1rem;
+  min-height: 0;
+  flex: 1;
+}
+
+.ward-stage {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.ward-preview {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  background:
+    radial-gradient(ellipse at 50% 85%, rgba(255, 255, 255, 0.06), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 2px, transparent 2px 24px),
+    #1a2a22;
+  border: 2px solid #000;
+  box-shadow: inset 0 0 40px rgba(0, 0, 0, 0.45);
+  cursor: pointer;
+}
+
+.ward-stage-ctl {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.ward-stage-ctl button {
+  flex: 1;
+  padding: 0.45rem 0.4rem;
+}
+
+.ward-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ward-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.ward-tabs button {
+  padding: 0.4rem 0.7rem;
+  font-size: 0.82rem;
+  background: #1d2b25;
+  box-shadow: 2px 2px 0 #000;
+}
+
+.ward-tabs button.on {
+  background: var(--giz);
+}
+
+.ward-items,
+.ward-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  overflow-y: auto;
+  padding: 2px 6px 6px 2px;
+  align-content: flex-start;
+}
+
+.ward-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.85rem;
+  background: #22322b;
+  box-shadow: 2px 2px 0 #000;
+}
+
+.ward-chip.on {
+  background: var(--giz);
+  outline: 2px solid #9fc0ff;
+  outline-offset: -4px;
+}
+
+.ward-swatch {
+  width: 14px;
+  height: 14px;
+  border: 1px solid #000;
+  display: inline-block;
+}
+
+.ward-presets {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+}
+
+.ward-preset {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  grid-template-rows: auto 1fr;
+  column-gap: 0.55rem;
+  text-align: left;
+  padding: 0.45rem;
+  background: #22322b;
+  box-shadow: 3px 3px 0 #000;
+  font-weight: 600;
+}
+
+.ward-preset.on {
+  background: #2c4a8e;
+  outline: 2px solid #9fc0ff;
+  outline-offset: -4px;
+}
+
+.ward-thumb {
+  grid-row: 1 / 3;
+  width: 64px;
+  height: 80px;
+  background: #16231d;
+  border: 1px solid #000;
+}
+
+.ward-preset-name {
+  font-size: 0.9rem;
+}
+
+.ward-preset-desc {
+  font-size: 0.7rem;
+  font-weight: 400;
+  color: var(--muted);
+  line-height: 1.25;
+}
+
+.ward-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.look-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+@media (max-width: 720px) {
+  .ward-body {
+    grid-template-columns: 1fr;
+  }
+  .ward-preview {
+    aspect-ratio: auto;
+    height: 200px;
+  }
+  .wardrobe {
+    padding: 0.7rem;
+  }
+}
+
+/* HUD inferior sobreposto à arena no desktop (não empurra a página pra baixo) */
+.game-shell:not(.mobile) .hud-bottom {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: none;
+  background: linear-gradient(180deg, transparent, rgba(8, 16, 13, 0.82));
+}
+
+/* overlays roláveis quando o card é mais alto que a tela (celular deitado) */
+.lobby-overlay {
+  overflow-y: auto;
+  align-items: flex-start;
+}
+.lobby-overlay > * {
+  margin: auto;
+}
+
+/* guarda-roupa: a lista rola dentro do card (não empurra os botões) */
+.ward-body {
+  grid-template-rows: minmax(0, 1fr);
+}
+.ward-items,
+.ward-presets {
+  flex: 1;
+  min-height: 0;
+}
+
+@media (max-height: 560px) {
+  .wardrobe {
+    padding: 0.55rem 0.7rem;
+    gap: 0.45rem;
+    height: calc(100vh - 16px);
+  }
+  .ward-head h2 {
+    font-size: 1.05rem;
+  }
+  .ward-head .hint {
+    display: none;
+  }
+  .ward-body {
+    grid-template-columns: 170px 1fr;
+    gap: 0.6rem;
+  }
+  .ward-preview {
+    aspect-ratio: auto;
+    flex: 1;
+    min-height: 0;
+    height: auto;
+  }
+  .ward-stage {
+    min-height: 0;
+  }
+  .ward-stage-ctl button,
+  .ward-actions button {
+    padding: 0.35rem 0.55rem;
+    font-size: 0.8rem;
+  }
+  .ward-tabs button {
+    padding: 0.3rem 0.5rem;
+    font-size: 0.75rem;
+  }
+  .ward-presets {
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  }
+  .ward-preset-desc {
+    display: none;
+  }
+}
+
+/* cards de skin: hover sutil (o azul forte do botão apagava a descrição) */
+.ward-preset:hover:not(:disabled) {
+  background: #2d4238;
+}
+.ward-preset.on:hover:not(:disabled) {
+  background: #34539a;
+}

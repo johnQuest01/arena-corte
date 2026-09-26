@@ -58,23 +58,70 @@ const corpses: Corpse[] = [];
 const floats: FloatNum[] = [];
 const flashHit = new Map<number, number>(); // playerId → untilMs
 
-let decal: HTMLCanvasElement | null = null;
-let dctx: CanvasRenderingContext2D | null = null;
-let decalCount = 0;
-const MAX_DECALS = 300;
+/**
+ * Decals em chunks ESPARSOS (256 px) criados só onde há marca — antes era um
+ * canvas do mapa inteiro (5120×3840 ≈ 78 MB, acima do limite do iOS).
+ */
+const DECAL_CH = 256;
+const MAX_DECAL_CHUNKS = 48;
+interface DecalChunk {
+  canvas: HTMLCanvasElement;
+  g: CanvasRenderingContext2D;
+  cx: number;
+  cy: number;
+  count: number;
+  touched: number;
+}
+const decalChunks = new Map<number, DecalChunk>();
+let decalStamp = 0;
+let decalW = 0;
+let decalH = 0;
+const MAX_DECALS_PER_CHUNK = 90;
 
 export function initDecals(w: number, h: number) {
-  if (!decal || decal.width !== w || decal.height !== h) {
-    decal = document.createElement("canvas");
-    decal.width = w;
-    decal.height = h;
-    dctx = decal.getContext("2d");
+  decalW = w;
+  decalH = h;
+}
+
+function decalChunkAt(cx: number, cy: number): DecalChunk | null {
+  if (cx < 0 || cy < 0 || cx * DECAL_CH >= decalW || cy * DECAL_CH >= decalH) return null;
+  const key = cy * 1024 + cx;
+  let c = decalChunks.get(key);
+  if (!c) {
+    if (decalChunks.size >= MAX_DECAL_CHUNKS) {
+      // recicla o chunk menos recente
+      let oldKey = -1;
+      let oldT = Infinity;
+      for (const [k, v] of decalChunks) {
+        if (v.touched < oldT) {
+          oldT = v.touched;
+          oldKey = k;
+        }
+      }
+      const old = decalChunks.get(oldKey)!;
+      decalChunks.delete(oldKey);
+      old.g.setTransform(1, 0, 0, 1, 0, 0);
+      old.g.clearRect(0, 0, DECAL_CH, DECAL_CH);
+      c = { ...old, cx, cy, count: 0, touched: 0 };
+    } else {
+      const canvas = document.createElement("canvas");
+      canvas.width = DECAL_CH;
+      canvas.height = DECAL_CH;
+      c = { canvas, g: canvas.getContext("2d")!, cx, cy, count: 0, touched: 0 };
+    }
+    decalChunks.set(key, c);
   }
+  c.touched = ++decalStamp;
+  return c;
 }
 
 export function clearDecals() {
-  if (dctx && decal) dctx.clearRect(0, 0, decal.width, decal.height);
-  decalCount = 0;
+  for (const c of decalChunks.values()) {
+    c.g.setTransform(1, 0, 0, 1, 0, 0);
+    c.g.clearRect(0, 0, DECAL_CH, DECAL_CH);
+    c.count = 0;
+  }
+  decalChunks.clear();
   particles.length = 0;
   gibs.length = 0;
   corpses.length = 0;
@@ -96,6 +143,8 @@ function damageFromHit(weaponId: number | undefined): number {
   const id = weaponId ?? 0;
   if (id === 100) return 55;
   if (id === 101) return 12;
+  if (id === 105) return 34;
+  if (id === 106) return 26;
   if (id >= 0 && id <= 6) return weaponOf(id).damage;
   return 20;
 }
@@ -137,21 +186,34 @@ function spawnKillFloat(x: number, y: number) {
 }
 
 function stampDecal(x: number, y: number, r: number, color: string, a = 0.55) {
-  if (!dctx || !decal) return;
-  if (decalCount >= MAX_DECALS) {
-    // sobrescreve região aleatória leve
-    dctx.globalCompositeOperation = "destination-out";
-    dctx.fillStyle = "rgba(0,0,0,0.08)";
-    dctx.fillRect(Math.random() * decal.width, Math.random() * decal.height, 40, 40);
-    dctx.globalCompositeOperation = "source-over";
+  // pode tocar até 4 chunks se estiver na borda
+  const rot = Math.random() * Math.PI;
+  const cx0 = Math.floor((x - r) / DECAL_CH);
+  const cx1 = Math.floor((x + r) / DECAL_CH);
+  const cy0 = Math.floor((y - r) / DECAL_CH);
+  const cy1 = Math.floor((y + r) / DECAL_CH);
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const c = decalChunkAt(cx, cy);
+      if (!c) continue;
+      const g = c.g;
+      g.setTransform(1, 0, 0, 1, -cx * DECAL_CH, -cy * DECAL_CH);
+      if (c.count >= MAX_DECALS_PER_CHUNK) {
+        // desbota uma região aleatória (mantém o chunk "vivo" sem crescer)
+        g.globalCompositeOperation = "destination-out";
+        g.fillStyle = "rgba(0,0,0,0.1)";
+        g.fillRect(cx * DECAL_CH + Math.random() * DECAL_CH, cy * DECAL_CH + Math.random() * DECAL_CH, 48, 48);
+        g.globalCompositeOperation = "source-over";
+      }
+      g.fillStyle = color;
+      g.globalAlpha = a;
+      g.beginPath();
+      g.ellipse(x, y, r, r * 0.65, rot, 0, Math.PI * 2);
+      g.fill();
+      g.globalAlpha = 1;
+      c.count++;
+    }
   }
-  dctx.fillStyle = color;
-  dctx.globalAlpha = a;
-  dctx.beginPath();
-  dctx.ellipse(x, y, r, r * 0.65, Math.random() * Math.PI, 0, Math.PI * 2);
-  dctx.fill();
-  dctx.globalAlpha = 1;
-  decalCount++;
 }
 
 export function stampBulletMark(x: number, y: number) {
@@ -162,8 +224,39 @@ export function stampShell(x: number, y: number) {
   stampDecal(x, y, 1.2, "#c8a060", 0.7);
 }
 
-function lookOf(id: number) {
-  return LOADOUTS[id % LOADOUTS.length]!;
+/** Cores do corpo caído — vêm do visual (cosméticos) de cada jogador. */
+export interface CorpseColors {
+  shirt: string;
+  pants: string;
+  skin: string;
+  hair: string;
+  shoes: string;
+  /** capacete/elmo cobre a cabeça */
+  helmet?: string;
+}
+
+let colorProvider: ((id: number) => CorpseColors) | null = null;
+
+export function setCorpseColorProvider(fn: (id: number) => CorpseColors) {
+  colorProvider = fn;
+}
+
+/** roundRect compatível (Safari < 16 não tem ctx.roundRect). */
+function rrect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+function lookOf(id: number): CorpseColors {
+  if (colorProvider) return colorProvider(id);
+  const l = LOADOUTS[id % LOADOUTS.length]!;
+  return { shirt: l.shirt, pants: l.pants, skin: l.skin, hair: l.hair, shoes: l.shoes };
 }
 
 export function processGoreEvents(events: TickEvent[], now: number, selfId = -1) {
@@ -370,16 +463,14 @@ export function drawDecalLayer(
   viewW = 0,
   viewH = 0,
 ) {
-  if (!decal) return;
-  if (viewW > 0 && viewH > 0) {
-    const pad = 2;
-    const sx = Math.max(0, Math.floor(camX - pad));
-    const sy = Math.max(0, Math.floor(camY - pad));
-    const sw = Math.min(decal.width - sx, Math.ceil(viewW + pad * 2));
-    const sh = Math.min(decal.height - sy, Math.ceil(viewH + pad * 2));
-    if (sw > 0 && sh > 0) ctx.drawImage(decal, sx, sy, sw, sh, sx, sy, sw, sh);
-  } else {
-    ctx.drawImage(decal, 0, 0);
+  if (decalChunks.size === 0) return;
+  const x1 = viewW > 0 ? camX + viewW : decalW;
+  const y1 = viewH > 0 ? camY + viewH : decalH;
+  for (const c of decalChunks.values()) {
+    const x = c.cx * DECAL_CH;
+    const y = c.cy * DECAL_CH;
+    if (x + DECAL_CH < camX || y + DECAL_CH < camY || x > x1 || y > y1) continue;
+    ctx.drawImage(c.canvas, x, y);
   }
 }
 
@@ -389,15 +480,56 @@ export function drawGoreActors(ctx: CanvasRenderingContext2D) {
     ctx.save();
     ctx.translate(c.x, c.y);
     ctx.rotate(c.angle);
-    ctx.globalAlpha = 0.9;
-    ctx.fillStyle = look.pants;
-    ctx.fillRect(-6, -3, 14, 5);
-    ctx.fillStyle = look.shirt;
-    ctx.fillRect(-8, -5, 12, 7);
-    ctx.fillStyle = look.skin;
+    ctx.globalAlpha = 0.92;
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#1a1411";
+    ctx.lineWidth = 2;
+    // sombra
+    ctx.fillStyle = "rgba(12,8,10,0.3)";
     ctx.beginPath();
-    ctx.arc(-10, 0, 4, 0, Math.PI * 2);
+    ctx.ellipse(4, 3, 34, 13, 0, 0, Math.PI * 2);
     ctx.fill();
+    // pernas + sapatos
+    ctx.fillStyle = look.pants;
+    for (const ly of [-5, 5]) {
+      rrect(ctx, 8, ly - 4, 20, 8, 3);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.fillStyle = look.shoes;
+    for (const ly of [-5, 5]) {
+      rrect(ctx, 26, ly - 4.5, 8, 9, 3);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // tronco
+    ctx.fillStyle = look.shirt;
+    rrect(ctx, -12, -12, 24, 24, 6);
+    ctx.fill();
+    ctx.stroke();
+    // cabeça
+    ctx.fillStyle = look.helmet ?? look.skin;
+    ctx.beginPath();
+    ctx.arc(-22, 0, 11, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    if (!look.helmet) {
+      ctx.fillStyle = look.hair;
+      ctx.beginPath();
+      ctx.arc(-24, 0, 10, Math.PI * 0.55, Math.PI * 1.45);
+      ctx.fill();
+      // olhos "X"
+      ctx.strokeStyle = "#1a1411";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (const ey of [-4, 4]) {
+        ctx.moveTo(-18, ey - 2);
+        ctx.lineTo(-15, ey + 2);
+        ctx.moveTo(-15, ey - 2);
+        ctx.lineTo(-18, ey + 2);
+      }
+      ctx.stroke();
+    }
     ctx.restore();
   }
   for (const g of gibs) {

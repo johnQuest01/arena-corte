@@ -87,11 +87,14 @@ function hxy(x: number, y: number, n: number): number {
 
 const PITCH = 20;
 const ROAD_W = 4;
+/** Malha urbana (tiles): a cada ROAD_PITCH começa uma rua de ROAD_WIDTH tiles. */
+export const ROAD_PITCH = PITCH;
+export const ROAD_WIDTH = ROAD_W;
 
-function isRoadX(x: number): boolean {
+export function isRoadX(x: number): boolean {
   return x % PITCH < ROAD_W;
 }
-function isRoadY(y: number): boolean {
+export function isRoadY(y: number): boolean {
   return y % PITCH < ROAD_W;
 }
 
@@ -271,8 +274,9 @@ function buildCity(): {
       // ~70% dos quarteirões ganham prédio
       if (roll < 3) continue;
 
-      const tw = 5 + hxy(bx + 1, by, 3); // 5..7
-      const th = 5 + hxy(bx, by + 1, 3);
+      // 8..11 tiles: casa do tamanho de gente (antes 5..7 — o boneco ficava maior que a casa)
+      const tw = 8 + hxy(bx + 1, by, 4);
+      const th = 8 + hxy(bx, by + 1, 4);
       const ox = ix + 1 + hxy(bx + 2, by, Math.max(1, iw - tw - 1));
       const oy = iy + 1 + hxy(bx, by + 2, Math.max(1, ih - th - 1));
       const wall = hxy(bx + 5, by + 5, 2) === 0 ? T.WALL : T.METAL;
@@ -292,42 +296,56 @@ function buildCity(): {
 
   const isAsphalt = (t: number) => t === T.ROAD || t === T.ROAD_LINE;
 
-  // —— cover: carros nas ruas, caixas/barris em calçadas ——
+  // —— carros abandonados: 4×2 tiles, estacionados numa faixa, fora do cruzamento ——
+  const CAR_L = 4;
+  const CAR_W = 2;
+  /** retângulo + margem livre de sólidos e dentro do mapa */
+  const rectFree = (x0: number, y0: number, w: number, h: number, pad: number) => {
+    for (let y = y0 - pad; y < y0 + h + pad; y++) {
+      for (let x = x0 - pad; x < x0 + w + pad; x++) {
+        if (x < 1 || y < 1 || x >= MAP_W - 1 || y >= MAP_H - 1) return false;
+        if (solid[y]![x]! >= 10) return false;
+      }
+    }
+    return true;
+  };
+  const allAsphalt = (x0: number, y0: number, w: number, h: number) => {
+    for (let y = y0; y < y0 + h; y++) {
+      for (let x = x0; x < x0 + w; x++) {
+        if (!isAsphalt(ground[y]![x]!)) return false;
+      }
+    }
+    return true;
+  };
+  for (let y = 2; y < MAP_H - 2; y++) {
+    for (let x = 2; x < MAP_W - 2; x++) {
+      // rua vertical: carro em pé (2 de largura = uma faixa, 4 de comprimento)
+      const laneX = x % PITCH;
+      if ((laneX === 0 || laneX === 2) && isRoadX(x) && hxy(x, y, 70) === 0) {
+        let seg = true;
+        for (let k = 0; k < CAR_L && seg; k++) if (isRoadY(y + k)) seg = false;
+        if (seg && allAsphalt(x, y, CAR_W, CAR_L) && rectFree(x, y, CAR_W, CAR_L, 1)) {
+          fillRect(solid, x, y, CAR_W, CAR_L, T.CAR);
+          continue;
+        }
+      }
+      // rua horizontal: carro deitado
+      const laneY = y % PITCH;
+      if ((laneY === 0 || laneY === 2) && isRoadY(y) && hxy(x + 11, y, 70) === 0) {
+        let seg = true;
+        for (let k = 0; k < CAR_L && seg; k++) if (isRoadX(x + k)) seg = false;
+        if (seg && allAsphalt(x, y, CAR_L, CAR_W) && rectFree(x, y, CAR_L, CAR_W, 1)) {
+          fillRect(solid, x, y, CAR_L, CAR_W, T.CAR);
+        }
+      }
+    }
+  }
+
+  // —— cover: caixas/barris em calçadas e baldios ——
   for (let y = 2; y < MAP_H - 2; y++) {
     for (let x = 2; x < MAP_W - 2; x++) {
       if (solid[y]![x]! >= 10) continue;
       const g = ground[y]![x]!;
-
-      // carros abandonados no asfalto (2 tiles) — borda da faixa, fora do cruzamento
-      const onVertRoad = isRoadX(x) && !isRoadY(y);
-      const onHorzRoad = isRoadY(y) && !isRoadX(x);
-      if (
-        onVertRoad &&
-        isAsphalt(g) &&
-        isAsphalt(ground[y]![x + 1]!) &&
-        solid[y]![x + 1]! < 10 &&
-        isRoadX(x + 1) &&
-        !isRoadY(y) &&
-        hxy(x, y, 37) === 0
-      ) {
-        solid[y]![x] = T.CAR;
-        solid[y]![x + 1] = T.CAR;
-        continue;
-      }
-      if (
-        onHorzRoad &&
-        isAsphalt(g) &&
-        isAsphalt(ground[y + 1]![x]!) &&
-        solid[y + 1]![x]! < 10 &&
-        isRoadY(y + 1) &&
-        !isRoadX(x) &&
-        hxy(x + 11, y, 41) === 0
-      ) {
-        solid[y]![x] = T.CAR;
-        solid[y + 1]![x] = T.CAR;
-        continue;
-      }
-
       // entulho na calçada
       if (g === T.SIDEWALK && hxy(x, y, 29) === 0) {
         solid[y]![x] = hxy(x + 1, y, 2) === 0 ? T.CRATE : T.BARREL;
@@ -573,9 +591,31 @@ export function moveAndSlide(
   return { x: end.x, y: end.y, vx: ovx, vy: ovy };
 }
 
+const tileRect = { x: 0, y: 0, w: TILE, h: TILE };
+
+/**
+ * Círculo encosta em parede/prop sólido ou porta fechada?
+ * Consulta só os tiles sob o círculo (antes: copiava e varria todos os
+ * retângulos do mapa a cada chamada — balas, IA e poderes chamam muito).
+ * Mesmo resultado: a união dos tiles sólidos = união dos retângulos fundidos.
+ */
 export function hitsSolid(x: number, y: number, r: number, doorBits: number): boolean {
-  for (const o of solidRects(doorBits)) {
-    if (circleRect(x, y, r, o)) return true;
+  const tx0 = Math.max(0, Math.floor((x - r) / TILE));
+  const ty0 = Math.max(0, Math.floor((y - r) / TILE));
+  const tx1 = Math.min(MAP_W - 1, Math.floor((x + r) / TILE));
+  const ty1 = Math.min(MAP_H - 1, Math.floor((y + r) / TILE));
+  for (let ty = ty0; ty <= ty1; ty++) {
+    const row = SOLID[ty]!;
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (!isSolidTile(row[tx]!)) continue;
+      tileRect.x = tx * TILE;
+      tileRect.y = ty * TILE;
+      if (circleRect(x, y, r, tileRect)) return true;
+    }
+  }
+  for (const d of DOOR_DEFS) {
+    if (doorBits & (1 << d.id)) continue;
+    if (circleRect(x, y, r, doorWorldRect(d))) return true;
   }
   return false;
 }
