@@ -576,9 +576,31 @@ export function moveAndSlide(
   return { x: end.x, y: end.y, vx: ovx, vy: ovy };
 }
 
+const tileRect = { x: 0, y: 0, w: TILE, h: TILE };
+
+/**
+ * Círculo encosta em parede/prop sólido ou porta fechada?
+ * Consulta só os tiles sob o círculo (antes: copiava e varria todos os
+ * retângulos do mapa a cada chamada — balas, IA e poderes chamam muito).
+ * Mesmo resultado: a união dos tiles sólidos = união dos retângulos fundidos.
+ */
 export function hitsSolid(x: number, y: number, r: number, doorBits: number): boolean {
-  for (const o of solidRects(doorBits)) {
-    if (circleRect(x, y, r, o)) return true;
+  const tx0 = Math.max(0, Math.floor((x - r) / TILE));
+  const ty0 = Math.max(0, Math.floor((y - r) / TILE));
+  const tx1 = Math.min(MAP_W - 1, Math.floor((x + r) / TILE));
+  const ty1 = Math.min(MAP_H - 1, Math.floor((y + r) / TILE));
+  for (let ty = ty0; ty <= ty1; ty++) {
+    const row = SOLID[ty]!;
+    for (let tx = tx0; tx <= tx1; tx++) {
+      if (!isSolidTile(row[tx]!)) continue;
+      tileRect.x = tx * TILE;
+      tileRect.y = ty * TILE;
+      if (circleRect(x, y, r, tileRect)) return true;
+    }
+  }
+  for (const d of DOOR_DEFS) {
+    if (doorBits & (1 << d.id)) continue;
+    if (circleRect(x, y, r, doorWorldRect(d))) return true;
   }
   return false;
 }
