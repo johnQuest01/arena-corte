@@ -596,6 +596,22 @@ function drawSilenceIcon(ctx: CanvasRenderingContext2D, x: number, y: number) {
   ctx.restore();
 }
 
+/** Lado pro qual o inimigo anda (+1 dir / -1 esq) — deduzido do movimento. */
+const enemyFace = new Map<number, { x: number; y: number; f: number }>();
+function enemyFacing(id: number, x: number, y: number): number {
+  const prev = enemyFace.get(id);
+  if (!prev) {
+    enemyFace.set(id, { x, y, f: 1 });
+    if (enemyFace.size > 256) enemyFace.clear();
+    return 1;
+  }
+  const dx = x - prev.x;
+  if (Math.abs(dx) > 0.4) prev.f = dx > 0 ? 1 : -1;
+  prev.x = x;
+  prev.y = y;
+  return prev.f;
+}
+
 function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, view: RenderView) {
   const def =
     en.type === 2
@@ -769,114 +785,282 @@ function drawEnemy(ctx: CanvasRenderingContext2D, en: EnemySnap, tMs: number, vi
     ctx.shadowBlur = 0;
     ctx.restore();
   } else if (en.type === 1) {
-    // Brutamontes — monstro enorme, inconfundível
+    // Brutamontes — massa de músculo, ombreiras com espinhos, punhos enormes
     const s = scale * 0.55;
-    ctx.fillStyle = "rgba(20,8,8,0.55)";
+    const face = enemyFacing(en.id, en.x, en.y);
+    const walk = charge ? tMs * 0.03 : tMs * 0.012;
+    const stomp = frozen ? 0 : Math.sin(walk + en.id);
+    ctx.fillStyle = "rgba(20,8,8,0.5)";
     ctx.beginPath();
-    ctx.ellipse(0, 22 * s, 34 * s, 12 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 24 * s, 36 * s, 11 * s, 0, 0, Math.PI * 2);
     ctx.fill();
-
-    // aura de ameaça
     if (charge || windup) {
-      const pulse = 0.35 + Math.sin(tMs * 0.02) * 0.15;
-      ctx.fillStyle = `rgba(180,30,20,${pulse})`;
+      const pulse = 0.28 + Math.sin(tMs * 0.02) * 0.12;
+      ctx.fillStyle = `rgba(190,34,22,${pulse})`;
       ctx.beginPath();
-      ctx.arc(0, 0, 48 * s, 0, Math.PI * 2);
+      ctx.arc(0, -4 * s, 50 * s, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    // corpo gordo
-    ctx.fillStyle = stun ? "#6a5a4a" : charge ? "#8a2820" : "#3a2218";
+    ctx.save();
+    ctx.scale(face, 1);
+    ctx.lineJoin = "round";
+    ctx.strokeStyle = "#140a08";
+    ctx.lineWidth = 2.4;
+    const skin = stun ? "#7a6a5a" : charge ? "#8e3526" : "#6b3b2c";
+    const skinD = stun ? "#5e5044" : charge ? "#6a2419" : "#4d281d";
+    // pernas grossas
+    for (const i of [-1, 1]) {
+      const lift = Math.max(0, Math.sin(walk + en.id + (i > 0 ? Math.PI : 0))) * 4 * s;
+      ctx.fillStyle = "#2b1d18";
+      ctx.beginPath();
+      ctx.ellipse(i * 13 * s, 14 * s - lift, 9 * s, 12 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#171010";
+      ctx.beginPath();
+      ctx.ellipse(i * 14 * s + 3 * s, 24 * s - lift, 10 * s, 5 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // braço de trás
+    ctx.fillStyle = skinD;
     ctx.beginPath();
-    ctx.ellipse(0, 4 * s, 36 * s, 40 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(-26 * s, -2 * s + stomp * 2 * s, 9 * s, 16 * s, 0.2, 0, Math.PI * 2);
     ctx.fill();
-    // barriga
-    ctx.fillStyle = stun ? "#7a6a55" : "#4a3020";
+    ctx.stroke();
+    // tronco (V invertido)
+    ctx.fillStyle = skin;
     ctx.beginPath();
-    ctx.ellipse(0, 12 * s, 28 * s, 24 * s, 0, 0, Math.PI * 2);
+    ctx.moveTo(-30 * s, -20 * s);
+    ctx.quadraticCurveTo(0, -34 * s, 30 * s, -20 * s);
+    ctx.quadraticCurveTo(26 * s, 8 * s, 14 * s, 14 * s);
+    ctx.lineTo(-14 * s, 14 * s);
+    ctx.quadraticCurveTo(-26 * s, 8 * s, -30 * s, -20 * s);
+    ctx.closePath();
     ctx.fill();
-    // cabeça
-    ctx.fillStyle = "#2a1810";
+    ctx.stroke();
+    // peitoral / abdômen
+    ctx.strokeStyle = "rgba(20,8,6,0.45)";
+    ctx.lineWidth = 1.6;
     ctx.beginPath();
-    ctx.arc(0, -28 * s, 22 * s, 0, Math.PI * 2);
+    ctx.moveTo(-14 * s, -14 * s);
+    ctx.quadraticCurveTo(0, -8 * s, 14 * s, -14 * s);
+    ctx.moveTo(0, -10 * s);
+    ctx.lineTo(0, 8 * s);
+    ctx.moveTo(-8 * s, -1 * s);
+    ctx.lineTo(8 * s, -1 * s);
+    ctx.moveTo(-7 * s, 5 * s);
+    ctx.lineTo(7 * s, 5 * s);
+    ctx.stroke();
+    // cicatriz
+    ctx.strokeStyle = "rgba(230,160,150,0.5)";
+    ctx.beginPath();
+    ctx.moveTo(-18 * s, -18 * s);
+    ctx.lineTo(-6 * s, -6 * s);
+    ctx.stroke();
+    // cinto com fivela de crânio
+    ctx.fillStyle = "#1c1210";
+    ctx.fillRect(-16 * s, 8 * s, 32 * s, 6 * s);
+    ctx.fillStyle = "#cfc6b0";
+    ctx.beginPath();
+    ctx.arc(0, 11 * s, 3.2 * s, 0, Math.PI * 2);
     ctx.fill();
-    // mandíbula / ombros
-    ctx.fillStyle = "#1a1008";
-    ctx.fillRect(-26 * s, -18 * s, 52 * s, 10 * s);
-    // olhos vermelhos grandes
-    const eye = windup || charge ? "#ff3030" : "#e02020";
+    // ombreiras com espinhos
+    ctx.strokeStyle = "#140a08";
+    ctx.lineWidth = 2.4;
+    for (const i of [-1, 1]) {
+      ctx.fillStyle = "#3a3634";
+      ctx.beginPath();
+      ctx.ellipse(i * 24 * s, -22 * s, 11 * s, 8 * s, i * 0.3, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#b8b0a2";
+      for (let k = -1; k <= 1; k++) {
+        const bx = i * 24 * s + k * 6 * s;
+        ctx.beginPath();
+        ctx.moveTo(bx - 2.5 * s, -27 * s);
+        ctx.lineTo(bx, -36 * s);
+        ctx.lineTo(bx + 2.5 * s, -27 * s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+    // cabeça pequena afundada + chifres
+    ctx.fillStyle = skinD;
+    ctx.beginPath();
+    ctx.arc(4 * s, -32 * s, 11 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = "#e8dcc2";
+    for (const i of [-1, 1]) {
+      ctx.beginPath();
+      ctx.moveTo(4 * s + i * 7 * s, -38 * s);
+      ctx.quadraticCurveTo(4 * s + i * 16 * s, -44 * s, 4 * s + i * 14 * s, -54 * s);
+      ctx.lineTo(4 * s + i * 4 * s, -41 * s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+    const eye = windup || charge ? "#ff3a2a" : "#e02020";
     ctx.fillStyle = eye;
     ctx.shadowColor = eye;
     ctx.shadowBlur = charge ? 12 : 6;
     ctx.beginPath();
-    ctx.arc(-8 * s, -30 * s, 4.5 * s, 0, Math.PI * 2);
-    ctx.arc(8 * s, -30 * s, 4.5 * s, 0, Math.PI * 2);
+    ctx.arc(8 * s, -33 * s, 2.6 * s, 0, Math.PI * 2);
+    ctx.arc(1 * s, -33 * s, 2.3 * s, 0, Math.PI * 2);
     ctx.fill();
     ctx.shadowBlur = 0;
-    // chifres / crista
-    ctx.fillStyle = "#1a1008";
+    // mandíbula com presas
+    ctx.fillStyle = "#e8dcc2";
+    ctx.fillRect(1 * s, -26 * s, 2 * s, 3 * s);
+    ctx.fillRect(7 * s, -26 * s, 2 * s, 3 * s);
+    // braço da frente + punho gigante
+    const armY = windup ? -30 * s : 4 * s + stomp * 2 * s;
+    ctx.fillStyle = skin;
     ctx.beginPath();
-    ctx.moveTo(-14 * s, -42 * s);
-    ctx.lineTo(-22 * s, -58 * s);
-    ctx.lineTo(-6 * s, -46 * s);
+    ctx.ellipse(28 * s, (armY - 14 * s) / 2, 9 * s, 17 * s, -0.3, 0, Math.PI * 2);
     ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = skinD;
     ctx.beginPath();
-    ctx.moveTo(14 * s, -42 * s);
-    ctx.lineTo(22 * s, -58 * s);
-    ctx.lineTo(6 * s, -46 * s);
+    ctx.arc(32 * s, armY + 6 * s, 10 * s, 0, Math.PI * 2);
     ctx.fill();
-    // label
-    ctx.fillStyle = "rgba(0,0,0,0.65)";
-    ctx.fillRect(-38 * s, -72 * s, 76 * s, 12 * s);
-    ctx.fillStyle = "#ffcc44";
-    ctx.font = `bold ${Math.round(10 * s)}px sans-serif`;
+    ctx.stroke();
+    ctx.restore();
+    // rótulo
+    ctx.font = `bold ${Math.round(10 * s)}px 'Martian Mono', monospace`;
     ctx.textAlign = "center";
-    ctx.fillText("BRUTAMONTES", 0, -63 * s);
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = "rgba(0,0,0,0.75)";
+    ctx.strokeText("BRUTAMONTES", 0, -62 * s);
+    ctx.fillStyle = "#ffcc44";
+    ctx.fillText("BRUTAMONTES", 0, -62 * s);
   } else {
-    // Zumbi — silhueta podre mais legível
+    // Zumbi — curvado, braços esticados, roupa rasgada, olhos acesos
     const s = scale;
-    ctx.fillStyle = "rgba(20,10,10,0.4)";
+    const face = enemyFacing(en.id, en.x, en.y);
+    const ph = frozen ? 0 : tMs * 0.009 + en.id;
+    ctx.fillStyle = "rgba(20,10,10,0.38)";
     ctx.beginPath();
-    ctx.ellipse(0, 16 * s, 14 * s, 6 * s, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 17 * s, 14 * s, 5 * s, 0, 0, Math.PI * 2);
     ctx.fill();
-
     if (windup) {
-      ctx.fillStyle = "rgba(100,180,40,0.25)";
+      ctx.fillStyle = "rgba(120,200,60,0.22)";
       ctx.beginPath();
-      ctx.arc(0, 0, 22 * s, 0, Math.PI * 2);
+      ctx.arc(0, -2 * s, 22 * s, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    // pernas
-    ctx.fillStyle = "#3a4a28";
-    ctx.fillRect(-8 * s, 6 * s, 5 * s, 12 * s);
-    ctx.fillRect(3 * s, 6 * s, 5 * s, 12 * s);
-    // torso
-    ctx.fillStyle = windup ? "#6a8a40" : chase ? "#4a6a30" : "#3a5a28";
-    ctx.fillRect(-11 * s, -10 * s, 22 * s, 20 * s);
-    // braços caídos
-    ctx.strokeStyle = "#5a7a38";
-    ctx.lineWidth = 4 * s;
+    ctx.save();
+    ctx.scale(face, 1);
+    ctx.lineJoin = "round";
     ctx.lineCap = "round";
-    const armSwing = Math.sin(tMs * 0.012 + en.id) * 0.35;
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 1.8;
+    const skinZ = windup ? "#9cbf5c" : "#86a656";
+    const skinZd = "#66843e";
+    // pernas arrastando
+    for (const i of [-1, 1]) {
+      const sw = Math.sin(ph + (i > 0 ? Math.PI : 0)) * 2.5 * s;
+      ctx.fillStyle = "#3b4a52";
+      ctx.beginPath();
+      ctx.moveTo(i * 4 * s - 2.6 * s + sw * 0.4, 5 * s);
+      ctx.lineTo(i * 4 * s + 2.6 * s + sw * 0.4, 5 * s);
+      ctx.lineTo(i * 4 * s + 2.2 * s + sw, 15 * s);
+      ctx.lineTo(i * 4 * s - 2.2 * s + sw, 15 * s);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#2a2220";
+      ctx.beginPath();
+      ctx.ellipse(i * 4 * s + sw + 1 * s, 16 * s, 3.4 * s, 1.8 * s, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    // braço de trás esticado
+    const reach = windup ? -6 * s : 0;
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 5.2 * s;
     ctx.beginPath();
-    ctx.moveTo(-10 * s, -4 * s);
-    ctx.lineTo(-16 * s, 8 * s + armSwing * 6);
-    ctx.moveTo(10 * s, -4 * s);
-    ctx.lineTo(16 * s, 8 * s - armSwing * 6);
+    ctx.moveTo(-2 * s, -7 * s);
+    ctx.lineTo(12 * s, -6 * s + reach + Math.sin(ph) * 1.2 * s);
     ctx.stroke();
-    // cabeça
-    ctx.fillStyle = "#6a8a48";
+    ctx.strokeStyle = skinZd;
+    ctx.lineWidth = 3.4 * s;
+    ctx.stroke();
+    // tronco curvado (camisa rasgada)
+    ctx.save();
+    ctx.translate(0, 4 * s);
+    ctx.rotate(0.18);
+    ctx.fillStyle = "#5b6a74";
     ctx.beginPath();
-    ctx.arc(0, -18 * s, 10 * s, 0, Math.PI * 2);
+    ctx.moveTo(-7 * s, -13 * s);
+    ctx.lineTo(7 * s, -13 * s);
+    ctx.lineTo(8 * s, 1 * s);
+    ctx.lineTo(4 * s, 3 * s);
+    ctx.lineTo(1 * s, 0);
+    ctx.lineTo(-3 * s, 3 * s);
+    ctx.lineTo(-8 * s, 1 * s);
+    ctx.closePath();
     ctx.fill();
-    // olhos pretos / vazios
-    ctx.fillStyle = windup ? "#ff4040" : "#101808";
-    ctx.fillRect(-5 * s, -20 * s, 3.5 * s, 2.5 * s);
-    ctx.fillRect(2 * s, -20 * s, 3.5 * s, 2.5 * s);
-    // boca
-    ctx.fillStyle = "#2a1808";
-    ctx.fillRect(-3 * s, -14 * s, 6 * s, 2 * s);
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    // rasgos mostrando a pele
+    ctx.fillStyle = skinZ;
+    ctx.beginPath();
+    ctx.ellipse(-2 * s, -6 * s, 2.2 * s, 3 * s, 0.4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = "rgba(120,20,20,0.55)";
+    ctx.fillRect(3 * s, -10 * s, 2 * s, 5 * s);
+    ctx.restore();
+    // cabeça pendendo pra frente
+    const hx = 4 * s;
+    const hy = -13 * s + Math.sin(ph * 0.7) * 0.8 * s;
+    ctx.fillStyle = skinZ;
+    ctx.beginPath();
+    ctx.arc(hx, hy, 7.8 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 1.8;
+    ctx.stroke();
+    ctx.fillStyle = skinZd;
+    ctx.beginPath();
+    ctx.arc(hx + 3 * s, hy + 2 * s, 5 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // cabelo ralo
+    ctx.fillStyle = "#2a2a1c";
+    ctx.beginPath();
+    ctx.arc(hx - 1 * s, hy - 4 * s, 5.5 * s, Math.PI * 1.05, Math.PI * 1.75);
+    ctx.fill();
+    // olhos fundos acesos
+    const glow = windup || chase;
+    ctx.fillStyle = "#1a1408";
+    ctx.beginPath();
+    ctx.arc(hx + 2 * s, hy - 1 * s, 2 * s, 0, Math.PI * 2);
+    ctx.arc(hx + 6.5 * s, hy - 1 * s, 1.7 * s, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = windup ? "#ff4a3a" : glow ? "#e8f070" : "#b8c070";
+    ctx.beginPath();
+    ctx.arc(hx + 2.3 * s, hy - 1 * s, 0.9 * s, 0, Math.PI * 2);
+    ctx.arc(hx + 6.6 * s, hy - 1 * s, 0.8 * s, 0, Math.PI * 2);
+    ctx.fill();
+    // boca aberta
+    ctx.fillStyle = "#3a0e0a";
+    ctx.beginPath();
+    ctx.ellipse(hx + 4.5 * s, hy + 4 * s, 2.4 * s, 1.5 * s, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // braço da frente esticado
+    ctx.strokeStyle = "#141a0e";
+    ctx.lineWidth = 5.2 * s;
+    ctx.beginPath();
+    ctx.moveTo(2 * s, -6 * s);
+    ctx.lineTo(15 * s, -4 * s + reach - Math.sin(ph) * 1.2 * s);
+    ctx.stroke();
+    ctx.strokeStyle = skinZ;
+    ctx.lineWidth = 3.4 * s;
+    ctx.stroke();
+    ctx.restore();
   }
 
   // barra de HP só nos zumbis — chefe sem barra (mistério / pressão)

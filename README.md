@@ -28,15 +28,56 @@ Sprites/base: Kenney.nl · paleta: Lospec · efeitos (muzzle, trail, bob, sombra
 ## Estrutura
 
 ```
-/shared          protocol.ts, sim.ts, laghistory.ts, constants.ts
+/shared          protocol.ts, sim.ts, laghistory.ts, constants.ts, cosmetics.ts
 /server
   party/room.ts  Durable Object (tick 30 Hz)
   local-host.ts  host LAN
   wrangler.toml
 /client
   src/net/       Transport + modeSelector + prediction/interp/reconcile
-  src/game/      loop, render, input
-  src/ui/        lobby + HUD
+  src/game/      loop, render, input, world (mapa), character (boneco),
+                 capes (pano), shield (escudo), powers_fx
+  src/ui/        lobby + HUD + Wardrobe (guarda-roupa)
+```
+
+---
+
+## Visual (tudo desenhado por código)
+
+- **Mapa** (`client/src/game/world.ts`): ruas com faixas e zebras, meio-fio, calçadas, terrenos, praças, pisos internos, paredes, carros, caixas, barris e postes. É pintado em blocos de 256 px com cache LRU (≈30 MB no Full, ≈10 MB no Leve). Por frame só copia os blocos visíveis.
+- **Boneco** (`character.ts`): 8 direções, idle/caminhada, com camadas de pele, cabelo, roupa, armadura, calçado e capacete. O boneco antigo (sprite) continua como corpo **"Rascunho"**, com as capas, as botas e o escudo antigos.
+- **Capas** (`capes.ts`): física de pano (verlet, 7 pontos) em todas as capas, cosméticas e de habilidade.
+- **Escudo Estelar** (`shield.ts`): inspirado no escudo do Capitão América. Fica nas costas quando equipado e é erguido na frente quando ativo.
+
+## Guarda-roupa (cosméticos)
+
+Botão **Guarda-roupa** no menu e na sala. Tem skins completas (Recruta, Lorde Sombrio — inspirado no Darth Vader —, Cavaleiro, Soldado, Neon, Rei, Andarilho, Herói e Rascunho) ou item por item: roupa, armadura, calçado, capa, capacete, cabelo e pele.
+
+É **só visual**. O visual vai 1× no `HELLO` (9 bytes) e numa mensagem `LOOK` quando o jogador troca. O host valida e repassa no `LOBBY`. Não há nenhum byte extra por tick.
+
+## Poderes (Q usa · T troca no treino · drops no Survival)
+
+| id | Poder | Resumo |
+|----|-------|--------|
+| 0 | Jato de Água | empurra e silencia |
+| 1 | Invocar Gigante | persegue o alvo na mira |
+| 2 | Botas de Impulso | corrida rápida |
+| 3 | Capa de Recuo | dash com 2 cargas + desvio automático |
+| 4 | Escudo Estelar | bloqueia tiros de frente (e rebate o bumerangue) |
+| 5 | Fenda Sísmica | rachadura que engole |
+| 6 | Bomba Devastadora | explosão enorme com pavio |
+| 7 | Escudo de Espinhos | C protetor + espinhos |
+| 8 | Congelamento | bloco de gelo em cone |
+| 9 | **Escudo Bumerangue** | arremessa o escudo: ricocheteia, fere e volta |
+| 10 | **Raio em Cadeia** | acerta na mira e salta pra até 3 alvos (mini-stun) |
+| 11 | **Passo Sombrio** | teleporte curto na mira (para antes da parede) |
+
+## Testes da simulação
+
+```bash
+npx tsx scripts/test-powers.mjs      # poderes 9–11
+npx tsx scripts/test-cosmetics.mjs   # visual no HELLO/LOOK/LOBBY
+npx tsx scripts/test-fire.mjs        # (e os test-giant-*.mjs)
 ```
 
 ---

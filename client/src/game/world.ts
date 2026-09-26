@@ -1881,6 +1881,36 @@ export function drawWorld(
   evict();
 }
 
+/**
+ * Pré-pinta até `budget` chunks em volta de (x, y) — chamar no lobby / antes
+ * da partida, espalhando o custo (evita engasgo no 1º frame).
+ * Retorna quantos chunks ainda faltam no raio.
+ */
+export function prewarmWorld(x: number, y: number, radiusPx = 1300, budget = 2): number {
+  const scale = FX_MOBILE ? 0.5 : 1;
+  if (scale !== chunkScale) {
+    invalidateWorld();
+    chunkScale = scale;
+  }
+  const cx0 = Math.max(0, Math.floor((x - radiusPx) / CH));
+  const cy0 = Math.max(0, Math.floor((y - radiusPx * 0.7) / CH));
+  const cx1 = Math.min(NCX - 1, Math.floor((x + radiusPx) / CH));
+  const cy1 = Math.min(NCY - 1, Math.floor((y + radiusPx * 0.7) / CH));
+  let missing = 0;
+  for (let cy = cy0; cy <= cy1; cy++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      if (chunks.has(cy * 1024 + cx)) continue;
+      if (budget > 0 && chunks.size < maxChunks()) {
+        getChunk(cx, cy);
+        budget--;
+      } else {
+        missing++;
+      }
+    }
+  }
+  return missing;
+}
+
 /* ------------------------------------------------------------------ */
 /* telhados (1 canvas pequeno por prédio)                              */
 /* ------------------------------------------------------------------ */

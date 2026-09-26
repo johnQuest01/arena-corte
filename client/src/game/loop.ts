@@ -70,6 +70,8 @@ import {
 import { preloadArt } from "./art";
 import { loadMyLook } from "./lookStore";
 import { pruneCapes } from "./capes";
+import { prewarmWorld } from "./world";
+import { SPAWNS } from "../../../shared/constants";
 import { spawnShieldSparks, tickShieldSparks } from "./shield";
 import {
   clearPowersFx,
@@ -264,6 +266,7 @@ export class GameClient {
   private myLook: Look = loadMyLook();
   private names = new Map<number, string>();
   private lastCapePrune = 0;
+  private worldWarm = false;
   private readonly lookFor = (id: number): Look =>
     id === this.selfId ? this.myLook : this.looks.get(id) ?? autoLookFor(id);
   private readonly nameFor = (id: number): string | undefined => this.names.get(id);
@@ -1636,6 +1639,11 @@ export class GameClient {
       } else {
         this.ctx.setTransform(1, 0, 0, 1, 0, 0);
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+        // sala de espera: pinta o mapa em volta do provável spawn aos poucos
+        if (this.phase === "lobby" && this.selfId >= 0 && !this.worldWarm) {
+          const sp = SPAWNS[this.selfId % SPAWNS.length]!;
+          this.worldWarm = prewarmWorld(sp.x, sp.y, 1300, 2) === 0;
+        }
       }
     } catch (err) {
       console.error("drawFrame", err);
