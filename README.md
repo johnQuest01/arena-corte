@@ -44,7 +44,7 @@ Sprites/base: Kenney.nl · paleta: Lospec · efeitos (muzzle, trail, bob, sombra
 
 ## Visual (tudo desenhado por código)
 
-- **Mapa** (`client/src/game/world.ts`): ruas com faixas e zebras, meio-fio, calçadas, terrenos, praças, pisos internos, paredes, carros, caixas, barris e postes. É pintado em blocos de 256 px com cache LRU (≈30 MB no Full, ≈10 MB no Leve). Por frame só copia os blocos visíveis.
+- **Mapa** (`client/src/game/world.ts`): ruas com faixas e zebras, meio-fio, calçadas, terrenos, praças, pisos internos, paredes, carros, caixas, barris e postes. É pintado em blocos de 256 px com cache LRU (≈30 MB no Full, ≈10 MB no Leve). Por frame só copia os blocos visíveis. Bloco novo tem orçamento de ~6 ms por frame (renascer longe não trava): o que falta aparece por alguns frames como uma prévia borrada do mapa.
 - **Boneco** (`character.ts`): 8 direções, idle/caminhada, com camadas de pele, cabelo, roupa, armadura, calçado e capacete. O boneco antigo (sprite) continua como corpo **"Rascunho"**, com as capas, as botas e o escudo antigos.
 - **Capas** (`capes.ts`): física de pano (verlet, 7 pontos) em todas as capas, cosméticas e de habilidade.
 - **Escudo Estelar** (`shield.ts`): inspirado no escudo do Capitão América. Fica nas costas quando equipado e é erguido na frente quando ativo.
@@ -63,14 +63,14 @@ Botão **Guarda-roupa** no menu e na sala. Tem skins completas (Recruta, Lorde S
 | 1 | Invocar Gigante | persegue o alvo na mira |
 | 2 | Botas de Impulso | corrida rápida |
 | 3 | Capa de Recuo | dash com 2 cargas + desvio automático |
-| 4 | Escudo Estelar | bloqueia tiros de frente (e rebate o bumerangue) |
+| 4 | Escudo Estelar | bloqueia tiros e o raio de frente (e rebate o bumerangue) |
 | 5 | Fenda Sísmica | rachadura que engole |
 | 6 | Bomba Devastadora | explosão enorme com pavio |
 | 7 | Escudo de Espinhos | C protetor + espinhos |
 | 8 | Congelamento | bloco de gelo em cone |
-| 9 | **Escudo Bumerangue** | arremessa o escudo: ricocheteia, fere e volta |
+| 9 | **Escudo Bumerangue** | arremessa o escudo: ricocheteia, fere cada alvo 1× e volta (na volta atravessa parede, sem ferir) |
 | 10 | **Raio em Cadeia** | acerta na mira e salta pra até 3 alvos (mini-stun) |
-| 11 | **Passo Sombrio** | teleporte curto na mira (para antes da parede) |
+| 11 | **Passo Sombrio** | teleporte curto na mira (não atravessa parede; desliza rente a ela) |
 
 ## Testes da simulação
 

@@ -292,6 +292,11 @@ function isBorder(tx: number, ty: number) {
   return tx <= 0 || ty <= 0 || tx >= MAP_W - 1 || ty >= MAP_H - 1;
 }
 
+/** Cor do tampo da parede (muro da borda / metal / tijolo). */
+function wallCapRGB(tx: number, ty: number, t: number): RGB {
+  return isBorder(tx, ty) ? [92, 90, 84] : t === T.METAL ? [74, 82, 84] : [88, 66, 56];
+}
+
 (function classify() {
   for (const b of BUILDINGS) {
     const i = b.interior;
@@ -1353,7 +1358,7 @@ function paintWalls(g: CanvasRenderingContext2D, r: Region) {
       const metal = t === T.METAL;
 
       // tampo (topo da parede)
-      const cap: RGB = border ? [92, 90, 84] : metal ? [74, 82, 84] : [88, 66, 56];
+      const cap = wallCapRGB(tx, ty, t);
       g.fillStyle = rgb(cap);
       g.fillRect(x, y, TILE, topH);
       // bisel claro nas bordas do tampo (volume)
@@ -1834,6 +1839,61 @@ function evict() {
   }
 }
 
+/*
+ * Prévia 1 px por tile (cor do material / tampo da parede): tapa o chunk que
+ * ainda não foi pintado. Respawn longe pede ~40 chunks de uma vez — pintar
+ * tudo num frame travava a tela; agora pinta por orçamento e o resto espera
+ * alguns frames com a prévia borrada.
+ */
+let previewCanvas: HTMLCanvasElement | null = null;
+
+function worldPreview(): HTMLCanvasElement {
+  if (previewCanvas) return previewCanvas;
+  const c = document.createElement("canvas");
+  c.width = MAP_W;
+  c.height = MAP_H;
+  const g = c.getContext("2d")!;
+  const img = g.createImageData(MAP_W, MAP_H);
+  const d = img.data;
+  for (let ty = 0; ty < MAP_H; ty++) {
+    for (let tx = 0; tx < MAP_W; tx++) {
+      const t = solidAt(tx, ty);
+      let col: RGB;
+      if (isWallT(t)) col = wallCapRGB(tx, ty, t);
+      else {
+        const m = mat(tx, ty);
+        col =
+          m === M_ASPHALT
+            ? PAL.asphalt
+            : m === M_SIDEWALK
+              ? PAL.sidewalk
+              : m === M_PLAZA
+                ? PAL.plaza
+                : m === M_WOOD
+                  ? PAL.wood
+                  : m === M_INDOOR
+                    ? PAL.indoor
+                    : m === M_DIRT
+                      ? PAL.dirt
+                      : PAL.grass;
+      }
+      const i = (ty * MAP_W + tx) * 4;
+      d[i] = col[0];
+      d[i + 1] = col[1];
+      d[i + 2] = col[2];
+      d[i + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  previewCanvas = c;
+  return c;
+}
+
+/** ms por frame pintando chunk novo (sempre pinta pelo menos 1). */
+const PAINT_BUDGET_MS = 6;
+const pendingChunks: number[] = [];
+const pendingOrder: number[] = [];
+
 /** Chão + paredes + props (tudo estático) — só a janela da câmera. */
 export function drawWorld(
   ctx: CanvasRenderingContext2D,
@@ -1848,6 +1908,7 @@ export function drawWorld(
     invalidateWorld();
     chunkScale = scale;
   }
+  const t0 = performance.now();
   const cx0 = Math.max(0, Math.floor(camX / CH));
   const cy0 = Math.max(0, Math.floor(camY / CH));
   const cx1 = Math.min(NCX - 1, Math.floor((camX + viewW) / CH));
@@ -1856,16 +1917,45 @@ export function drawWorld(
   ctx.imageSmoothingEnabled = true;
   const src = GUT * chunkScale;
   const sw = CH * chunkScale;
+  pendingChunks.length = 0;
   for (let cy = cy0; cy <= cy1; cy++) {
     for (let cx = cx0; cx <= cx1; cx++) {
-      const c = getChunk(cx, cy);
-      ctx.drawImage(c.canvas, src, src, sw, sw, cx * CH, cy * CH, CH, CH);
+      const c = chunks.get(cy * 1024 + cx);
+      if (c) {
+        c.used = frameNo;
+        ctx.drawImage(c.canvas, src, src, sw, sw, cx * CH, cy * CH, CH, CH);
+      } else {
+        pendingChunks.push(cx, cy);
+      }
+    }
+  }
+  if (pendingChunks.length) {
+    // mais perto do centro da tela primeiro
+    const mx = (camX + viewW / 2) / CH - 0.5;
+    const my = (camY + viewH / 2) / CH - 0.5;
+    const n = pendingChunks.length / 2;
+    pendingOrder.length = 0;
+    for (let i = 0; i < n; i++) pendingOrder.push(i);
+    const dist = (i: number) => (pendingChunks[i * 2]! - mx) ** 2 + (pendingChunks[i * 2 + 1]! - my) ** 2;
+    pendingOrder.sort((a, b) => dist(a) - dist(b));
+    const per = CH / TILE;
+    let painted = 0;
+    for (const i of pendingOrder) {
+      const cx = pendingChunks[i * 2]!;
+      const cy = pendingChunks[i * 2 + 1]!;
+      if (painted === 0 || performance.now() - t0 < PAINT_BUDGET_MS) {
+        const c = getChunk(cx, cy);
+        painted++;
+        ctx.drawImage(c.canvas, src, src, sw, sw, cx * CH, cy * CH, CH, CH);
+      } else {
+        ctx.drawImage(worldPreview(), cx * per, cy * per, per, per, cx * CH, cy * CH, CH, CH);
+      }
     }
   }
   ctx.imageSmoothingEnabled = prev;
 
-  // pré-pinta 1 chunk do anel externo por frame (evita engasgo ao andar)
-  let done = false;
+  // tela completa: pré-pinta 1 chunk do anel externo por frame (evita engasgo ao andar)
+  let done = pendingChunks.length > 0;
   for (let cy = cy0 - 1; cy <= cy1 + 1 && !done; cy++) {
     for (let cx = cx0 - 1; cx <= cx1 + 1 && !done; cx++) {
       if (cx < 0 || cy < 0 || cx >= NCX || cy >= NCY) continue;
